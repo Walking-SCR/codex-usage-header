@@ -17,9 +17,9 @@
    // Apple Human Interface Guidelines (HIG) Colors
    colors: {
      light: {
-       green: '#34C759',   // Remaining >= 40%
-       yellow: '#FF9500',  // Remaining 20% - 40% (Apple Battery Low Power Amber)
-       red: '#FF3B30',     // Remaining < 20%
+       green: '#34C759',   // Remaining 41% - 100%
+       yellow: '#FF9500',  // Remaining 11% - 40% (Apple Battery Low Power Amber)
+       red: '#FF3B30',     // Remaining 0% - 10%
        purple: '#AF52DE',  // 7d weekly window
        bgTrack: 'rgba(0, 0, 0, 0.08)',
        capsuleBg: 'rgba(255, 255, 255, 0.88)',
@@ -56,7 +56,7 @@
  
  export function getQuotaColor(remainingPercent, isDark = false) {
    const palette = resolveTheme(isDark);
-   if (remainingPercent <= 20) return palette.red;
+   if (remainingPercent <= 10) return palette.red;
    if (remainingPercent <= 40) return palette.yellow;
    return palette.green;
  }

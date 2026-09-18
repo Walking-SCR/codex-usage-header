@@ -23,6 +23,11 @@ function readIconDataUrl(name) {
   return `data:image/svg+xml;base64,${data.toString('base64')}`;
 }
 
+function readImageDataUrl(name, extension, mimeType) {
+  const data = readFileSync(join(ASSET_DIR, `${name}.${extension}`));
+  return `data:${mimeType};base64,${data.toString('base64')}`;
+}
+
 export function locateExecutable() {
   if (process.platform === 'darwin') {
     const candidates = [
@@ -286,6 +291,7 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
     refresh: readIconDataUrl('refresh'),
     database: readIconDataUrl('database'),
     clock: readIconDataUrl('clock'),
+    resetCredit: readImageDataUrl('reset-credit', 'png', 'image/png'),
   };
   const bootstrap = `window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)};`;
 

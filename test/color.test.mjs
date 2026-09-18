@@ -8,18 +8,19 @@
  
  // Light Theme Tests
  {
-   // Green Range: 40% - 100% remaining
+   // Green Range: 41% - 100% remaining
    assert.equal(getQuotaColor(100, false), defaultConfig.colors.light.green);
    assert.equal(getQuotaColor(75, false), defaultConfig.colors.light.green);
    assert.equal(getQuotaColor(41, false), defaultConfig.colors.light.green);
  
-   // Yellow Range: 20% - 40% remaining (Low Power Battery Amber)
+   // Yellow Range: 11% - 40% remaining (Low Power Battery Amber)
    assert.equal(getQuotaColor(40, false), defaultConfig.colors.light.yellow);
    assert.equal(getQuotaColor(30, false), defaultConfig.colors.light.yellow);
-   assert.equal(getQuotaColor(21, false), defaultConfig.colors.light.yellow);
+   assert.equal(getQuotaColor(11, false), defaultConfig.colors.light.yellow);
  
-   // Red Range: 0% - 20% remaining
-   assert.equal(getQuotaColor(20, false), defaultConfig.colors.light.red);
+   // Red Range: 0% - 10% remaining
+   assert.equal(getQuotaColor(10, false), defaultConfig.colors.light.red);
+   assert.equal(getQuotaColor(11, false), defaultConfig.colors.light.yellow);
    assert.equal(getQuotaColor(10, false), defaultConfig.colors.light.red);
    assert.equal(getQuotaColor(0, false), defaultConfig.colors.light.red);
  }

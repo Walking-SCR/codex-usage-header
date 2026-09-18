@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '2.4.2';
+  const RUNTIME_VERSION = '2.5.4';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -129,6 +129,10 @@
       resetDetails: '可用重置额度',
       noResetDetails: '暂无可用重置额度明细',
       expires: '到期',
+      fullReset: '完全重置（每周 + 5 小时）',
+      expiresOn: '将于',
+      timezone: 'GMT+8',
+      expiresSuffix: '到期',
       locale: '切换语言',
       settingsSaved: '刷新频率已保存',
     },
@@ -164,6 +168,10 @@
       resetDetails: 'Available reset credits',
       noResetDetails: 'No reset credit details available',
       expires: 'Expires',
+      fullReset: 'Full reset (Weekly + 5 hr)',
+      expiresOn: 'Expires',
+      timezone: 'GMT+8',
+      expiresSuffix: '',
       locale: 'Switch language',
       settingsSaved: 'Refresh interval saved',
     },
@@ -187,12 +195,12 @@
   function getQuotaColor(remaining) {
     if (!Number.isFinite(remaining)) return CONFIG.colors.muted;
     if (remaining <= 10) return CONFIG.colors.red;
-    if (remaining <= 20) return CONFIG.colors.yellow;
+    if (remaining <= 40) return CONFIG.colors.yellow;
     return CONFIG.colors.green;
   }
 
   function getValueColor(remaining, dark) {
-    if (!Number.isFinite(remaining) || remaining > 20) return dark ? '#F5F5F7' : '#3A3A3C';
+    if (!Number.isFinite(remaining) || remaining > 40) return dark ? '#F5F5F7' : '#3A3A3C';
     return remaining <= 10 ? (dark ? '#FF453A' : '#FF3B30') : (dark ? '#FFD60A' : '#C66A00');
   }
 
@@ -413,9 +421,6 @@
       if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
       else if (language) switchLocale();
     });
-    popover.addEventListener('change', event => {
-      if (event.target?.classList?.contains('refresh-interval')) saveInterval(event.target.value);
-    });
     (document.body || document.documentElement).appendChild(popover);
     return popover;
   }
@@ -503,10 +508,15 @@
     const pColor = getQuotaColor(p?.remainingPercent);
     const sColor = getQuotaColor(s?.remainingPercent);
     const message = usageState.status === 'error' ? t('unavailable') : t('syncing');
-    const interval = settings.refreshIntervalSeconds;
-    const creditTitle = settings.locale === 'zh-CN' ? '额度重置券' : 'Reset credit';
     const details = usageState.resetCreditDetails.length
-      ? usageState.resetCreditDetails.map(item => '<div class="credit-detail"><span>' + esc(creditTitle) + '</span><span>' + (item.expiresAt ? esc(t('expires') + ' ' + formatDate(item.expiresAt, true)) : '') + '</span></div>').join('')
+      ? usageState.resetCreditDetails.map(item => {
+        const expiry = item.expiresAt
+          ? settings.locale === 'zh-CN'
+            ? t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone') + ' ' + t('expiresSuffix')
+            : t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone')
+          : t('noResetDetails');
+        return '<div class="credit-detail">' + iconMarkup('resetCredit', 'credit-icon') + '<strong>' + esc(t('fullReset')) + '</strong><span>' + esc(expiry) + '</span></div>';
+      }).join('')
       : '<div class="credit-detail muted">' + esc(t('noResetDetails')) + '</div>';
     const primaryRow = showFiveHours
       ? '<div class="row"><span class="label">' + esc(t('fiveHours')) + '</span><span class="track"><span class="fill" style="width:' + p.remainingPercent + '%;background:' + pColor + '"></span></span><span class="value popover-primary-value">' + esc(t('remaining') + ' ' + p.remainingPercent + '%（' + formatDate(p.resetsAt) + ' ' + t('resetAt') + '，' + t('untilReset') + ' ' + formatDuration(p.secondsRemaining) + '）') + '</span></div>'
@@ -518,12 +528,12 @@
       '.popover-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:16px}',
       '.popover-title{font-size:16px;font-weight:750;line-height:1.2}.popover-subtitle{margin-top:4px;font-size:11px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';white-space:nowrap}',
       '.popover-actions{display:flex;align-items:center;gap:6px}.language-toggle,.card-refresh{height:28px;border:0;border-radius:8px;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + ';color:' + (dark ? '#F5F5F7' : '#3A3A3C') + ';cursor:pointer;padding:0 8px;font:600 11px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}.card-refresh{width:28px;padding:0;display:grid;place-items:center}.card-refresh .icon{width:16px;height:16px}.card-refresh.state-loading .icon{animation:quota-refresh-spin .72s linear infinite}.language-toggle:hover,.card-refresh:hover{background:' + (dark ? 'rgba(255,255,255,.16)' : 'rgba(0,0,0,.09)') + '}',
-      '.rows{display:flex;flex-direction:column;gap:16px;margin-top:16px}.row{display:grid;grid-template-columns:80px 122px minmax(190px,1fr);align-items:center;gap:10px;min-height:22px}.label{font-size:13px;font-weight:700;white-space:nowrap}.track{height:12px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.value{min-width:0;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';font-size:12.5px;font-weight:520;line-height:1.35;white-space:nowrap;font-variant-numeric:tabular-nums}',
-      '.divider{height:1px;background:' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + ';margin:15px 0}.meta-row{display:flex;align-items:center;gap:10px;min-height:28px;font-size:12.5px}.meta-row.muted{color:' + (dark ? '#A1A1A6' : '#7A7A80') + '}.meta-actions{display:flex;align-items:center;gap:18px;white-space:nowrap;flex-wrap:nowrap}.credits-copy{white-space:nowrap}.balance{color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';white-space:nowrap}.interval-label{display:flex;align-items:center;gap:8px}.refresh-interval{border:1px solid ' + (dark ? 'rgba(255,255,255,.16)' : 'rgba(0,0,0,.10)') + ';border-radius:7px;background:transparent;color:inherit;padding:4px 7px;font:inherit}.credit-details{margin-top:8px;border-top:1px solid ' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + ';padding-top:8px}.credit-detail{display:flex;justify-content:space-between;gap:20px;padding:5px 0;font-size:11px}.muted,.unavailable{color:' + (dark ? '#A1A1A6' : '#6E6E73') + '}.error-note{margin-top:10px;color:' + (dark ? '#FF6961' : '#C42B1C') + ';font-size:11.5px}',
+      '.rows{display:flex;flex-direction:column;gap:16px;margin-top:16px}.row{display:grid;grid-template-columns:52px 122px minmax(190px,1fr);align-items:center;gap:10px;min-height:22px}.label{font-size:13px;font-weight:700;text-align:right;white-space:nowrap}.track{height:12px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.value{min-width:0;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';font-size:12.5px;font-weight:520;line-height:1.35;white-space:nowrap;font-variant-numeric:tabular-nums}',
+      '.divider{height:1px;background:' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + ';margin:15px 0}.meta-row{display:flex;align-items:center;gap:10px;min-height:28px;width:100%;font-size:12.5px}.meta-row.muted{color:' + (dark ? '#A1A1A6' : '#7A7A80') + '}.meta-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;white-space:nowrap;flex-wrap:nowrap}.credits-copy{white-space:nowrap;font-weight:600}.balance{color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';white-space:nowrap;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.04)') + ';border-radius:999px;padding:7px 13px;font-size:12px}.credit-details{margin-top:8px;padding-top:0}.credit-detail{display:flex;align-items:center;gap:10px;min-height:48px;padding:8px 12px;font-size:12.5px;border:1px solid ' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';border-radius:10px;background:' + (dark ? 'rgba(255,255,255,.035)' : 'rgba(248,249,250,.72)') + '}.credit-icon{display:block;flex:none;width:32px;height:32px;border-radius:8px;object-fit:cover}.credit-detail strong{flex:1;min-width:0;font-size:13px;font-weight:650;white-space:nowrap}.credit-detail span{flex:none;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';white-space:nowrap}.muted,.unavailable{color:' + (dark ? '#A1A1A6' : '#6E6E73') + '}.error-note{margin-top:10px;color:' + (dark ? '#FF6961' : '#C42B1C') + ';font-size:11.5px}',
       '@keyframes quota-refresh-spin{to{transform:rotate(360deg)}}@media(max-width:520px){.popover-subtitle{white-space:normal}.row{grid-template-columns:52px 100px minmax(150px,1fr);gap:10px}.value{white-space:normal}.meta-actions{gap:10px}}',
     ].join('');
     if (!ready) return '<style>' + css + '</style><div class="popover-shell"><div class="popover-header"><div><div class="popover-title">' + esc(t('title')) + '</div><div class="popover-subtitle">' + esc(t('subtitle')) + '</div></div><div class="popover-actions"><button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button><button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : t('refresh')) + '">' + iconMarkup('refresh') + '</button></div></div><div class="unavailable">' + esc(message) + '</div></div>';
-    return '<style>' + css + '</style><div class="popover-shell"><div class="popover-header"><div><div class="popover-title">' + esc(t('title')) + '</div><div class="popover-subtitle">' + esc(t('subtitle')) + '</div></div><div class="popover-actions"><button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button><button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button></div></div><div class="rows">' + rows + '</div><div class="divider"></div><div class="meta-row"><span class="meta-actions"><span class="credits-copy">' + esc(t('resetCredits') + ': ' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span><span class="balance">' + esc(t('balance') + ': ' + usageState.creditBalance.displayValue) + '</span></span></div><div class="credit-details">' + details + '</div><div class="divider"></div><div class="meta-row muted"><span class="interval-label">' + esc(t('autoRefresh')) + '<select class="refresh-interval" aria-label="' + esc(t('autoRefresh')) + '"><option value="30"' + (interval === 30 ? ' selected' : '') + '>30 ' + esc(t('seconds')) + '</option><option value="60"' + (interval === 60 ? ' selected' : '') + '>1 ' + esc(t('minute')) + '</option></select></span></div>' + (usageState.error ? '<div class="error-note">' + esc(usageState.error) + '</div>' : '') + '</div>';
+    return '<style>' + css + '</style><div class="popover-shell"><div class="popover-header"><div><div class="popover-title">' + esc(t('title')) + '</div><div class="popover-subtitle">' + esc(t('subtitle')) + '</div></div><div class="popover-actions"><button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button><button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button></div></div><div class="rows">' + rows + '</div><div class="divider"></div><div class="meta-row"><span class="meta-actions"><span class="credits-copy">' + esc(t('resetCredits') + ': ' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span><span class="balance">' + esc(t('balance') + ': ' + usageState.creditBalance.displayValue) + '</span></span></div><div class="credit-details">' + details + '</div>' + (usageState.error ? '<div class="error-note">' + esc(usageState.error) + '</div>' : '') + '</div>';
   }
 
   function renderPopover() {
@@ -588,21 +598,20 @@
     const sValue = s ? s.remainingPercent + '%' : '—';
     const pColorText = getValueColor(p?.remainingPercent, dark);
     const sColorText = getValueColor(s?.remainingPercent, dark);
-    const pieItem = showFiveHours ? p : s;
     const pieLabel = showFiveHours ? '5h' : '7d';
-    const pieColor = showFiveHours ? pColorText : sColorText;
-    const pPie = ' style="--remaining:' + (pieItem?.remainingPercent || 0) + '%;color:' + pieColor + '"';
+    const pPie = ' style="--remaining:' + (p?.remainingPercent || 0) + '%;color:' + pColor + '"';
+    const sPie = ' style="--remaining:' + (s?.remainingPercent || 0) + '%;color:' + sColor + '"';
     let content;
     if (!showFiveHours && currentMode === 'nano') {
-      content = '<span class="label">' + pieLabel + '</span><span class="mini-pie"' + pPie + ' aria-hidden="true"></span>';
+      content = '<span class="label">' + pieLabel + '</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
     } else if (currentMode === 'nano') {
       content = '<span class="label">5h</span><span class="mini-pie"' + pPie + ' aria-hidden="true"></span>';
     } else if (!showFiveHours && currentMode === 'minimal') {
-      content = '<span class="label">7d</span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
+      content = '<span class="label">7d</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
     } else if (!showFiveHours) {
       content = '<span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
     } else if (currentMode === 'minimal') {
-      content = '<span class="label">5h</span><span class="value" style="color:' + pColorText + '">' + pValue + '</span><span class="divider"></span><span class="label">7d</span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
+      content = '<span class="label">5h</span><span class="mini-pie"' + pPie + ' aria-hidden="true"></span><span class="divider"></span><span class="label">7d</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
     } else if (currentMode === 'compact') {
       content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value" style="color:' + pColorText + '">' + pValue + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
     } else {
