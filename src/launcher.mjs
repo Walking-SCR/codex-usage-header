@@ -10,7 +10,6 @@ import { readFileSync, existsSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
-import { ensureUsageBridge } from './usage-bridge.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INJECTED_SCRIPT_PATH = join(__dirname, 'injected.js');
@@ -173,7 +172,7 @@ export async function injectScriptIntoTarget(wsUrl, scriptCode) {
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 150));
     verification = await evaluateInTarget(wsUrl, `(() => {
-      const element = document.querySelector('codex-usage-header-v23');
+      const element = document.querySelector('codex-usage-header-host');
       return {
         installed: Boolean(window.__codexUsageHeaderInstalled__),
         mounted: Boolean(element && element.isConnected),
@@ -227,7 +226,7 @@ export async function getStatus(port = DEFAULT_PORT) {
     for (const target of renderers) {
       try {
         const result = await evaluateInTarget(target.webSocketDebuggerUrl, `(() => {
-          const element = document.querySelector('codex-usage-header-v23');
+          const element = document.querySelector('codex-usage-header-host');
           return {
             installed: Boolean(window.__codexUsageHeaderInstalled__),
             mounted: Boolean(element && element.isConnected),
@@ -283,13 +282,12 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
   const renderers = selectUsageTargets(targets);
   if (renderers.length === 0) throw new Error('no_renderer_targets');
 
-  const bridgePort = await ensureUsageBridge();
   const icons = {
     refresh: readIconDataUrl('refresh'),
     database: readIconDataUrl('database'),
     clock: readIconDataUrl('clock'),
   };
-  const bootstrap = `window.__codexUsageBridgeUrl__ = ${JSON.stringify(`http://127.0.0.1:${bridgePort}/usage`)};\nwindow.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)};`;
+  const bootstrap = `window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)};`;
 
   const successes = [];
   const failures = [];
@@ -374,8 +372,9 @@ async function main() {
   }
 }
 
-const isDirectRun = process.argv[1]
-  && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+const entryPath = process.argv[1];
+const isDirectRun = Boolean(entryPath && existsSync(entryPath)
+  && realpathSync(entryPath) === realpathSync(fileURLToPath(import.meta.url)));
 
 if (isDirectRun) {
   main().catch(error => {

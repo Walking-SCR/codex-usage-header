@@ -1,19 +1,18 @@
 /**
- * Background synchronizer for app:// renderers. Chromium blocks direct
- * cross-origin requests from the desktop app, so Node reads the local bridge
- * and pushes sanitized usage payloads through the existing localhost CDP port.
+ * Single-owner usage scheduler. Renderer targets only submit commands and
+ * receive sanitized snapshots through localhost CDP Runtime.evaluate.
  */
-import { openSync, closeSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { openSync, closeSync, readFileSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { ensureUsageBridge } from './usage-bridge.mjs';
-import { evaluateInTarget, fetchCdpTargets, isDesktopAppRunning, launchAndInject, selectUsageTargets } from './launcher.mjs';
+import { dirname, join } from 'node:path';
+import { AppServerClient } from './account-client.mjs';
+import { evaluateInTarget, fetchCdpTargets, launchAndInject, selectUsageTargets } from './launcher.mjs';
 
 const DEFAULT_CDP_PORT = 9229;
-const BRIDGE_PORT = 9230;
 const POLL_MS = 750;
-const USAGE_REFRESH_MS = 30000;
+const IDLE_REFRESH_MS = 180000;
 const LOCK_PATH = join(tmpdir(), 'codex-usage-header-monitor.lock');
+const SETTINGS_PATH = join(process.env.HOME || tmpdir(), 'Library/Application Support/Codex Quota Header/settings.json');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -24,35 +23,42 @@ function acquireLock() {
     closeSync(fd);
     return true;
   } catch {
-    try {
-      const pid = Number(readFileSync(LOCK_PATH, 'utf8'));
-      process.kill(pid, 0);
-      return false;
-    } catch {
-      try { unlinkSync(LOCK_PATH); } catch { /* stale lock is harmless */ }
+    try { process.kill(Number(readFileSync(LOCK_PATH, 'utf8')), 0); return false; } catch {
+      try { unlinkSync(LOCK_PATH); } catch { /* stale lock */ }
       return acquireLock();
     }
   }
 }
 
-function releaseLock() {
-  try { unlinkSync(LOCK_PATH); } catch { /* already released */ }
+function releaseLock() { try { unlinkSync(LOCK_PATH); } catch { /* already released */ } }
+
+function readSettings() {
+  try {
+    const value = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'));
+    return { refreshIntervalSeconds: Number(value.refreshIntervalSeconds) === 60 ? 60 : 30 };
+  } catch {
+    return { refreshIntervalSeconds: 30 };
+  }
 }
 
-async function readUsage({ fresh = false } = {}) {
-  const suffix = fresh ? '?fresh=1' : '';
-  const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/usage${suffix}`, { headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`usage_bridge_${response.status}`);
-  return response.json();
+function persistSettings(settings) {
+  mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
+  writeFileSync(SETTINGS_PATH, JSON.stringify({
+    schemaVersion: 1,
+    refreshIntervalSeconds: settings.refreshIntervalSeconds,
+  }, null, 2));
 }
 
 async function inspectTarget(target) {
-  return evaluateInTarget(target.webSocketDebuggerUrl, `(() => ({
-    mounted: Boolean(document.querySelector('codex-usage-header-v23')),
-    request: window.__codexUsageHeaderRefreshRequested__
-      ? (() => { const value = window.__codexUsageHeaderRefreshRequested__; window.__codexUsageHeaderRefreshRequested__ = null; return value; })()
-      : null,
-  }))()`);
+  return evaluateInTarget(target.webSocketDebuggerUrl, `(() => {
+    const command = window.__codexUsageHeaderCommand__ || null;
+    window.__codexUsageHeaderCommand__ = null;
+    return {
+      mounted: Boolean(document.querySelector('codex-usage-header-host')),
+      hidden: document.hidden,
+      command,
+    };
+  })()`);
 }
 
 async function pushUsage(target, payload, metadata = {}) {
@@ -62,59 +68,94 @@ async function pushUsage(target, payload, metadata = {}) {
 }
 
 async function pushRefreshError(target, requestId, message) {
-  await evaluateInTarget(
-    target.webSocketDebuggerUrl,
-    `window.__codexUsageHeaderSetRefreshError__?.(${JSON.stringify(requestId)}, ${JSON.stringify(message)})`,
-  );
+  await evaluateInTarget(target.webSocketDebuggerUrl,
+    `window.__codexUsageHeaderSetRefreshError__?.(${JSON.stringify(requestId)}, ${JSON.stringify(message)})`);
 }
 
 async function run(cdpPort) {
   if (!acquireLock()) return;
+  const settings = readSettings();
+  let notificationPending = false;
+  const client = new AppServerClient({
+    onNotification: message => {
+      if (message.method === 'account/rateLimits/updated') notificationPending = true;
+    },
+  });
   try {
-    await ensureUsageBridge(BRIDGE_PORT);
+    mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
     await launchAndInject(cdpPort, { launchIfNeeded: true });
     let nextRefreshAt = 0;
     let payload = null;
     let revision = 0;
+    let inFlight = null;
     const deliveredRevision = new Map();
-    while (isDesktopAppRunning()) {
+    const seenCommands = new Set();
+    // Keep one owner alive and let the CDP target list drive availability.
+    // A synchronous process scan here can block the event loop and starve
+    // renderer commands, which makes manual refresh appear unresponsive.
+    while (true) {
       let targets;
       try { targets = selectUsageTargets(await fetchCdpTargets(cdpPort)); } catch { await sleep(POLL_MS); continue; }
       if (targets.length === 0) { await sleep(POLL_MS); continue; }
-      const inspections = await Promise.all(targets.map(async target => {
+      let inspections = await Promise.all(targets.map(async target => {
         try { return { target, state: await inspectTarget(target) }; } catch { return null; }
       }));
-      const validInspections = inspections.filter(Boolean);
-      const requests = validInspections.filter(item => item.state?.request);
-      const manualRequests = requests.filter(item => item.state.request?.manual);
-      const shouldRefresh = Date.now() >= nextRefreshAt || requests.length > 0;
+      let valid = inspections.filter(Boolean);
+      if (valid.some(item => !item.state.mounted)) {
+        try {
+          await launchAndInject(cdpPort, { launchIfNeeded: false });
+          targets = selectUsageTargets(await fetchCdpTargets(cdpPort));
+          inspections = await Promise.all(targets.map(async target => {
+            try { return { target, state: await inspectTarget(target) }; } catch { return null; }
+          }));
+          valid = inspections.filter(Boolean);
+        } catch { /* the target may be between route transitions */ }
+      }
+      const commands = valid.flatMap(item => item.state.command ? [{ ...item.state.command, target: item.target }] : []);
+      for (const command of commands) {
+        if (command.kind !== 'settings' || !command.id || seenCommands.has(command.id)) continue;
+        const seconds = Number(command.payload?.refreshIntervalSeconds);
+        if (seconds === 30 || seconds === 60) {
+          settings.refreshIntervalSeconds = seconds;
+          persistSettings(settings);
+        }
+        seenCommands.add(command.id);
+        nextRefreshAt = 0;
+      }
+      const manualRequests = commands.filter(command => command.kind === 'refresh' && command.manual && command.id && !seenCommands.has(command.id));
+      for (const command of manualRequests) seenCommands.add(command.id);
+      const anyVisible = valid.some(item => !item.state.hidden);
+      const refreshMs = anyVisible ? settings.refreshIntervalSeconds * 1000 : IDLE_REFRESH_MS;
+      const shouldRefresh = Date.now() >= nextRefreshAt || notificationPending || manualRequests.length > 0;
       let refreshed = false;
       let refreshError = null;
       if (shouldRefresh) {
+        notificationPending = false;
+        if (!inFlight) inFlight = client.readRateLimits().finally(() => { inFlight = null; });
         try {
-          payload = await readUsage({ fresh: manualRequests.length > 0 });
+          payload = await inFlight;
           revision += 1;
           refreshed = true;
-          nextRefreshAt = Date.now() + USAGE_REFRESH_MS;
+          nextRefreshAt = Date.now() + refreshMs;
         } catch (error) {
           refreshError = error;
           nextRefreshAt = Date.now() + 5000;
         }
       }
       if (refreshError && manualRequests.length > 0) {
-        await Promise.all(manualRequests.map(item => pushRefreshError(
-          item.target,
-          item.state.request.id,
-          '刷新失败，请检查本地额度服务',
+        await Promise.all(manualRequests.map(command => pushRefreshError(
+          command.target,
+          command.id,
+          '刷新失败，请确认 Codex 已登录',
         ).catch(() => {})));
       }
       if (payload) {
-        await Promise.all(validInspections.map(async item => {
+        await Promise.all(valid.map(async item => {
           const key = item.target.id || item.target.webSocketDebuggerUrl;
-          const needsDelivery = refreshed || deliveredRevision.get(key) !== revision;
-          if (!needsDelivery) return;
+          if (!refreshed && deliveredRevision.get(key) === revision) return;
+          const manual = manualRequests.find(command => command.target === item.target);
           await pushUsage(item.target, payload, {
-            requestId: item.state.request?.id || null,
+            requestId: manual?.id || null,
             fetchedAt: Date.now(),
             revision,
           });
@@ -124,6 +165,7 @@ async function run(cdpPort) {
       await sleep(POLL_MS);
     }
   } finally {
+    client.close();
     releaseLock();
   }
 }

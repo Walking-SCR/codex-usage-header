@@ -14,8 +14,10 @@
  }
  
  {
-   // Active window: strictly 30s
+   // Active window: strictly 30s by default
    assert.equal(calculatePollingInterval(false), 30000);
+
+   assert.equal(calculatePollingInterval(false, { ...defaultConfig, refreshIntervalSeconds: 60 }), 60000);
  
    // Background window: 180s (3 minutes) to prevent 429 and save battery
    assert.equal(calculatePollingInterval(true), 180000);

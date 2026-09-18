@@ -12,7 +12,11 @@ printf '%s\n' "=== Installing Codex Quota Header (macOS) ==="
 mkdir -p "$PLUGIN_DIR" "$(dirname "$LAUNCHER_BIN")"
 
 if [[ "$ROOT_DIR" != "$PLUGIN_DIR" ]]; then
-  cp -R "$ROOT_DIR/." "$PLUGIN_DIR/"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete --exclude '.git' "$ROOT_DIR/" "$PLUGIN_DIR/"
+  else
+    cp -R "$ROOT_DIR/." "$PLUGIN_DIR/"
+  fi
 fi
 
 install -m 0755 "$ROOT_DIR/bin/codex-header" "$LAUNCHER_BIN"

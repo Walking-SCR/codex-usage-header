@@ -43,9 +43,10 @@
    // Breakpoints for 4-tier adaptive responsive modes
   breakpoints: {
     full: 520,
-    compact: 340,
-    minimal: 210,
-    hysteresis: 24,
+    compact: 330,
+    minimal: 190,
+    nano: 140,
+    hysteresis: 20,
   },
 };
  
