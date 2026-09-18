@@ -2,7 +2,7 @@
  
  > 为 Codex / ChatGPT 桌面客户端打造的原生质感顶栏用量看板，额度与重置倒计时一目了然。
  
- ![界面预览](assets/preview.png)
+ ![界面预览](assets/overview.png)
  
  ---
  
