@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Codex Quota Header visual comparison</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 20px; background: #161616; color: #f5f5f7; font: 14px -apple-system, BlinkMacSystemFont, sans-serif; }
+    main { width: min(1440px, 100%); margin: 0 auto; display: grid; gap: 20px; }
+    figure { margin: 0; border: 1px solid #3a3a3c; border-radius: 12px; overflow: hidden; background: #fff; }
+    figcaption { padding: 9px 12px; background: #242426; color: #f5f5f7; font-weight: 650; }
+    .frame { width: 100%; height: 220px; overflow: hidden; background: #fff; }
+    img { display: block; width: 100%; height: auto; }
+    .zoom { height: 250px; }
+    .zoom img { width: 1440px; max-width: none; transform: translateX(-620px); }
+  </style>
+</head>
+<body>
+  <main>
+    <figure>
+      <figcaption>目标设计</figcaption>
+      <div class="frame"><img src="03-target-design.png" alt="目标设计"></div>
+    </figure>
+    <figure>
+      <figcaption>当前实现</figcaption>
+      <div class="frame"><img src="05-implementation-normalized.png" alt="当前实现"></div>
+    </figure>
+    <figure>
+      <figcaption>目标设计 · 顶栏与详情卡片</figcaption>
+      <div class="frame zoom"><img src="03-target-design.png" alt="目标设计核心区域"></div>
+    </figure>
+    <figure>
+      <figcaption>当前实现 · 顶栏与详情卡片</figcaption>
+      <div class="frame zoom"><img src="05-implementation-normalized.png" alt="当前实现核心区域"></div>
+    </figure>
+  </main>
+</body>
+</html>

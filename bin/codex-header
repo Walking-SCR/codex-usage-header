@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLUGIN_ROOT="${CODEX_USAGE_HEADER_HOME:-$HOME/.codex/plugins/codex-usage-header}"
+LAUNCHER="$PLUGIN_ROOT/src/launcher.mjs"
+NODE_BINARY="${CODEX_USAGE_HEADER_NODE:-}"
+
+if [[ ! -f "$LAUNCHER" ]]; then
+  printf '%s\n' "Codex Quota Header is not installed at: $PLUGIN_ROOT" >&2
+  printf '%s\n' "Run the plugin's bin/install.sh first." >&2
+  exit 1
+fi
+
+if [[ -n "$NODE_BINARY" ]]; then
+  if [[ ! -x "$NODE_BINARY" ]]; then
+    printf '%s\n' "Configured Node.js executable is unavailable: $NODE_BINARY" >&2
+    exit 127
+  fi
+else
+  # Finder/Dock apps receive a minimal PATH that omits both common Homebrew
+  # locations. Resolve Node explicitly before falling back to PATH lookup.
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      NODE_BINARY="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$NODE_BINARY" ]]; then
+    NODE_BINARY="$(command -v node 2>/dev/null || true)"
+  fi
+fi
+
+if [[ -z "$NODE_BINARY" || ! -x "$NODE_BINARY" ]]; then
+  printf '%s\n' "Node.js was not found. Checked /opt/homebrew/bin/node, /usr/local/bin/node, and PATH." >&2
+  exit 127
+fi
+
+exec "$NODE_BINARY" "$LAUNCHER" "$@"
