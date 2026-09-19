@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '2.5.7';
+  const RUNTIME_VERSION = '2.6.0';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -73,6 +73,27 @@
     lastUpdated: null,
     error: null,
   };
+  let extendedUsageState = {
+    antigravity: {
+      status: 'idle',
+      plan: null,
+      rows: [],
+      fetchedAt: null,
+      stale: false,
+      error: null,
+    },
+    tokens: {
+      status: 'idle',
+      selectedRange: (typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.selectedTokenRange') : null) || 'today',
+      ranges: {
+        today: null,
+        days7: null,
+        days30: null,
+      },
+      coverageStartedAt: null,
+      error: null,
+    },
+  };
   let lastManualRefresh = 0;
   let currentMode = 'full';
   let host = null;
@@ -135,6 +156,16 @@
       expiresSuffix: '到期',
       locale: '切换语言',
       settingsSaved: '刷新频率已保存',
+      geminiTitle: 'Gemini AI Pro',
+      tokenUsage: 'Token处理量',
+      today: '今天',
+      days7: '近7日',
+      days30: '近30日',
+      total: '总计',
+      other: '其他',
+      noData: '暂无数据',
+      staleData: '数据可能已过期',
+      buildingHistory: '正在整理历史用量',
     },
     'en-US': {
       title: 'Usage quota',
@@ -174,6 +205,16 @@
       expiresSuffix: '',
       locale: 'Switch language',
       settingsSaved: 'Refresh interval saved',
+      geminiTitle: 'Gemini AI Pro',
+      tokenUsage: 'Token usage',
+      today: 'Today',
+      days7: 'Last 7 days',
+      days30: 'Last 30 days',
+      total: 'Total',
+      other: 'Other',
+      noData: 'No data',
+      staleData: 'Data may be stale',
+      buildingHistory: 'Building usage history',
     },
   };
 
@@ -438,8 +479,18 @@
       const path = event.composedPath();
       const refresh = path.find(node => node?.classList?.contains('card-refresh'));
       const language = path.find(node => node?.classList?.contains('language-toggle'));
+      const rangeTab = path.find(node => node?.classList?.contains('quota-extension-range-tab'));
       if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
       else if (language) switchLocale();
+      else if (rangeTab) {
+        const range = rangeTab.dataset.range;
+        if (range && ['today', 'days7', 'days30'].includes(range)) {
+          extendedUsageState.tokens.selectedRange = range;
+          try { localStorage.setItem('codexQuotaHeader.selectedTokenRange', range); } catch { /* ignore */ }
+          renderPopover();
+          positionPopover();
+        }
+      }
     });
     (document.body || document.documentElement).appendChild(popover);
     return popover;
@@ -520,6 +571,97 @@
     }, 240);
   }
 
+  function renderExtendedUsage(dark) {
+    const isZh = settings.locale === 'zh-CN';
+    const anti = extendedUsageState.antigravity || {};
+    const tok = extendedUsageState.tokens || {};
+
+    const antiStaleBadge = anti.stale ? '<span class="quota-extension-badge muted">' + esc(t('staleData')) + '</span>' : '';
+    const antiErrorNote = (anti.error && (!anti.rows || anti.rows.length === 0))
+      ? '<div class="quota-extension-note error">' + esc(t('noData')) + '</div>'
+      : '';
+
+    let geminiRowsHtml = '';
+    if (anti.rows && anti.rows.length > 0) {
+      geminiRowsHtml = anti.rows.map(row => {
+        const color = getQuotaColor(row.remainingPercent);
+        const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
+          ? row.remainingPercent + '%'
+          : '—';
+        const countdownStr = isZh ? (row.countdown?.zh || '') : (row.countdown?.en || '');
+        const countdownText = (row.remainingPercent !== null && !row.unavailable && countdownStr)
+          ? ' · ' + countdownStr
+          : '';
+        const valueText = row.unavailable ? esc(t('noData')) : percentText + countdownText;
+
+        return '<div class="quota-extension-row">'
+          + '<span class="quota-extension-label">' + esc(row.label) + '</span>'
+          + '<span class="quota-extension-track"><span class="quota-extension-fill" style="width:' + (row.unavailable ? 0 : (row.remainingPercent || 0)) + '%;background:' + color + '"></span></span>'
+          + '<span class="quota-extension-value">' + esc(valueText) + '</span>'
+          + '</div>';
+      }).join('');
+    } else {
+      geminiRowsHtml = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
+    }
+
+    const geminiSection = '<div class="quota-extension-section">'
+      + '<div class="quota-extension-header">'
+      + '<div class="quota-extension-title">' + esc(t('geminiTitle')) + '</div>'
+      + antiStaleBadge
+      + '</div>'
+      + geminiRowsHtml
+      + antiErrorNote
+      + '</div>';
+
+    const selectedRange = tok.selectedRange || 'today';
+    const rangeTabs = '<div class="quota-extension-range-tabs">'
+      + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'today' ? 'is-active' : '') + '" data-range="today">' + esc(t('today')) + '</button>'
+      + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'days7' ? 'is-active' : '') + '" data-range="days7">' + esc(t('days7')) + '</button>'
+      + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'days30' ? 'is-active' : '') + '" data-range="days30">' + esc(t('days30')) + '</button>'
+      + '</div>';
+
+    let tokenContent = '';
+    if (tok.status === 'building') {
+      tokenContent = '<div class="quota-extension-note">' + esc(t('buildingHistory')) + '...</div>';
+    } else {
+      const rangeData = tok.ranges?.[selectedRange];
+      if (!rangeData) {
+        tokenContent = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
+      } else {
+        const totalRow = '<div class="quota-extension-token-row is-total">'
+          + '<span class="quota-extension-token-key">' + esc(t('total')) + '</span>'
+          + '<span class="quota-extension-token-amount">' + esc(rangeData.totalFormatted) + '</span>'
+          + '<span class="quota-extension-token-percent"></span>'
+          + '</div>';
+
+        const itemRows = (rangeData.items || []).map(item => {
+          const label = item.key === 'other' ? t('other') : item.label;
+          return '<div class="quota-extension-token-row">'
+            + '<span class="quota-extension-token-key">' + esc(label) + '</span>'
+            + '<span class="quota-extension-token-amount">' + esc(item.formatted) + '</span>'
+            + '<span class="quota-extension-token-percent">' + esc(item.percent) + '</span>'
+            + '</div>';
+        }).join('');
+
+        tokenContent = '<div class="quota-extension-token-table">' + totalRow + itemRows + '</div>';
+      }
+    }
+
+    const tokenSection = '<div class="quota-extension-section">'
+      + '<div class="quota-extension-header">'
+      + '<div class="quota-extension-title">' + esc(t('tokenUsage')) + '</div>'
+      + rangeTabs
+      + '</div>'
+      + tokenContent
+      + '</div>';
+
+    return '<div class="quota-extension">'
+      + geminiSection
+      + '<div class="quota-extension-divider"></div>'
+      + tokenSection
+      + '</div>';
+  }
+
   function popoverMarkup(dark) {
     const p = usageState.primary;
     const s = usageState.secondary;
@@ -545,16 +687,39 @@
     const rows = primaryRow + '<div class="row"><span class="label">' + esc(t('sevenDays')) + '</span><span class="track"><span class="fill" style="width:' + s.remainingPercent + '%;background:' + sColor + '"></span></span><span class="value popover-secondary-value">' + esc(t('remaining') + ' ' + s.remainingPercent + '%（' + formatDate(s.resetsAt, true) + ' ' + t('resetAt') + '）') + '</span></div>';
     const css = [
       '*{box-sizing:border-box}',
-      '.popover-shell{display:block;inline-size:max-content;min-inline-size:min(420px,calc(100vw - 24px));max-inline-size:calc(100vw - 24px);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(35,35,38,.97)' : 'rgba(255,255,255,.97)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.09)') + ';box-shadow:0 12px 34px rgba(0,0,0,.16);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border-radius:15px;padding:16px 18px}',
+      '.popover-shell{display:block;inline-size:max-content;min-inline-size:min(420px,calc(100vw - 24px));max-inline-size:calc(100vw - 24px);max-height:calc(100vh - 24px);overflow-y:auto;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(35,35,38,.97)' : 'rgba(255,255,255,.97)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.09)') + ';box-shadow:0 12px 34px rgba(0,0,0,.16);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border-radius:15px;padding:16px 18px}',
       '.popover-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:16px}',
       '.popover-title{font-size:16px;font-weight:750;line-height:1.2}.popover-subtitle{margin-top:4px;font-size:11px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';white-space:nowrap}',
       '.popover-actions{display:flex;align-items:center;gap:6px}.language-toggle,.card-refresh{height:28px;border:0;border-radius:8px;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + ';color:' + (dark ? '#F5F5F7' : '#3A3A3C') + ';cursor:pointer;padding:0 8px;font:600 11px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}.card-refresh{width:28px;padding:0;display:grid;place-items:center}.card-refresh .icon{width:16px;height:16px}.card-refresh.state-loading .icon{animation:quota-refresh-spin .72s linear infinite}.language-toggle:hover,.card-refresh:hover{background:' + (dark ? 'rgba(255,255,255,.16)' : 'rgba(0,0,0,.09)') + '}',
       '.rows{display:flex;flex-direction:column;gap:16px;margin-top:16px}.row{display:grid;grid-template-columns:52px 122px minmax(190px,1fr);align-items:center;gap:10px;min-height:22px}.label{font-size:13px;font-weight:700;text-align:right;white-space:nowrap}.track{height:12px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.value{min-width:0;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';font-size:12.5px;font-weight:520;line-height:1.35;white-space:nowrap;font-variant-numeric:tabular-nums}',
       '.divider{height:1px;background:' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + ';margin:15px 0}.meta-row{display:flex;align-items:center;gap:10px;min-height:28px;width:100%;font-size:12.5px}.meta-row.muted{color:' + (dark ? '#A1A1A6' : '#7A7A80') + '}.meta-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;white-space:nowrap;flex-wrap:nowrap}.credits-copy{white-space:nowrap;font-weight:600}.balance{color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';white-space:nowrap;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.04)') + ';border-radius:999px;padding:7px 13px;font-size:12px}.credit-details{margin-top:8px;padding-top:0}.credit-detail{display:flex;align-items:center;gap:10px;min-height:48px;padding:8px 12px;font-size:12.5px;border:1px solid ' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';border-radius:10px;background:' + (dark ? 'rgba(255,255,255,.035)' : 'rgba(248,249,250,.72)') + '}.credit-icon{display:block;flex:none;width:32px;height:32px;border-radius:8px;object-fit:cover}.credit-detail strong{flex:1;min-width:0;font-size:13px;font-weight:650;white-space:nowrap}.credit-detail span{flex:none;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';white-space:nowrap}.muted,.unavailable{color:' + (dark ? '#A1A1A6' : '#6E6E73') + '}.error-note{margin-top:10px;color:' + (dark ? '#FF6961' : '#C42B1C') + ';font-size:11.5px}',
       '@keyframes quota-refresh-spin{to{transform:rotate(360deg)}}@media(max-width:520px){.popover-subtitle{white-space:normal}.row{grid-template-columns:52px 100px minmax(150px,1fr);gap:10px}.value{white-space:normal}.meta-actions{gap:10px}}',
+      '.quota-extension{margin-top:15px;padding-top:15px;border-top:1px solid ' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + '}',
+      '.quota-extension-section{display:flex;flex-direction:column;gap:8px}',
+      '.quota-extension-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}',
+      '.quota-extension-title{font-size:13.5px;font-weight:700;letter-spacing:-.1px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.quota-extension-badge{font-size:11px;padding:2px 7px;border-radius:5px;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + ';color:' + (dark ? '#A1A1A6' : '#6E6E73') + '}',
+      '.quota-extension-row{display:grid;grid-template-columns:112px minmax(100px,1fr) auto;align-items:center;gap:10px;min-height:28px}',
+      '.quota-extension-label{font-size:12px;font-weight:650;text-align:left;white-space:nowrap}',
+      '.quota-extension-track{height:12px;min-width:100px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}',
+      '.quota-extension-fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}',
+      '.quota-extension-value{font-size:12px;font-weight:520;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}',
+      '.quota-extension-divider{height:1px;background:' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + ';margin:14px 0}',
+      '.quota-extension-range-tabs{display:flex;gap:4px}',
+      '.quota-extension-range-tab{border:0;background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.05)') + ';color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';border-radius:6px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;transition:background .15s,color .15s}',
+      '.quota-extension-range-tab:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.09)') + '}',
+      '.quota-extension-range-tab.is-active{background:' + (dark ? 'rgba(255,255,255,.22)' : 'rgba(0,0,0,.12)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.quota-extension-token-table{display:flex;flex-direction:column;gap:5px}',
+      '.quota-extension-token-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:12px;font-size:12.5px;padding:2px 0}',
+      '.quota-extension-token-row.is-total{font-weight:700;border-bottom:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.05)') + ';padding-bottom:6px;margin-bottom:2px}',
+      '.quota-extension-token-key{white-space:nowrap}',
+      '.quota-extension-token-amount{font-variant-numeric:tabular-nums;text-align:right;font-weight:600}',
+      '.quota-extension-token-percent{min-width:44px;text-align:right;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';font-size:11.5px;font-variant-numeric:tabular-nums}',
+      '.quota-extension-note{font-size:12px;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';padding:4px 0}',
     ].join('');
-    if (!ready) return '<style>' + css + '</style><div class="popover-shell"><div class="popover-header"><div><div class="popover-title">' + esc(t('title')) + '</div><div class="popover-subtitle">' + esc(t('subtitle')) + '</div></div><div class="popover-actions"><button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button><button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : t('refresh')) + '">' + iconMarkup('refresh') + '</button></div></div><div class="unavailable">' + esc(message) + '</div></div>';
-    return '<style>' + css + '</style><div class="popover-shell"><div class="popover-header"><div><div class="popover-title">' + esc(t('title')) + '</div><div class="popover-subtitle">' + esc(t('subtitle')) + '</div></div><div class="popover-actions"><button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button><button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button></div></div><div class="rows">' + rows + '</div><div class="divider"></div><div class="meta-row"><span class="meta-actions"><span class="credits-copy">' + esc(t('resetCredits') + ': ' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span><span class="balance">' + esc(t('balance') + ': ' + usageState.creditBalance.displayValue) + '</span></span></div><div class="credit-details">' + details + '</div>' + (usageState.error ? '<div class="error-note">' + esc(usageState.error) + '</div>' : '') + '</div>';
+    const extensionMarkup = renderExtendedUsage(dark);
+    if (!ready) return '<style>' + css + '</style><div class="popover-shell"><div class="popover-header"><div><div class="popover-title">' + esc(t('title')) + '</div><div class="popover-subtitle">' + esc(t('subtitle')) + '</div></div><div class="popover-actions"><button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button><button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : t('refresh')) + '">' + iconMarkup('refresh') + '</button></div></div><div class="unavailable">' + esc(message) + '</div>' + extensionMarkup + '</div>';
+    return '<style>' + css + '</style><div class="popover-shell"><div class="popover-header"><div><div class="popover-title">' + esc(t('title')) + '</div><div class="popover-subtitle">' + esc(t('subtitle')) + '</div></div><div class="popover-actions"><button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button><button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button></div></div><div class="rows">' + rows + '</div><div class="divider"></div><div class="meta-row"><span class="meta-actions"><span class="credits-copy">' + esc(t('resetCredits') + ': ' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span><span class="balance">' + esc(t('balance') + ': ' + usageState.creditBalance.displayValue) + '</span></span></div><div class="credit-details">' + details + '</div>' + (usageState.error ? '<div class="error-note">' + esc(usageState.error) + '</div>' : '') + extensionMarkup + '</div>';
   }
 
   function renderPopover() {
@@ -833,6 +998,32 @@
   window.__codexUsageHeaderRemount = ensureMounted;
   window.__codexUsageHeaderSetUsage__ = applyUsagePayload;
   window.__codexUsageHeaderSetRefreshError__ = applyRefreshError;
+
+  function applyExtendedUsagePayload(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (payload.antigravity && typeof payload.antigravity === 'object') {
+      extendedUsageState.antigravity = {
+        ...extendedUsageState.antigravity,
+        ...payload.antigravity,
+      };
+    }
+    if (payload.tokens && typeof payload.tokens === 'object') {
+      const savedRange = extendedUsageState.tokens.selectedRange ||
+        (typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.selectedTokenRange') : null) ||
+        'today';
+      extendedUsageState.tokens = {
+        ...extendedUsageState.tokens,
+        ...payload.tokens,
+        selectedRange: savedRange,
+      };
+    }
+    if (popover && popover.classList.contains('is-visible')) {
+      renderPopover();
+      positionPopover();
+    }
+  }
+
+  window.__codexUsageHeaderSetExtendedUsage__ = applyExtendedUsagePayload;
   window.__codexUsageHeaderTeardown__ = () => {
     if (mountTimer) clearTimeout(mountTimer);
     if (healthTimer) clearInterval(healthTimer);
@@ -856,6 +1047,7 @@
     getAvailableWidth: () => measureAvailableWidth(host),
     showPopover: () => showPopover({ immediate: true }),
     hidePopover: () => hidePopover(true),
+    getExtendedState: () => ({ ...extendedUsageState }),
   };
 
   document.addEventListener('pointerdown', event => {

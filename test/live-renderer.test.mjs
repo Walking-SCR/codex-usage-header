@@ -94,13 +94,13 @@ try {
   assert.equal(cardLayout.autoControl, false);
   assert.equal(cardLayout.modal, false);
   const localeBefore = await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState()?.settings.locale');
-  const topBeforeLocale = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector("codex-usage-header-host")?.shadowRoot?.querySelector(".details-trigger")?.innerText');
+  const cardBeforeLocale = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24")?.innerText');
   await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24 .language-toggle")?.click()');
   await new Promise(resolve => setTimeout(resolve, 100));
   const localeAfter = await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState()?.settings.locale');
-  const topAfterLocale = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector("codex-usage-header-host")?.shadowRoot?.querySelector(".details-trigger")?.innerText');
+  const cardAfterLocale = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24")?.innerText');
   assert.notEqual(localeAfter, localeBefore);
-  assert.notEqual(topAfterLocale, topBeforeLocale);
+  assert.notEqual(cardAfterLocale, cardBeforeLocale);
   await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24 .language-toggle")?.click()');
 
   // Re-open after the card's language rerender so this assertion

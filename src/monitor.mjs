@@ -6,6 +6,7 @@ import { openSync, closeSync, readFileSync, unlinkSync, writeFileSync, mkdirSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { AppServerClient } from './account-client.mjs';
+import { ExtendedUsageCoordinator } from './extended-usage.mjs';
 import { evaluateInTarget, fetchCdpTargets, launchAndInject, selectUsageTargets } from './launcher.mjs';
 
 const DEFAULT_CDP_PORT = 9229;
@@ -72,6 +73,12 @@ async function pushRefreshError(target, requestId, message) {
     `window.__codexUsageHeaderSetRefreshError__?.(${JSON.stringify(requestId)}, ${JSON.stringify(message)})`);
 }
 
+async function pushExtendedUsage(target, payload) {
+  const serialized = JSON.stringify(payload).replace(/</g, '\\u003c');
+  await evaluateInTarget(target.webSocketDebuggerUrl,
+    `window.__codexUsageHeaderSetExtendedUsage__?.(${serialized})`);
+}
+
 async function run(cdpPort) {
   if (!acquireLock()) return;
   const settings = readSettings();
@@ -84,6 +91,12 @@ async function run(cdpPort) {
   try {
     mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
     await launchAndInject(cdpPort, { launchIfNeeded: true });
+    const extendedCoordinator = new ExtendedUsageCoordinator();
+    extendedCoordinator.init();
+    let nextTokensAt = 0;
+    let nextGeminiAt = 0;
+    let extendedRevision = 0;
+    const deliveredExtendedRevision = new Map();
     let nextRefreshAt = 0;
     let payload = null;
     let revision = 0;
@@ -125,7 +138,31 @@ async function run(cdpPort) {
       const manualRequests = commands.filter(command => command.kind === 'refresh' && command.manual && command.id && !seenCommands.has(command.id));
       for (const command of manualRequests) seenCommands.add(command.id);
       const anyVisible = valid.some(item => !item.state.hidden);
+      const tokensIntervalMs = anyVisible ? 30000 : 180000;
+      const geminiIntervalMs = anyVisible ? 180000 : 600000;
       const refreshMs = anyVisible ? settings.refreshIntervalSeconds * 1000 : IDLE_REFRESH_MS;
+
+      if (Date.now() >= nextTokensAt) {
+        extendedCoordinator.scanTokensIncremental();
+        extendedRevision += 1;
+        nextTokensAt = Date.now() + tokensIntervalMs;
+      }
+
+      if (Date.now() >= nextGeminiAt) {
+        nextGeminiAt = Date.now() + geminiIntervalMs;
+        extendedCoordinator.refreshGemini().then(() => {
+          extendedRevision += 1;
+        }).catch(() => {});
+      }
+
+      if (manualRequests.length > 0) {
+        extendedCoordinator.scanTokensIncremental();
+        extendedCoordinator.refreshGemini().then(() => {
+          extendedRevision += 1;
+        }).catch(() => {});
+        extendedRevision += 1;
+      }
+
       const shouldRefresh = Date.now() >= nextRefreshAt || notificationPending || manualRequests.length > 0;
       let refreshed = false;
       let refreshError = null;
@@ -162,6 +199,15 @@ async function run(cdpPort) {
           deliveredRevision.set(key, revision);
         }).map(promise => promise.catch(() => {})));
       }
+
+      const extendedSnapshot = extendedCoordinator.getSnapshot();
+      await Promise.all(valid.map(async item => {
+        const key = item.target.id || item.target.webSocketDebuggerUrl;
+        if (deliveredExtendedRevision.get(key) === extendedRevision) return;
+        await pushExtendedUsage(item.target, extendedSnapshot);
+        deliveredExtendedRevision.set(key, extendedRevision);
+      }).map(promise => promise.catch(() => {})));
+
       await sleep(POLL_MS);
     }
   } finally {

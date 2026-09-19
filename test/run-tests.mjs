@@ -12,13 +12,15 @@
    'format.test.mjs',
    'polling.test.mjs',
    'resilience.test.mjs',
-   'launcher.test.mjs',
+  'launcher.test.mjs',
   'installer.test.mjs',
   'renderer-contract.test.mjs',
   'refresh-contract.test.mjs',
- ];
- 
- console.log('========================================================');
+  'extended-tokens.test.mjs',
+  'extended-gemini.test.mjs',
+];
+
+console.log('========================================================');
  console.log('🚀 Running Codex Quota Header Test Suite...');
  console.log('========================================================\n');
  
