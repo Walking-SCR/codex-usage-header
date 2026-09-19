@@ -6,7 +6,7 @@
    "main": "src/launcher.mjs",
    "scripts": {
      "test": "node test/run-tests.mjs",
-     "test:live": "node test/live-renderer.test.mjs",
+     "test:live": "node test/live-renderer.test.mjs && node test/interactive-v3.test.mjs",
      "test:resilience": "node test/resilience.test.mjs",
      "test:perf": "node test/polling.test.mjs",
      "launch": "node src/launcher.mjs"

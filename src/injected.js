@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '2.6.1';
+  const RUNTIME_VERSION = '3.0.1';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -61,6 +61,7 @@
   }
 
   let settings = safeSettings();
+  let googleCollapsed = (typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.googleCollapsed') === 'true' : false);
   let usageState = {
     status: 'loading',
     primary: null,
@@ -120,7 +121,8 @@
   const I18N = {
     'zh-CN': {
       title: '用量额度',
-      subtitle: '合理AI协作，人负责思考，AI负责执行',
+      subtitle: '合理AI协作，人员更思考，AI负责执行',
+      usageTitle: '使用额度',
       details: 'Codex 用量额度详情',
       fiveHours: '5小时',
       sevenDays: '7天',
@@ -140,7 +142,7 @@
       unavailable: '暂时无法读取额度，请确认 Codex 已登录',
       refresh: '刷新额度',
       refreshing: '正在刷新额度',
-      refreshFailed: '刷新失败，点击重试',
+      refreshFailed: '更新失败，当前显示上次数据',
       refreshTimeout: '刷新超时，请重试',
       autoRefresh: '自动刷新',
       seconds: '秒',
@@ -156,7 +158,7 @@
       expiresSuffix: '到期',
       locale: '切换语言',
       settingsSaved: '刷新频率已保存',
-      geminiTitle: 'Gemini AI Pro',
+      geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token处理量',
       today: '今天',
       days7: '近7日',
@@ -170,6 +172,7 @@
     'en-US': {
       title: 'Usage quota',
       subtitle: 'People think, AI executes—collaborate wisely',
+      usageTitle: 'Usage quota',
       details: 'Codex usage quota details',
       fiveHours: '5 hours',
       sevenDays: '7 days',
@@ -189,7 +192,7 @@
       unavailable: 'Quota unavailable. Confirm Codex is signed in.',
       refresh: 'Refresh quota',
       refreshing: 'Refreshing quota',
-      refreshFailed: 'Refresh failed. Click to retry',
+      refreshFailed: 'Refresh failed, showing previous data',
       refreshTimeout: 'Refresh timed out. Try again',
       autoRefresh: 'Auto refresh',
       seconds: 'sec',
@@ -205,7 +208,7 @@
       expiresSuffix: '',
       locale: 'Switch language',
       settingsSaved: 'Refresh interval saved',
-      geminiTitle: 'Gemini AI Pro',
+      geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token usage',
       today: 'Today',
       days7: 'Last 7 days',
@@ -481,9 +484,15 @@
       const language = path.find(node => node?.classList?.contains('language-toggle'));
       const rangeTab = path.find(node => node?.classList?.contains('quota-extension-range-tab'));
       const accountTab = path.find(node => node?.classList?.contains('quota-extension-account-tab'));
+      const googleToggle = path.find(node => node?.classList?.contains('quota-extension-toggle'));
       if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
       else if (language) switchLocale();
-      else if (rangeTab) {
+      else if (googleToggle) {
+        googleCollapsed = !googleCollapsed;
+        try { localStorage.setItem('codexQuotaHeader.googleCollapsed', String(googleCollapsed)); } catch { /* ignore */ }
+        renderPopover();
+        positionPopover();
+      } else if (rangeTab) {
         const range = rangeTab.dataset.range;
         if (range && ['today', 'days7', 'days30'].includes(range)) {
           extendedUsageState.tokens.selectedRange = range;
@@ -510,13 +519,11 @@
     const trigger = host.shadowRoot?.querySelector('.details-trigger');
     const rect = trigger?.getBoundingClientRect();
     if (!rect) return;
-    const width = Math.min(620, Math.max(360, window.innerWidth - CONFIG.viewportInset * 2));
-    popover.style.width = 'max-content';
+    const width = Math.min(600, Math.max(360, window.innerWidth - CONFIG.viewportInset * 2));
+    popover.style.width = width + 'px';
     popover.style.maxWidth = 'calc(100vw - ' + (CONFIG.viewportInset * 2) + 'px)';
-    const measured = Math.min(width, Math.max(360, popover.scrollWidth || width));
-    popover.style.width = measured + 'px';
     const height = popover.getBoundingClientRect().height || 260;
-    const left = Math.max(CONFIG.viewportInset, Math.min(window.innerWidth - measured - CONFIG.viewportInset, rect.right - measured));
+    const left = Math.max(CONFIG.viewportInset, Math.min(window.innerWidth - width - CONFIG.viewportInset, rect.right - width));
     const below = rect.bottom + CONFIG.popoverGap;
     const belowFits = below + height <= window.innerHeight - CONFIG.viewportInset;
     const top = belowFits ? below : Math.max(CONFIG.viewportInset, rect.top - height - CONFIG.popoverGap);
@@ -536,6 +543,7 @@
       target.classList.add('is-visible');
       target.setAttribute('aria-hidden', 'false');
       updateExpanded(true);
+      renderHost();
     };
     if (immediate) open();
     else popoverShowTimer = setTimeout(open, 100);
@@ -558,6 +566,7 @@
     popover?.classList.remove('is-visible');
     popover?.setAttribute('aria-hidden', 'true');
     updateExpanded(false);
+    renderHost();
   }
 
   function scheduleHidePopover() {
@@ -565,9 +574,6 @@
     if (popoverShowTimer) clearTimeout(popoverShowTimer);
     if (popoverHideTimer) clearTimeout(popoverHideTimer);
     popoverHideTimer = setTimeout(() => {
-      // A rerender can replace the card node while the pointer is already
-      // over it, so pointerenter may not fire again. Keep it open when CSS
-      // hit-testing still reports the host or card as hovered.
       const popRect = popover?.getBoundingClientRect();
       const pointerInPopover = popRect && lastPointerX !== null
         && lastPointerX >= popRect.left && lastPointerX <= popRect.right
@@ -604,58 +610,63 @@
     const activeAccount = accounts.find(a => a.email === selectedEmail) || accounts[0] || anti;
     const activeRows = activeAccount.rows || anti.rows || [];
 
-    const antiStaleBadge = (activeAccount.stale ?? anti.stale) ? '<span class="quota-extension-badge muted">' + esc(t('staleData')) + '</span>' : '';
-    const antiErrorNote = ((activeAccount.error || anti.error) && (!activeRows || activeRows.length === 0))
-      ? '<div class="quota-extension-note error">' + esc(t('noData')) + '</div>'
-      : '';
-
     let accountTabsHtml = '';
     if (accounts.length > 1) {
       accountTabsHtml = '<div class="quota-extension-account-tabs">'
-        + accounts.map(acc => {
+        + accounts.map((acc, idx) => {
           const isActive = (acc.email === (activeAccount.email || selectedEmail));
+          const tabLabel = acc.label || (acc.email ? acc.email.split('@')[0] : '') || (isZh ? ('账号' + (idx + 1)) : ('Account ' + (idx + 1)));
           return '<button type="button" class="quota-extension-account-tab ' + (isActive ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" title="' + esc(acc.email) + '">'
-            + esc(acc.label || acc.email)
+            + esc(tabLabel)
             + '</button>';
         }).join('')
         + '</div>';
     }
 
-    let geminiRowsHtml = '';
-    if (activeRows && activeRows.length > 0) {
-      geminiRowsHtml = activeRows.map(row => {
-        const color = getQuotaColor(row.remainingPercent);
-        const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
-          ? row.remainingPercent + '%'
-          : '—';
-        const countdownStr = isZh ? (row.countdown?.zh || '') : (row.countdown?.en || '');
-        const countdownText = (row.remainingPercent !== null && !row.unavailable && countdownStr)
-          ? ' · ' + countdownStr
-          : '';
-        const valueText = row.unavailable ? esc(t('noData')) : percentText + countdownText;
+    const chevronSvg = googleCollapsed
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>';
 
-        return '<div class="quota-extension-row">'
-          + '<span class="quota-extension-label">' + esc(row.label) + '</span>'
-          + '<span class="quota-extension-track"><span class="quota-extension-fill" style="width:' + (row.unavailable ? 0 : (row.remainingPercent || 0)) + '%;background:' + color + '"></span></span>'
-          + '<span class="quota-extension-value">' + esc(valueText) + '</span>'
+    let geminiRowsHtml = '';
+    if (!googleCollapsed) {
+      if (activeRows && activeRows.length > 0) {
+        geminiRowsHtml = '<div class="quota-extension-rows">'
+          + activeRows.map(row => {
+            const color = getQuotaColor(row.remainingPercent);
+            const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
+              ? row.remainingPercent + '%'
+              : '0%';
+            const countdownStr = isZh ? (row.countdown?.zh || '') : (row.countdown?.en || '');
+            const resetInfo = row.unavailable ? esc(t('noData')) : esc(countdownStr || t('imminent'));
+
+            return '<div class="quota-extension-row">'
+              + '<span class="quota-extension-label">' + esc(row.label) + '</span>'
+              + '<span class="quota-extension-track"><span class="quota-extension-fill" style="width:' + (row.unavailable ? 0 : (row.remainingPercent || 0)) + '%;background:' + color + '"></span></span>'
+              + '<span class="quota-extension-percent">' + esc(percentText) + '</span>'
+              + '<span class="quota-extension-value">' + esc(resetInfo) + '</span>'
+              + '</div>';
+          }).join('')
           + '</div>';
-      }).join('');
-    } else {
-      geminiRowsHtml = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
+      } else {
+        geminiRowsHtml = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
+      }
     }
 
-    const geminiSection = '<div class="quota-extension-section">'
-      + '<div class="quota-extension-header">'
+    const sparkleSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#007AFF"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg>';
+
+    const geminiSection = '<div class="card-section quota-extension-section">'
+      + '<div class="quota-extension-header' + (!googleCollapsed && activeRows?.length ? ' has-rows' : '') + '">'
       + '<div class="quota-extension-title-wrap">'
+      + sparkleSvg
       + '<span class="quota-extension-title">' + esc(t('geminiTitle')) + '</span>'
       + accountTabsHtml
       + '</div>'
-      + antiStaleBadge
+      + '<button type="button" class="quota-extension-toggle" aria-label="Toggle Google AI Pro">' + chevronSvg + '</button>'
       + '</div>'
       + geminiRowsHtml
-      + antiErrorNote
       + '</div>';
 
+    // Token Section
     const selectedRange = tok.selectedRange || 'today';
     const rangeTabs = '<div class="quota-extension-range-tabs">'
       + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'today' ? 'is-active' : '') + '" data-range="today">' + esc(t('today')) + '</button>'
@@ -672,29 +683,35 @@
         tokenContent = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
       } else {
         const totalFormatted = formatExtendedTokenCount(rangeData.total, isZh);
-        const totalRow = '<div class="quota-extension-token-row is-total">'
-          + '<span class="quota-extension-token-key">' + esc(t('total')) + '</span>'
-          + '<span class="quota-extension-token-amount">' + esc(totalFormatted) + '</span>'
-          + '<span class="quota-extension-token-percent"></span>'
-          + '</div>';
-
         const itemRows = (rangeData.items || []).map(item => {
           const label = item.key === 'other' ? t('other') : item.label;
           const formatted = formatExtendedTokenCount(item.tokens, isZh);
-          return '<div class="quota-extension-token-row">'
-            + '<span class="quota-extension-token-key">' + esc(label) + '</span>'
-            + '<span class="quota-extension-token-amount">' + esc(formatted) + '</span>'
-            + '<span class="quota-extension-token-percent">' + esc(item.percent) + '</span>'
+          const dotColor = item.key === 'gpt' ? '#007AFF' : item.key === 'gemini' ? '#AF52DE' : '#8E8E93';
+          return '<div class="token-model-row">'
+            + '<span class="token-model-label"><span class="token-model-dot" style="background:' + dotColor + '"></span>' + esc(label) + '</span>'
+            + '<span class="token-model-amount">' + esc(formatted) + '</span>'
+            + '<span class="token-model-pct">' + esc(item.percent) + '</span>'
             + '</div>';
         }).join('');
 
-        tokenContent = '<div class="quota-extension-token-table">' + totalRow + itemRows + '</div>';
+        tokenContent = '<div class="quota-extension-token-table">'
+          + '<div class="token-summary-col">'
+          + '<span class="token-summary-label">' + esc(t('total')) + '</span>'
+          + '<div class="token-summary-val"><span class="token-summary-number">' + esc(totalFormatted) + '</span><span class="token-summary-unit"> Token</span></div>'
+          + '</div>'
+          + '<div class="token-models-col">' + itemRows + '</div>'
+          + '</div>';
       }
     }
 
-    const tokenSection = '<div class="quota-extension-section">'
-      + '<div class="quota-extension-header">'
-      + '<div class="quota-extension-title">' + esc(t('tokenUsage')) + '</div>'
+    const chartSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#007AFF"><rect x="3" y="12" width="4" height="9" rx="1"></rect><rect x="10" y="7" width="4" height="14" rx="1"></rect><rect x="17" y="3" width="4" height="18" rx="1"></rect></svg>';
+
+    const tokenSection = '<div class="card-section quota-extension-section">'
+      + '<div class="quota-extension-header has-rows">'
+      + '<div class="quota-extension-title-wrap">'
+      + chartSvg
+      + '<span class="quota-extension-title">' + esc(t('tokenUsage')) + '</span>'
+      + '</div>'
       + rangeTabs
       + '</div>'
       + tokenContent
@@ -702,7 +719,6 @@
 
     return '<div class="quota-extension">'
       + geminiSection
-      + '<div class="quota-extension-divider"></div>'
       + tokenSection
       + '</div>';
   }
@@ -715,7 +731,10 @@
     const ready = Boolean(s && (!showFiveHours || p));
     const pColor = getQuotaColor(p?.remainingPercent);
     const sColor = getQuotaColor(s?.remainingPercent);
+    const pColorText = getValueColor(p?.remainingPercent, dark);
+    const sColorText = getValueColor(s?.remainingPercent, dark);
     const message = usageState.status === 'error' ? t('unavailable') : t('syncing');
+
     const details = usageState.resetCreditDetails.length
       ? usageState.resetCreditDetails.map(item => {
         const expiry = item.expiresAt
@@ -723,59 +742,162 @@
             ? t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone') + ' ' + t('expiresSuffix')
             : t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone')
           : t('noResetDetails');
-        return '<div class="credit-detail">' + iconMarkup('resetCredit', 'credit-icon') + '<strong>' + esc(t('fullReset')) + '</strong><span>' + esc(expiry) + '</span></div>';
+        return '<div class="credit-detail"><strong>' + esc(t('fullReset')) + '</strong><span>' + esc(expiry) + '</span></div>';
       }).join('')
-      : '<div class="credit-detail muted">' + esc(t('noResetDetails')) + '</div>';
+      : '<div class="credit-detail muted"><span>' + esc(t('noResetDetails')) + '</span></div>';
+
+    const pPercent = (p?.remainingPercent ?? '—') + '%';
+    const sPercent = (s?.remainingPercent ?? '—') + '%';
+    const pInfoTime = p ? formatDate(p.resetsAt) + ' ' + t('resetAt') : '--:--';
+    const pInfoRemain = weeklyExhausted ? '' : (t('untilReset') + ' ' + formatDuration(p?.secondsRemaining));
+    const sInfoTime = s ? formatDate(s.resetsAt, true) + ' ' + t('resetAt') : '--:--';
+    const sInfoRemain = s ? t('untilReset') + ' ' + formatDuration(s?.secondsRemaining) : '';
+
     const primaryRow = showFiveHours
-      ? '<div class="row"><span class="label">' + esc(t('fiveHours')) + '</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value popover-primary-value">' + esc(t('remaining') + ' ' + (p?.remainingPercent ?? '—') + '%（' + formatDate(p?.resetsAt) + ' ' + t('resetAt') + (weeklyExhausted ? '' : '，' + t('untilReset') + ' ' + formatDuration(p?.secondsRemaining)) + '）') + '</span></div>'
+      ? '<div class="row">'
+        + '<span class="label">' + esc(t('fiveHours')) + '</span>'
+        + '<span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span>'
+        + '<span class="percent" style="color:' + pColorText + '">' + esc(pPercent) + '</span>'
+        + '<span class="value popover-primary-value"><span class="info-time">' + esc(pInfoTime) + '</span><span class="info-remain">' + esc(pInfoRemain) + '</span></span>'
+        + '</div>'
       : '';
-    const rows = ready
-      ? (primaryRow + '<div class="row"><span class="label">' + esc(t('sevenDays')) + '</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value popover-secondary-value">' + esc(t('remaining') + ' ' + (s?.remainingPercent ?? '—') + '%（' + formatDate(s?.resetsAt, true) + ' ' + t('resetAt') + '）') + '</span></div>')
-      : '';
+    const secondaryRow = '<div class="row">'
+      + '<span class="label">' + esc(t('sevenDays')) + '</span>'
+      + '<span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span>'
+      + '<span class="percent" style="color:' + sColorText + '">' + esc(sPercent) + '</span>'
+      + '<span class="value popover-secondary-value"><span class="info-time">' + esc(sInfoTime) + '</span><span class="info-remain">' + esc(sInfoRemain) + '</span></span>'
+      + '</div>';
+
+    const usageContent = ready
+      ? '<div class="card-section usage-section">'
+        + '<div class="card-section-header"><span class="card-section-title">' + esc(t('usageTitle')) + '</span></div>'
+        + '<div class="rows">' + primaryRow + secondaryRow + '</div>'
+        + '</div>'
+      : '<div class="card-section usage-section"><div class="unavailable">' + esc(message) + '</div></div>';
+
+    const voucherBanner = '<div class="meta-row">'
+      + '<span class="meta-actions">'
+      + '<span class="credits-copy">'
+      + '<svg class="credit-icon" width="15" height="15" viewBox="0 0 24 24" fill="#007AFF"><path d="M20 4H4c-1.1 0-2 .9-2 2v3c1.1 0 2 .9 2 2s-.9 2-2 2v3c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2v-3c-1.1 0-2-.9-2-2s.9-2 2-2V6c0-1.1-.9-2-2-2zm-9 12H9v-2h2v2zm0-4H9v-2h2v2zm0-4H9V6h2v2zm4 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V6h2v2z"/></svg>'
+      + '<span>' + esc(t('resetCredits') + '：' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span>'
+      + '<span class="info-bubble" title="' + esc(t('resetDetails')) + '">ⓘ</span>'
+      + '</span>'
+      + '<span class="balance">' + esc(t('balance') + '：' + usageState.creditBalance.displayValue) + '</span>'
+      + '</span>'
+      + '</div>';
+
+    const voucherSection = '<div class="reset-voucher-section">'
+      + voucherBanner
+      + '<div class="credit-details">' + details + '</div>'
+      + '</div>';
+
+    const extensionMarkup = renderExtendedUsage(dark);
+    const errorNote = usageState.error ? '<div class="refresh-error-note">' + esc(usageState.error) + '</div>' : '';
+
     const css = [
       '*{box-sizing:border-box}',
-      '.popover-shell{display:block;inline-size:max-content;min-inline-size:min(420px,calc(100vw - 24px));max-inline-size:calc(100vw - 24px);max-height:calc(100vh - 24px);overflow-y:auto;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(35,35,38,.97)' : 'rgba(255,255,255,.97)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.09)') + ';box-shadow:0 12px 34px rgba(0,0,0,.16);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border-radius:15px;padding:16px 18px}',
-      '.popover-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:16px}',
-      '.popover-title{font-size:16px;font-weight:750;line-height:1.2}.popover-subtitle{margin-top:4px;font-size:11px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';white-space:nowrap}',
-      '.popover-actions{display:flex;align-items:center;gap:6px}.language-toggle,.card-refresh{height:28px;border:0;border-radius:8px;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + ';color:' + (dark ? '#F5F5F7' : '#3A3A3C') + ';cursor:pointer;padding:0 8px;font:600 11px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}.card-refresh{width:28px;padding:0;display:grid;place-items:center}.card-refresh .icon{width:16px;height:16px}.card-refresh.state-loading .icon{animation:quota-refresh-spin .72s linear infinite}.language-toggle:hover,.card-refresh:hover{background:' + (dark ? 'rgba(255,255,255,.16)' : 'rgba(0,0,0,.09)') + '}',
-      '.rows{display:flex;flex-direction:column;gap:16px;margin-top:16px}.row{display:grid;grid-template-columns:52px 122px minmax(190px,1fr);align-items:center;gap:10px;min-height:22px}.label{font-size:13px;font-weight:700;text-align:right;white-space:nowrap}.track{height:12px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.value{min-width:0;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';font-size:12.5px;font-weight:520;line-height:1.35;white-space:nowrap;font-variant-numeric:tabular-nums}',
-      '.divider{height:1px;background:' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + ';margin:15px 0}.meta-row{display:flex;align-items:center;gap:10px;min-height:28px;width:100%;font-size:12.5px}.meta-row.muted{color:' + (dark ? '#A1A1A6' : '#7A7A80') + '}.meta-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;white-space:nowrap;flex-wrap:nowrap}.credits-copy{white-space:nowrap;font-weight:600}.balance{color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';white-space:nowrap;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.04)') + ';border-radius:999px;padding:7px 13px;font-size:12px}.credit-details{margin-top:8px;padding-top:0}.credit-detail{display:flex;align-items:center;gap:10px;min-height:48px;padding:8px 12px;font-size:12.5px;border:1px solid ' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';border-radius:10px;background:' + (dark ? 'rgba(255,255,255,.035)' : 'rgba(248,249,250,.72)') + '}.credit-icon{display:block;flex:none;width:32px;height:32px;border-radius:8px;object-fit:cover}.credit-detail strong{flex:1;min-width:0;font-size:13px;font-weight:650;white-space:nowrap}.credit-detail span{flex:none;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';white-space:nowrap}.muted,.unavailable{color:' + (dark ? '#A1A1A6' : '#6E6E73') + '}.error-note{margin-top:10px;color:' + (dark ? '#FF6961' : '#C42B1C') + ';font-size:11.5px}',
-      '.credit-details{display:flex;flex-direction:column;gap:5px;margin-top:8px;padding-top:0}',
-      '@keyframes quota-refresh-spin{to{transform:rotate(360deg)}}@media(max-width:520px){.popover-subtitle{white-space:normal}.row{grid-template-columns:52px 100px minmax(150px,1fr);gap:10px}.value{white-space:normal}.meta-actions{gap:10px}}',
-      '.quota-extension{margin-top:15px;padding-top:15px;border-top:1px solid ' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + '}',
-      '.quota-extension-section{display:flex;flex-direction:column;gap:8px}',
-      '.quota-extension-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}',
-      '.quota-extension-title-wrap{display:flex;align-items:center;gap:8px}',
-      '.quota-extension-account-tabs{display:flex;gap:3px;background:' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.05)') + ';padding:2px;border-radius:7px}',
-      '.quota-extension-account-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';border-radius:5px;padding:2px 7px;font-size:11px;font-weight:550;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap;max-width:96px;overflow:hidden;text-overflow:ellipsis}',
-      '.quota-extension-account-tab:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
-      '.quota-extension-account-tab.is-active{background:' + (dark ? 'rgba(255,255,255,.20)' : 'rgba(255,255,255,.94)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + ';box-shadow:0 1px 2px rgba(0,0,0,.10)}',
-      '.quota-extension-title{font-size:13.5px;font-weight:700;letter-spacing:-.1px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
-      '.quota-extension-badge{font-size:11px;padding:2px 7px;border-radius:5px;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + ';color:' + (dark ? '#A1A1A6' : '#6E6E73') + '}',
-      '.quota-extension-row{display:grid;grid-template-columns:112px minmax(100px,1fr) auto;align-items:center;gap:10px;min-height:28px}',
-      '.quota-extension-label{font-size:12px;font-weight:650;text-align:left;white-space:nowrap}',
-      '.quota-extension-track{height:12px;min-width:100px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}',
-      '.quota-extension-fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}',
-      '.quota-extension-value{font-size:12px;font-weight:520;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}',
-      '.quota-extension-divider{height:1px;background:' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + ';margin:14px 0}',
-      '.quota-extension-range-tabs{display:flex;gap:4px}',
-      '.quota-extension-range-tab{border:0;background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.05)') + ';color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';border-radius:6px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;transition:background .15s,color .15s}',
-      '.quota-extension-range-tab:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.09)') + '}',
-      '.quota-extension-range-tab.is-active{background:' + (dark ? 'rgba(255,255,255,.22)' : 'rgba(0,0,0,.12)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
-      '.quota-extension-token-table{display:flex;flex-direction:column;gap:5px}',
-      '.quota-extension-token-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:12px;font-size:12.5px;padding:2px 0}',
-      '.quota-extension-token-row.is-total{font-weight:700;border-bottom:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.05)') + ';padding-bottom:6px;margin-bottom:2px}',
-      '.quota-extension-token-key{white-space:nowrap}',
-      '.quota-extension-token-amount{font-variant-numeric:tabular-nums;text-align:right;font-weight:600}',
-      '.quota-extension-token-percent{min-width:44px;text-align:right;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';font-size:11.5px;font-variant-numeric:tabular-nums}',
-      '.quota-extension-note{font-size:12px;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';padding:4px 0}',
-    ].join('');
-    const extensionMarkup = renderExtendedUsage(dark);
-    if (!ready) return '<style>' + css + '</style><div class="popover-shell"><div class="popover-header"><div><div class="popover-title">' + esc(t('title')) + '</div><div class="popover-subtitle">' + esc(t('subtitle')) + '</div></div><div class="popover-actions"><button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button><button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : t('refresh')) + '">' + iconMarkup('refresh') + '</button></div></div><div class="unavailable">' + esc(message) + '</div>' + extensionMarkup + '</div>';
-    return '<style>' + css + '</style><div class="popover-shell"><div class="popover-header"><div><div class="popover-title">' + esc(t('title')) + '</div><div class="popover-subtitle">' + esc(t('subtitle')) + '</div></div><div class="popover-actions"><button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button><button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button></div></div><div class="rows">' + rows + '</div><div class="divider"></div><div class="meta-row"><span class="meta-actions"><span class="credits-copy">' + esc(t('resetCredits') + ': ' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span><span class="balance">' + esc(t('balance') + ': ' + usageState.creditBalance.displayValue) + '</span></span></div><div class="credit-details">' + details + '</div>' + (usageState.error ? '<div class="error-note">' + esc(usageState.error) + '</div>' : '') + extensionMarkup + '</div>';
-  }
+      '.popover-shell{display:block;width:600px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);overflow-y:auto;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(32,32,35,.98)' : 'rgba(255,255,255,.98)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)') + ';box-shadow:0 16px 40px rgba(0,0,0,.14);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-radius:16px;padding:18px 20px}',
+      '.popover-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}',
+      '.popover-title-group{display:flex;flex-direction:column;gap:3px}',
+      '.popover-title{font-size:17px;font-weight:750;letter-spacing:-.2px;line-height:1.2}',
+      '.popover-subtitle{font-size:11.5px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';line-height:1.3;white-space:nowrap}',
+      '.popover-actions{display:flex;align-items:center;gap:8px}',
+      '.language-toggle,.card-refresh{height:28px;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.04)') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';cursor:pointer;font:600 11.5px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;transition:all .15s ease}',
+      '.language-toggle{padding:0 10px}',
+      '.card-refresh{width:28px;padding:0;display:grid;place-items:center}',
+      '.card-refresh .icon,.card-refresh svg{width:15px;height:15px}',
+      '.card-refresh.state-loading .icon,.card-refresh.state-loading svg{animation:quota-refresh-spin .72s linear infinite}',
+      '.language-toggle:hover,.card-refresh:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + '}',
+      '@keyframes quota-refresh-spin{to{transform:rotate(360deg)}}',
+      '.refresh-error-note{font-size:11.5px;color:#FF3B30;margin-top:4px}',
 
-  function renderPopover() {
+      '.card-section{background:' + (dark ? 'rgba(255,255,255,.04)' : '#F8F9FA') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.04)') + ';border-radius:12px;padding:14px 16px;margin-top:10px}',
+      '.card-section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}',
+      '.card-section-title{font-size:13.5px;font-weight:700;letter-spacing:-.1px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+
+      '.usage-section .rows{display:flex;flex-direction:column;gap:12px}',
+      '.row{display:grid;grid-template-columns:52px minmax(140px,1fr) 46px minmax(110px,auto);align-items:center;gap:10px;min-height:28px}',
+      '@media(max-width:520px){.row{grid-template-columns:52px 122px minmax(150px,1fr);gap:10px}}',
+      '.row .label{font-size:13px;font-weight:600;text-align:left;white-space:nowrap;width:52px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.row .track{height:12px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}',
+      '.row .fill{display:block;height:100%;border-radius:999px;transition:width .2s ease,background .2s ease}',
+      '.row .percent{font-size:12.5px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}',
+      '.row .value{display:flex;flex-direction:column;align-items:flex-end;justify-content:center;text-align:right;line-height:1.35;white-space:nowrap;min-width:110px}',
+      '.row .value .info-time{font-size:11.5px;font-weight:500;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + '}',
+      '.row .value .info-remain{font-size:11px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + '}',
+
+      '.reset-voucher-section{margin-top:10px}',
+      '.meta-row{display:flex;align-items:center;width:100%;background:' + (dark ? 'rgba(10,132,255,.14)' : 'rgba(0,122,255,.07)') + ';border:1px solid ' + (dark ? 'rgba(10,132,255,.24)' : 'rgba(0,122,255,.14)') + ';border-radius:10px;padding:8px 14px}',
+      '.meta-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;white-space:nowrap;flex-wrap:nowrap}',
+      '.credits-copy{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-weight:600;font-size:12.5px;color:' + (dark ? '#70B4FF' : '#0066CC') + '}',
+      '.credits-copy .credit-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}',
+      '.credits-copy .info-bubble{cursor:default;font-size:13px;color:' + (dark ? '#70B4FF' : '#007AFF') + ';opacity:.8;margin-left:2px}',
+      '.balance{color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';font-size:12px;font-weight:550;white-space:nowrap}',
+      '.credit-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin-top:8px;padding-top:0;border-top-width:0px}',
+      '.credit-detail{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding:10px 14px;font-size:12px;border:1px solid ' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';border-radius:10px;background:' + (dark ? 'rgba(255,255,255,.04)' : '#FFFFFF') + ';transition:all .15s ease}',
+      '.credit-detail:hover{border-color:' + (dark ? 'rgba(10,132,255,.4)' : 'rgba(0,122,255,.28)') + ';background:' + (dark ? 'rgba(10,132,255,.08)' : 'rgba(0,122,255,.02)') + '}',
+      '.credit-detail strong{font-size:12.5px;font-weight:650;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.credit-detail span{font-size:11px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';white-space:nowrap;margin-top:3px}',
+
+      '.quota-extension{}',
+      '.quota-extension-section{background:' + (dark ? 'rgba(255,255,255,.04)' : '#F8F9FA') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.04)') + ';border-radius:12px;padding:14px 16px;margin-top:10px}',
+      '.quota-extension-header{display:flex;align-items:center;justify-content:space-between}',
+      '.quota-extension-header.has-rows{margin-bottom:12px}',
+      '.quota-extension-title-wrap{display:flex;align-items:center;gap:8px}',
+      '.quota-extension-title{font-size:13.5px;font-weight:700;letter-spacing:-.1px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.quota-extension-account-tabs{display:flex;gap:4px;background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.05)') + ';padding:2px 3px;border-radius:8px}',
+      '.quota-extension-account-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';border-radius:6px;padding:2px 9px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s ease;white-space:nowrap}',
+      '.quota-extension-account-tab:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.quota-extension-account-tab.is-active{background:#007AFF;color:#FFFFFF;box-shadow:0 1px 2px rgba(0,122,255,.3)}',
+      '.quota-extension-toggle{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';padding:4px;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s ease}',
+      '.quota-extension-toggle:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + ';background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + '}',
+      '.quota-extension-rows{display:flex;flex-direction:column;gap:10px}',
+      '.quota-extension-row{display:grid;grid-template-columns:112px minmax(100px,1fr) 38px 96px;align-items:center;gap:10px;min-height:26px}',
+      '.quota-extension-label{font-size:12.5px;font-weight:600;text-align:left;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.quota-extension-track{height:12px;min-width:100px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}',
+      '.quota-extension-fill{display:block;height:100%;border-radius:999px;transition:width .2s ease,background .2s ease}',
+      '.quota-extension-percent{font-size:12px;font-weight:650;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.quota-extension-value{font-size:11.5px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}',
+
+      '.quota-extension-range-tabs{display:flex;gap:3px;background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.05)') + ';padding:2px 3px;border-radius:8px}',
+      '.quota-extension-range-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s ease}',
+      '.quota-extension-range-tab:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.quota-extension-range-tab.is-active{background:#007AFF;color:#FFFFFF;box-shadow:0 1px 2px rgba(0,122,255,.3)}',
+
+      '.quota-extension-token-table{display:grid;grid-template-columns:140px 1fr;align-items:center;gap:20px;margin-top:10px}',
+      '.token-summary-col{display:flex;flex-direction:column;justify-content:center}',
+      '.token-summary-label{font-size:12px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';font-weight:500;margin-bottom:2px}',
+      '.token-summary-val{display:flex;align-items:baseline;gap:3px}',
+      '.token-summary-number{font-size:22px;font-weight:750;letter-spacing:-.4px;font-variant-numeric:tabular-nums;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.token-summary-unit{font-size:12px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';font-weight:500}',
+      '.token-models-col{display:flex;flex-direction:column;gap:6px}',
+      '.token-model-row{display:grid;grid-template-columns:72px minmax(80px,1fr) 48px;align-items:center;gap:10px;font-size:12.5px}',
+      '.token-model-label{display:flex;align-items:center;gap:6px;font-weight:500;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';white-space:nowrap}',
+      '.token-model-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}',
+      '.token-model-amount{text-align:right;font-weight:650;font-variant-numeric:tabular-nums;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';white-space:nowrap}',
+      '.token-model-pct{text-align:right;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}',
+      '.quota-extension-note{font-size:12px;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';padding:6px 0}',
+      '.unavailable{font-size:12.5px;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';padding:8px 0}',
+    ].join('');
+
+    return '<style>' + css + '</style>'
+      + '<div class="popover-shell">'
+      + '<div class="popover-header">'
+      + '<div class="popover-title-group">'
+      + '<div class="popover-title">' + esc(t('title')) + '</div>'
+      + '<div class="popover-subtitle">' + esc(t('subtitle')) + '</div>'
+      + errorNote
+      + '</div>'
+      + '<div class="popover-actions">'
+      + '<button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button>'
+      + '<button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button>'
+      + '</div>'
+      + '</div>'
+      + usageContent
+      + voucherSection
+      + extensionMarkup
+      + '</div>';
+  }  function renderPopover() {
     const target = ensurePopover();
     const dark = document.documentElement.classList.contains('dark') || window.matchMedia('(prefers-color-scheme: dark)').matches;
     target.innerHTML = popoverMarkup(dark);
@@ -842,6 +964,8 @@
     const pieLabel = showFiveHours ? '5h' : '7d';
     const pPie = ' style="--remaining:' + (p?.remainingPercent || 0) + '%;color:' + pColor + '"';
     const sPie = ' style="--remaining:' + (s?.remainingPercent || 0) + '%;color:' + sColor + '"';
+    const detailsOpen = popoverState !== 'closed';
+    const arrowMarkup = '<span class="capsule-arrow" aria-hidden="true">' + (detailsOpen ? '▴' : '▾') + '</span>';
     let content;
     if (!showFiveHours && currentMode === 'nano') {
       content = '<span class="label">' + pieLabel + '</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
@@ -850,19 +974,17 @@
     } else if (!showFiveHours && currentMode === 'minimal') {
       content = '<span class="label">7d</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
     } else if (!showFiveHours) {
-      content = '<span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
+      content = '<span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span><span class="capsule-arrow" aria-hidden="true">' + (detailsOpen ? '▴' : '▾') + '</span>';
     } else if (currentMode === 'minimal') {
       content = '<span class="label">5h</span><span class="mini-pie"' + pPie + ' aria-hidden="true"></span><span class="divider"></span><span class="label">7d</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
     } else if (currentMode === 'compact') {
-      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value" style="color:' + pColorText + '">' + pValue + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
+      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value" style="color:' + pColorText + '">' + pValue + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>' + arrowMarkup;
     } else {
-      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>';
+      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>' + arrowMarkup;
     }
-    const detailsOpen = popoverState !== 'closed';
-    const style = '<style>*{box-sizing:border-box}:host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}.capsule{height:34px;min-width:0;padding:0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}.details-trigger{height:32px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.details-trigger:focus-visible{outline:2px solid ' + (dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)') + ';outline-offset:2px}.label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}.track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ' + CONFIG.colors.track + ' var(--remaining) 100%);transform:rotate(-90deg)}.value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}.primary-countdown{min-width:0}.divider{flex:none;width:1px;height:16px;margin:0;background:' + (dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)') + '}</style><div class="capsule"><button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button></div>';
+    const style = '<style>*{box-sizing:border-box}:host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}.capsule{height:34px;min-width:0;padding:0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}.details-trigger{height:32px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.details-trigger:focus-visible{outline:2px solid ' + (dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)') + ';outline-offset:2px}.label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}.track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ' + CONFIG.colors.track + ' var(--remaining) 100%);transform:rotate(-90deg)}.value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}.primary-countdown{min-width:0}.divider{flex:none;width:1px;height:16px;margin:0;background:' + (dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)') + '}.capsule-arrow{flex:none;font-size:10px;color:' + (dark ? '#A1A1A6' : '#8E8E93') + ';margin-left:2px;line-height:1;display:inline-flex;align-items:center;justify-content:center}</style><div class="capsule"><button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button></div>';
     host.shadowRoot.innerHTML = style;
   }
-
   function updateMode() {
     if (!host) return;
     const available = measureAvailableWidth(host);
