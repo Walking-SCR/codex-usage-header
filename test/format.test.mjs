@@ -62,7 +62,17 @@
    assert.equal(normalized.primary.remainingPercent, 72);
    assert.equal(normalized.secondary.usedPercent, 15);
    assert.equal(normalized.secondary.remainingPercent, 85);
-   assert.equal(normalized.resetCredits, 2);
- }
+  assert.equal(normalized.resetCredits, 2);
+
+  const weeklyExhausted = normalizeUsagePayload({
+    rate_limit: {
+      primary_window: { used_percent: 28, reset_after_seconds: 7200 },
+      secondary_window: { used_percent: 100, reset_after_seconds: 310000 },
+    },
+  });
+  assert.equal(weeklyExhausted.secondary.remainingPercent, 0);
+  assert.equal(weeklyExhausted.primary.remainingPercent, 0);
+  assert.equal(weeklyExhausted.primary.usedPercent, 100);
+}
  
  console.log('✓ All Formatting & Adaptive Breakpoint tests passed!');

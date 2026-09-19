@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '2.5.4';
+  const RUNTIME_VERSION = '2.5.6';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -204,6 +204,12 @@
     return remaining <= 10 ? (dark ? '#FF453A' : '#FF3B30') : (dark ? '#FFD60A' : '#C66A00');
   }
 
+  function formatCreditBalance(value) {
+    if (value === null || value === undefined || value === '') return '—';
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric.toFixed(2) : String(value);
+  }
+
   function formatDuration(seconds) {
     if (!Number.isFinite(seconds) || seconds <= 0) return t('imminent');
     const d = Math.floor(seconds / 86400);
@@ -256,6 +262,11 @@
     const primary = parseWindow(root.primary || root.primary_window || root.primaryWindow);
     const secondary = parseWindow(secondarySource);
     if (!secondary || (showFiveHours && !primary)) return null;
+    // The weekly window is an account-wide ceiling. Once it is exhausted,
+    // the shorter window cannot be usable even if its raw bucket is ahead.
+    const effectivePrimary = primary && secondary.remainingPercent === 0
+      ? { ...primary, usedPercent: 100, remainingPercent: 0 }
+      : primary;
     const credits = root.credits || raw.credits || {};
     const balance = credits.balance ?? credits.balanceText ?? raw.balance ?? null;
     const resetCredits = raw.rateLimitResetCredits;
@@ -274,13 +285,13 @@
     const unlimited = credits.unlimited === true || credits.unlimited === 'true';
     return {
       status: 'ready',
-      primary,
+      primary: effectivePrimary,
       secondary,
       planType: planType || null,
       showFiveHours,
       creditBalance: {
         value: balance,
-        displayValue: unlimited ? t('unlimited') : (balance === null || balance === undefined ? '—' : String(balance)),
+        displayValue: unlimited ? t('unlimited') : formatCreditBalance(balance),
         unlimited,
       },
       resetCredits: Number.isFinite(availableCount) ? availableCount : null,

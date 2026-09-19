@@ -94,12 +94,15 @@ export function resolveAdaptiveMode(width, currentMode = null, hysteresis = 24) 
      };
    }
  
-   const primaryWindow = parseWindow(primary);
-   const secondaryWindow = parseWindow(secondary);
+  const primaryWindow = parseWindow(primary);
+  const secondaryWindow = parseWindow(secondary);
+  const effectivePrimaryWindow = primaryWindow && secondaryWindow?.remainingPercent === 0
+    ? { ...primaryWindow, usedPercent: 100, remainingPercent: 0 }
+    : primaryWindow;
    const resetCredits = Number(raw.rateLimitResetCredits ?? raw.rate_limit_reset_credits ?? 0);
  
    return {
-     primary: primaryWindow,
+    primary: effectivePrimaryWindow,
      secondary: secondaryWindow,
      resetCredits: Number.isFinite(resetCredits) ? resetCredits : 0,
      timestamp: Date.now(),
