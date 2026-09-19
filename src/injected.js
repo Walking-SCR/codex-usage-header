@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.0.1';
+  const RUNTIME_VERSION = '3.1.0';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -623,15 +623,15 @@
         + '</div>';
     }
 
-    const chevronSvg = googleCollapsed
-      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>'
-      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>';
+    const chevronSvg = '<svg class="chevron-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">'
+      + (googleCollapsed ? '<polyline points="6 9 12 15 18 9"></polyline>' : '<polyline points="18 15 12 9 6 15"></polyline>')
+      + '</svg>';
 
     let geminiRowsHtml = '';
     if (!googleCollapsed) {
       if (activeRows && activeRows.length > 0) {
         geminiRowsHtml = '<div class="quota-extension-rows">'
-          + activeRows.map(row => {
+          + activeRows.map((row, idx) => {
             const color = getQuotaColor(row.remainingPercent);
             const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
               ? row.remainingPercent + '%'
@@ -639,7 +639,7 @@
             const countdownStr = isZh ? (row.countdown?.zh || '') : (row.countdown?.en || '');
             const resetInfo = row.unavailable ? esc(t('noData')) : esc(countdownStr || t('imminent'));
 
-            return '<div class="quota-extension-row">'
+            return '<div class="quota-extension-row' + (idx === activeRows.length - 1 ? ' is-last' : '') + '">'
               + '<span class="quota-extension-label">' + esc(row.label) + '</span>'
               + '<span class="quota-extension-track"><span class="quota-extension-fill" style="width:' + (row.unavailable ? 0 : (row.remainingPercent || 0)) + '%;background:' + color + '"></span></span>'
               + '<span class="quota-extension-percent">' + esc(percentText) + '</span>'
@@ -652,16 +652,18 @@
       }
     }
 
-    const sparkleSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#007AFF"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg>';
+    const sparkleSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#1A73E8"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg>';
 
     const geminiSection = '<div class="card-section quota-extension-section">'
       + '<div class="quota-extension-header' + (!googleCollapsed && activeRows?.length ? ' has-rows' : '') + '">'
       + '<div class="quota-extension-title-wrap">'
       + sparkleSvg
       + '<span class="quota-extension-title">' + esc(t('geminiTitle')) + '</span>'
-      + accountTabsHtml
       + '</div>'
+      + '<div class="quota-extension-header-actions">'
+      + accountTabsHtml
       + '<button type="button" class="quota-extension-toggle" aria-label="Toggle Google AI Pro">' + chevronSvg + '</button>'
+      + '</div>'
       + '</div>'
       + geminiRowsHtml
       + '</div>';
@@ -683,10 +685,25 @@
         tokenContent = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
       } else {
         const totalFormatted = formatExtendedTokenCount(rangeData.total, isZh);
-        const itemRows = (rangeData.items || []).map(item => {
+        const rawItems = rangeData.items || [];
+        const hasGpt = rawItems.some(i => i.key === 'gpt');
+        const hasGemini = rawItems.some(i => i.key === 'gemini');
+        const hasOther = rawItems.some(i => i.key === 'other');
+
+        const allItems = [...rawItems];
+        if (!hasGpt) allItems.unshift({ key: 'gpt', label: 'GPT', tokens: 0, percent: '0.0%' });
+        if (!hasGemini) {
+          const gptIdx = allItems.findIndex(i => i.key === 'gpt');
+          allItems.splice(gptIdx + 1, 0, { key: 'gemini', label: 'Gemini', tokens: 0, percent: '0.0%' });
+        }
+        if (!hasOther) {
+          allItems.push({ key: 'other', label: isZh ? '其他' : 'Other', tokens: 0, percent: '0.0%' });
+        }
+
+        const itemRows = allItems.map(item => {
           const label = item.key === 'other' ? t('other') : item.label;
           const formatted = formatExtendedTokenCount(item.tokens, isZh);
-          const dotColor = item.key === 'gpt' ? '#007AFF' : item.key === 'gemini' ? '#AF52DE' : '#8E8E93';
+          const dotColor = item.key === 'gpt' ? '#007AFF' : item.key === 'gemini' ? '#8B5CF6' : '#9CA3AF';
           return '<div class="token-model-row">'
             + '<span class="token-model-label"><span class="token-model-dot" style="background:' + dotColor + '"></span>' + esc(label) + '</span>'
             + '<span class="token-model-amount">' + esc(formatted) + '</span>'
@@ -704,7 +721,7 @@
       }
     }
 
-    const chartSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#007AFF"><rect x="3" y="12" width="4" height="9" rx="1"></rect><rect x="10" y="7" width="4" height="14" rx="1"></rect><rect x="17" y="3" width="4" height="18" rx="1"></rect></svg>';
+    const chartSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#007AFF"><rect x="3" y="11" width="3.8" height="10" rx="1.2"></rect><rect x="10.1" y="6" width="3.8" height="15" rx="1.2"></rect><rect x="17.2" y="2" width="3.8" height="19" rx="1.2"></rect></svg>';
 
     const tokenSection = '<div class="card-section quota-extension-section">'
       + '<div class="quota-extension-header has-rows">'
@@ -731,8 +748,6 @@
     const ready = Boolean(s && (!showFiveHours || p));
     const pColor = getQuotaColor(p?.remainingPercent);
     const sColor = getQuotaColor(s?.remainingPercent);
-    const pColorText = getValueColor(p?.remainingPercent, dark);
-    const sColorText = getValueColor(s?.remainingPercent, dark);
     const message = usageState.status === 'error' ? t('unavailable') : t('syncing');
 
     const details = usageState.resetCreditDetails.length
@@ -757,14 +772,14 @@
       ? '<div class="row">'
         + '<span class="label">' + esc(t('fiveHours')) + '</span>'
         + '<span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span>'
-        + '<span class="percent" style="color:' + pColorText + '">' + esc(pPercent) + '</span>'
+        + '<span class="percent">' + esc(pPercent) + '</span>'
         + '<span class="value popover-primary-value"><span class="info-time">' + esc(pInfoTime) + '</span><span class="info-remain">' + esc(pInfoRemain) + '</span></span>'
         + '</div>'
       : '';
     const secondaryRow = '<div class="row">'
       + '<span class="label">' + esc(t('sevenDays')) + '</span>'
       + '<span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span>'
-      + '<span class="percent" style="color:' + sColorText + '">' + esc(sPercent) + '</span>'
+      + '<span class="percent">' + esc(sPercent) + '</span>'
       + '<span class="value popover-secondary-value"><span class="info-time">' + esc(sInfoTime) + '</span><span class="info-remain">' + esc(sInfoRemain) + '</span></span>'
       + '</div>';
 
@@ -775,11 +790,13 @@
         + '</div>'
       : '<div class="card-section usage-section"><div class="unavailable">' + esc(message) + '</div></div>';
 
+    const ticketSvg = '<svg class="credit-icon" width="18" height="15" viewBox="0 0 24 20" fill="#3B82F6"><path d="M22 6C20.9 6 20 5.1 20 4V3C20 1.9 19.1 1 18 1H6C4.9 1 4 1.9 4 3V4C4 5.1 3.1 6 2 6C0.9 6 0 6.9 0 8V12C0 13.1 0.9 14 2 14C3.1 14 4 14.9 4 16V17C4 18.1 4.9 19 6 19H18C19.1 19 20 18.1 20 17V16C20 14.9 20.9 14 22 14C23.1 14 24 13.1 24 12V8C24 6.9 23.1 6 22 6Z"/><path d="M12 4V16" stroke="white" stroke-width="2" stroke-dasharray="2 2"/></svg>';
+
     const voucherBanner = '<div class="meta-row">'
       + '<span class="meta-actions">'
       + '<span class="credits-copy">'
-      + '<svg class="credit-icon" width="15" height="15" viewBox="0 0 24 24" fill="#007AFF"><path d="M20 4H4c-1.1 0-2 .9-2 2v3c1.1 0 2 .9 2 2s-.9 2-2 2v3c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2v-3c-1.1 0-2-.9-2-2s.9-2 2-2V6c0-1.1-.9-2-2-2zm-9 12H9v-2h2v2zm0-4H9v-2h2v2zm0-4H9V6h2v2zm4 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V6h2v2z"/></svg>'
-      + '<span>' + esc(t('resetCredits') + '：' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span>'
+      + ticketSvg
+      + '<span class="credits-text">' + esc(t('resetCredits') + '：' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span>'
       + '<span class="info-bubble" title="' + esc(t('resetDetails')) + '">ⓘ</span>'
       + '</span>'
       + '<span class="balance">' + esc(t('balance') + '：' + usageState.creditBalance.displayValue) + '</span>'
@@ -796,22 +813,22 @@
 
     const css = [
       '*{box-sizing:border-box}',
-      '.popover-shell{display:block;width:600px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);overflow-y:auto;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(32,32,35,.98)' : 'rgba(255,255,255,.98)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)') + ';box-shadow:0 16px 40px rgba(0,0,0,.14);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-radius:16px;padding:18px 20px}',
+      '.popover-shell{display:block;width:590px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);overflow-y:auto;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(32,32,35,.98)' : 'rgba(255,255,255,.98)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 18px 48px rgba(0,0,0,.12),0 4px 12px rgba(0,0,0,.04);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-radius:18px;padding:18px 20px}',
       '.popover-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}',
       '.popover-title-group{display:flex;flex-direction:column;gap:3px}',
-      '.popover-title{font-size:17px;font-weight:750;letter-spacing:-.2px;line-height:1.2}',
-      '.popover-subtitle{font-size:11.5px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';line-height:1.3;white-space:nowrap}',
+      '.popover-title{font-size:18px;font-weight:750;letter-spacing:-.3px;line-height:1.2}',
+      '.popover-subtitle{font-size:11.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';line-height:1.3;white-space:nowrap}',
       '.popover-actions{display:flex;align-items:center;gap:8px}',
-      '.language-toggle,.card-refresh{height:28px;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.04)') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';cursor:pointer;font:600 11.5px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;transition:all .15s ease}',
-      '.language-toggle{padding:0 10px}',
+      '.language-toggle,.card-refresh{height:28px;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';cursor:pointer;font:600 11.5px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;transition:all .15s ease}',
+      '.language-toggle{padding:0 10px;color:' + (dark ? '#70B4FF' : '#007AFF') + '}',
       '.card-refresh{width:28px;padding:0;display:grid;place-items:center}',
       '.card-refresh .icon,.card-refresh svg{width:15px;height:15px}',
       '.card-refresh.state-loading .icon,.card-refresh.state-loading svg{animation:quota-refresh-spin .72s linear infinite}',
-      '.language-toggle:hover,.card-refresh:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + '}',
+      '.language-toggle:hover,.card-refresh:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + '}',
       '@keyframes quota-refresh-spin{to{transform:rotate(360deg)}}',
       '.refresh-error-note{font-size:11.5px;color:#FF3B30;margin-top:4px}',
 
-      '.card-section{background:' + (dark ? 'rgba(255,255,255,.04)' : '#F8F9FA') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.04)') + ';border-radius:12px;padding:14px 16px;margin-top:10px}',
+      '.card-section{background:' + (dark ? 'rgba(255,255,255,.04)' : '#F9FAFB') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.04)') + ';border-radius:12px;padding:14px 16px;margin-top:10px}',
       '.card-section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}',
       '.card-section-title{font-size:13.5px;font-weight:700;letter-spacing:-.1px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
 
@@ -819,65 +836,67 @@
       '.row{display:grid;grid-template-columns:52px minmax(140px,1fr) 46px minmax(110px,auto);align-items:center;gap:10px;min-height:28px}',
       '@media(max-width:520px){.row{grid-template-columns:52px 122px minmax(150px,1fr);gap:10px}}',
       '.row .label{font-size:13px;font-weight:600;text-align:left;white-space:nowrap;width:52px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
-      '.row .track{height:12px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}',
+      '.row .track{height:10px;border-radius:999px;overflow:hidden;background:' + (dark ? 'rgba(120,120,128,.24)' : '#E5E7EB') + '}',
       '.row .fill{display:block;height:100%;border-radius:999px;transition:width .2s ease,background .2s ease}',
-      '.row .percent{font-size:12.5px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}',
+      '.row .percent{font-size:13px;font-weight:650;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
       '.row .value{display:flex;flex-direction:column;align-items:flex-end;justify-content:center;text-align:right;line-height:1.35;white-space:nowrap;min-width:110px}',
-      '.row .value .info-time{font-size:11.5px;font-weight:500;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + '}',
-      '.row .value .info-remain{font-size:11px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + '}',
+      '.row .value .info-time{font-size:11.5px;font-weight:500;color:' + (dark ? '#E5E5EA' : '#1D1D1F') + '}',
+      '.row .value .info-remain{font-size:11px;color:' + (dark ? '#A1A1A6' : '#6B7280') + '}',
 
       '.reset-voucher-section{margin-top:10px}',
-      '.meta-row{display:flex;align-items:center;width:100%;background:' + (dark ? 'rgba(10,132,255,.14)' : 'rgba(0,122,255,.07)') + ';border:1px solid ' + (dark ? 'rgba(10,132,255,.24)' : 'rgba(0,122,255,.14)') + ';border-radius:10px;padding:8px 14px}',
+      '.meta-row{display:flex;align-items:center;width:100%;background:' + (dark ? 'rgba(10,132,255,.14)' : 'rgba(239,246,255,.85)') + ';border:1px solid ' + (dark ? 'rgba(10,132,255,.24)' : 'rgba(59,130,246,.15)') + ';border-radius:10px;padding:9px 14px}',
       '.meta-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;white-space:nowrap;flex-wrap:nowrap}',
-      '.credits-copy{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-weight:600;font-size:12.5px;color:' + (dark ? '#70B4FF' : '#0066CC') + '}',
+      '.credits-copy{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-weight:600;font-size:12.5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
       '.credits-copy .credit-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}',
-      '.credits-copy .info-bubble{cursor:default;font-size:13px;color:' + (dark ? '#70B4FF' : '#007AFF') + ';opacity:.8;margin-left:2px}',
-      '.balance{color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';font-size:12px;font-weight:550;white-space:nowrap}',
+      '.credits-copy .info-bubble{cursor:default;font-size:13px;color:' + (dark ? '#A1A1A6' : '#9CA3AF') + ';margin-left:2px}',
+      '.balance{color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font-size:12px;font-weight:550;white-space:nowrap}',
       '.credit-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin-top:8px;padding-top:0;border-top-width:0px}',
-      '.credit-detail{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding:10px 14px;font-size:12px;border:1px solid ' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';border-radius:10px;background:' + (dark ? 'rgba(255,255,255,.04)' : '#FFFFFF') + ';transition:all .15s ease}',
+      '.credit-detail{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding:12px 16px;font-size:12px;border:1px solid ' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';border-radius:10px;background:' + (dark ? 'rgba(255,255,255,.04)' : '#FFFFFF') + ';transition:all .15s ease}',
       '.credit-detail:hover{border-color:' + (dark ? 'rgba(10,132,255,.4)' : 'rgba(0,122,255,.28)') + ';background:' + (dark ? 'rgba(10,132,255,.08)' : 'rgba(0,122,255,.02)') + '}',
       '.credit-detail strong{font-size:12.5px;font-weight:650;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
-      '.credit-detail span{font-size:11px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';white-space:nowrap;margin-top:3px}',
+      '.credit-detail span{font-size:11px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';white-space:nowrap;margin-top:4px}',
 
       '.quota-extension{}',
-      '.quota-extension-section{background:' + (dark ? 'rgba(255,255,255,.04)' : '#F8F9FA') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.04)') + ';border-radius:12px;padding:14px 16px;margin-top:10px}',
+      '.quota-extension-section{background:' + (dark ? 'rgba(255,255,255,.04)' : '#F9FAFB') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.04)') + ';border-radius:12px;padding:14px 16px;margin-top:10px}',
       '.quota-extension-header{display:flex;align-items:center;justify-content:space-between}',
-      '.quota-extension-header.has-rows{margin-bottom:12px}',
+      '.quota-extension-header.has-rows{margin-bottom:10px}',
       '.quota-extension-title-wrap{display:flex;align-items:center;gap:8px}',
       '.quota-extension-title{font-size:13.5px;font-weight:700;letter-spacing:-.1px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
-      '.quota-extension-account-tabs{display:flex;gap:4px;background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.05)') + ';padding:2px 3px;border-radius:8px}',
-      '.quota-extension-account-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';border-radius:6px;padding:2px 9px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s ease;white-space:nowrap}',
+      '.quota-extension-header-actions{display:flex;align-items:center;gap:6px}',
+      '.quota-extension-account-tabs{display:inline-flex;align-items:center;gap:2px;background:' + (dark ? 'rgba(255,255,255,.08)' : '#F1F3F5') + ';padding:2px;border-radius:999px}',
+      '.quota-extension-account-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';border-radius:999px;padding:3px 12px;font-size:11.5px;font-weight:500;cursor:pointer;transition:all .15s ease;white-space:nowrap}',
       '.quota-extension-account-tab:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
-      '.quota-extension-account-tab.is-active{background:#007AFF;color:#FFFFFF;box-shadow:0 1px 2px rgba(0,122,255,.3)}',
-      '.quota-extension-toggle{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';padding:4px;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s ease}',
+      '.quota-extension-account-tab.is-active{background:#007AFF;color:#FFFFFF;box-shadow:0 1px 2px rgba(0,122,255,.25)}',
+      '.quota-extension-toggle{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:4px;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s ease}',
       '.quota-extension-toggle:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + ';background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + '}',
-      '.quota-extension-rows{display:flex;flex-direction:column;gap:10px}',
-      '.quota-extension-row{display:grid;grid-template-columns:112px minmax(100px,1fr) 38px 96px;align-items:center;gap:10px;min-height:26px}',
-      '.quota-extension-label{font-size:12.5px;font-weight:600;text-align:left;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
-      '.quota-extension-track{height:12px;min-width:100px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}',
+      '.quota-extension-rows{display:flex;flex-direction:column}',
+      '.quota-extension-row{display:grid;grid-template-columns:112px minmax(100px,1fr) 38px 96px;align-items:center;gap:10px;min-height:30px;border-bottom:1px solid ' + (dark ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.04)') + ';padding:5px 0}',
+      '.quota-extension-row.is-last{border-bottom:0;padding-bottom:0}',
+      '.quota-extension-label{font-size:12.5px;font-weight:500;text-align:left;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.quota-extension-track{height:10px;min-width:100px;border-radius:999px;overflow:hidden;background:' + (dark ? 'rgba(120,120,128,.24)' : '#E5E7EB') + '}',
       '.quota-extension-fill{display:block;height:100%;border-radius:999px;transition:width .2s ease,background .2s ease}',
-      '.quota-extension-percent{font-size:12px;font-weight:650;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
-      '.quota-extension-value{font-size:11.5px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}',
+      '.quota-extension-percent{font-size:12px;font-weight:500;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.quota-extension-value{font-size:11.5px;color:' + (dark ? '#A1A1A6' : '#4B5563') + ';white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}',
 
-      '.quota-extension-range-tabs{display:flex;gap:3px;background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.05)') + ';padding:2px 3px;border-radius:8px}',
-      '.quota-extension-range-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s ease}',
+      '.quota-extension-range-tabs{display:inline-flex;align-items:center;gap:2px;background:' + (dark ? 'rgba(255,255,255,.08)' : '#F1F3F5') + ';padding:2px;border-radius:999px}',
+      '.quota-extension-range-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';border-radius:999px;padding:3px 12px;font-size:11.5px;font-weight:500;cursor:pointer;transition:all .15s ease}',
       '.quota-extension-range-tab:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
-      '.quota-extension-range-tab.is-active{background:#007AFF;color:#FFFFFF;box-shadow:0 1px 2px rgba(0,122,255,.3)}',
+      '.quota-extension-range-tab.is-active{background:#007AFF;color:#FFFFFF;box-shadow:0 1px 2px rgba(0,122,255,.25)}',
 
-      '.quota-extension-token-table{display:grid;grid-template-columns:140px 1fr;align-items:center;gap:20px;margin-top:10px}',
-      '.token-summary-col{display:flex;flex-direction:column;justify-content:center}',
-      '.token-summary-label{font-size:12px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';font-weight:500;margin-bottom:2px}',
+      '.quota-extension-token-table{display:grid;grid-template-columns:135px 1fr;align-items:center;gap:0;margin-top:12px}',
+      '.token-summary-col{display:flex;flex-direction:column;justify-content:center;padding-right:16px}',
+      '.token-summary-label{font-size:12px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font-weight:500;margin-bottom:2px}',
       '.token-summary-val{display:flex;align-items:baseline;gap:3px}',
-      '.token-summary-number{font-size:22px;font-weight:750;letter-spacing:-.4px;font-variant-numeric:tabular-nums;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
-      '.token-summary-unit{font-size:12px;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';font-weight:500}',
-      '.token-models-col{display:flex;flex-direction:column;gap:6px}',
+      '.token-summary-number{font-size:24px;font-weight:750;letter-spacing:-.4px;font-variant-numeric:tabular-nums;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.token-summary-unit{font-size:12.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font-weight:450}',
+      '.token-models-col{display:flex;flex-direction:column;gap:7px;border-left:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.06)') + ';padding-left:18px}',
       '.token-model-row{display:grid;grid-template-columns:72px minmax(80px,1fr) 48px;align-items:center;gap:10px;font-size:12.5px}',
-      '.token-model-label{display:flex;align-items:center;gap:6px;font-weight:500;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';white-space:nowrap}',
-      '.token-model-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}',
+      '.token-model-label{display:flex;align-items:center;gap:6px;font-weight:500;color:' + (dark ? '#E5E5EA' : '#374151') + ';white-space:nowrap}',
+      '.token-model-dot{width:7.5px;height:7.5px;border-radius:50%;flex-shrink:0}',
       '.token-model-amount{text-align:right;font-weight:650;font-variant-numeric:tabular-nums;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';white-space:nowrap}',
-      '.token-model-pct{text-align:right;color:' + (dark ? '#A1A1A6' : '#7A7A80') + ';font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}',
-      '.quota-extension-note{font-size:12px;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';padding:6px 0}',
-      '.unavailable{font-size:12.5px;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';padding:8px 0}',
+      '.token-model-pct{text-align:right;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}',
+      '.quota-extension-note{font-size:12px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:6px 0}',
+      '.unavailable{font-size:12.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:8px 0}',
     ].join('');
 
     return '<style>' + css + '</style>'
