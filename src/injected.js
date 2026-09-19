@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '2.5.6';
+  const RUNTIME_VERSION = '2.5.7';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -233,6 +233,15 @@
       return new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
     }
     return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+  }
+
+  function isWeeklyExhausted(window) {
+    return window?.remainingPercent === 0;
+  }
+
+  function weeklyResetSuffix(window) {
+    if (!isWeeklyExhausted(window) || !Number.isFinite(window?.resetsAt) || window.resetsAt <= 0) return '';
+    return ' · ' + formatDate(window.resetsAt, true) + ' ' + t('resetAt');
   }
 
   function parseWindow(value) {
@@ -515,6 +524,7 @@
     const p = usageState.primary;
     const s = usageState.secondary;
     const showFiveHours = usageState.showFiveHours !== false;
+    const weeklyExhausted = isWeeklyExhausted(s);
     const ready = Boolean(s && (!showFiveHours || p));
     const pColor = getQuotaColor(p?.remainingPercent);
     const sColor = getQuotaColor(s?.remainingPercent);
@@ -530,7 +540,7 @@
       }).join('')
       : '<div class="credit-detail muted">' + esc(t('noResetDetails')) + '</div>';
     const primaryRow = showFiveHours
-      ? '<div class="row"><span class="label">' + esc(t('fiveHours')) + '</span><span class="track"><span class="fill" style="width:' + p.remainingPercent + '%;background:' + pColor + '"></span></span><span class="value popover-primary-value">' + esc(t('remaining') + ' ' + p.remainingPercent + '%（' + formatDate(p.resetsAt) + ' ' + t('resetAt') + '，' + t('untilReset') + ' ' + formatDuration(p.secondsRemaining) + '）') + '</span></div>'
+      ? '<div class="row"><span class="label">' + esc(t('fiveHours')) + '</span><span class="track"><span class="fill" style="width:' + p.remainingPercent + '%;background:' + pColor + '"></span></span><span class="value popover-primary-value">' + esc(t('remaining') + ' ' + p.remainingPercent + '%（' + formatDate(p.resetsAt) + ' ' + t('resetAt') + (weeklyExhausted ? '' : '，' + t('untilReset') + ' ' + formatDuration(p.secondsRemaining)) + '）') + '</span></div>'
       : '';
     const rows = primaryRow + '<div class="row"><span class="label">' + esc(t('sevenDays')) + '</span><span class="track"><span class="fill" style="width:' + s.remainingPercent + '%;background:' + sColor + '"></span></span><span class="value popover-secondary-value">' + esc(t('remaining') + ' ' + s.remainingPercent + '%（' + formatDate(s.resetsAt, true) + ' ' + t('resetAt') + '）') + '</span></div>';
     const css = [
@@ -603,10 +613,12 @@
     const p = usageState.primary;
     const s = usageState.secondary;
     const showFiveHours = usageState.showFiveHours !== false;
+    const weeklyExhausted = isWeeklyExhausted(s);
     const pColor = getQuotaColor(p?.remainingPercent);
     const sColor = getQuotaColor(s?.remainingPercent);
     const pValue = p ? p.remainingPercent + '%' : '—';
     const sValue = s ? s.remainingPercent + '%' : '—';
+    const weeklyResetText = currentMode === 'full' ? weeklyResetSuffix(s) : '';
     const pColorText = getValueColor(p?.remainingPercent, dark);
     const sColorText = getValueColor(s?.remainingPercent, dark);
     const pieLabel = showFiveHours ? '5h' : '7d';
@@ -626,7 +638,7 @@
     } else if (currentMode === 'compact') {
       content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value" style="color:' + pColorText + '">' + pValue + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
     } else {
-      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + ' · ' + (p ? formatDuration(p.secondsRemaining) : '—') + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
+      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>';
     }
     const detailsOpen = popoverState !== 'closed';
     const style = '<style>*{box-sizing:border-box}:host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}.capsule{height:34px;min-width:0;padding:0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}.details-trigger{height:32px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.details-trigger:focus-visible{outline:2px solid ' + (dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)') + ';outline-offset:2px}.label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}.track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ' + CONFIG.colors.track + ' var(--remaining) 100%);transform:rotate(-90deg)}.value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}.primary-countdown{min-width:0}.divider{flex:none;width:1px;height:16px;margin:0;background:' + (dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)') + '}</style><div class="capsule"><button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button></div>';
