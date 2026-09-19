@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '2.6.0';
+  const RUNTIME_VERSION = '2.6.1';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -480,6 +480,7 @@
       const refresh = path.find(node => node?.classList?.contains('card-refresh'));
       const language = path.find(node => node?.classList?.contains('language-toggle'));
       const rangeTab = path.find(node => node?.classList?.contains('quota-extension-range-tab'));
+      const accountTab = path.find(node => node?.classList?.contains('quota-extension-account-tab'));
       if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
       else if (language) switchLocale();
       else if (rangeTab) {
@@ -487,6 +488,14 @@
         if (range && ['today', 'days7', 'days30'].includes(range)) {
           extendedUsageState.tokens.selectedRange = range;
           try { localStorage.setItem('codexQuotaHeader.selectedTokenRange', range); } catch { /* ignore */ }
+          renderPopover();
+          positionPopover();
+        }
+      } else if (accountTab) {
+        const account = accountTab.dataset.account;
+        if (account) {
+          extendedUsageState.antigravity.selectedAccount = account;
+          try { localStorage.setItem('codexQuotaHeader.selectedAntigravityAccount', account); } catch { /* ignore */ }
           renderPopover();
           positionPopover();
         }
@@ -571,19 +580,50 @@
     }, 240);
   }
 
+  function formatExtendedTokenCount(tokens, isZh) {
+    if (!Number.isFinite(tokens) || tokens <= 0) return '0';
+    if (isZh) {
+      if (tokens >= 1e8) return (tokens / 1e8).toFixed(2).replace(/\.?0+$/, '') + '亿';
+      if (tokens >= 1e4) return (tokens / 1e4).toFixed(1).replace(/\.?0+$/, '') + '万';
+      return String(tokens);
+    }
+    if (tokens >= 1e9) return (tokens / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
+    if (tokens >= 1e6) return (tokens / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M';
+    if (tokens >= 1e3) return (tokens / 1e3).toFixed(1).replace(/\.?0+$/, '') + 'K';
+    return String(tokens);
+  }
+
   function renderExtendedUsage(dark) {
     const isZh = settings.locale === 'zh-CN';
     const anti = extendedUsageState.antigravity || {};
     const tok = extendedUsageState.tokens || {};
 
-    const antiStaleBadge = anti.stale ? '<span class="quota-extension-badge muted">' + esc(t('staleData')) + '</span>' : '';
-    const antiErrorNote = (anti.error && (!anti.rows || anti.rows.length === 0))
+    const accounts = anti.accounts || [];
+    const savedAccount = typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.selectedAntigravityAccount') : null;
+    const selectedEmail = anti.selectedAccount || savedAccount || accounts[0]?.email;
+    const activeAccount = accounts.find(a => a.email === selectedEmail) || accounts[0] || anti;
+    const activeRows = activeAccount.rows || anti.rows || [];
+
+    const antiStaleBadge = (activeAccount.stale ?? anti.stale) ? '<span class="quota-extension-badge muted">' + esc(t('staleData')) + '</span>' : '';
+    const antiErrorNote = ((activeAccount.error || anti.error) && (!activeRows || activeRows.length === 0))
       ? '<div class="quota-extension-note error">' + esc(t('noData')) + '</div>'
       : '';
 
+    let accountTabsHtml = '';
+    if (accounts.length > 1) {
+      accountTabsHtml = '<div class="quota-extension-account-tabs">'
+        + accounts.map(acc => {
+          const isActive = (acc.email === (activeAccount.email || selectedEmail));
+          return '<button type="button" class="quota-extension-account-tab ' + (isActive ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" title="' + esc(acc.email) + '">'
+            + esc(acc.label || acc.email)
+            + '</button>';
+        }).join('')
+        + '</div>';
+    }
+
     let geminiRowsHtml = '';
-    if (anti.rows && anti.rows.length > 0) {
-      geminiRowsHtml = anti.rows.map(row => {
+    if (activeRows && activeRows.length > 0) {
+      geminiRowsHtml = activeRows.map(row => {
         const color = getQuotaColor(row.remainingPercent);
         const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
           ? row.remainingPercent + '%'
@@ -606,7 +646,10 @@
 
     const geminiSection = '<div class="quota-extension-section">'
       + '<div class="quota-extension-header">'
-      + '<div class="quota-extension-title">' + esc(t('geminiTitle')) + '</div>'
+      + '<div class="quota-extension-title-wrap">'
+      + '<span class="quota-extension-title">' + esc(t('geminiTitle')) + '</span>'
+      + accountTabsHtml
+      + '</div>'
       + antiStaleBadge
       + '</div>'
       + geminiRowsHtml
@@ -628,17 +671,19 @@
       if (!rangeData) {
         tokenContent = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
       } else {
+        const totalFormatted = formatExtendedTokenCount(rangeData.total, isZh);
         const totalRow = '<div class="quota-extension-token-row is-total">'
           + '<span class="quota-extension-token-key">' + esc(t('total')) + '</span>'
-          + '<span class="quota-extension-token-amount">' + esc(rangeData.totalFormatted) + '</span>'
+          + '<span class="quota-extension-token-amount">' + esc(totalFormatted) + '</span>'
           + '<span class="quota-extension-token-percent"></span>'
           + '</div>';
 
         const itemRows = (rangeData.items || []).map(item => {
           const label = item.key === 'other' ? t('other') : item.label;
+          const formatted = formatExtendedTokenCount(item.tokens, isZh);
           return '<div class="quota-extension-token-row">'
             + '<span class="quota-extension-token-key">' + esc(label) + '</span>'
-            + '<span class="quota-extension-token-amount">' + esc(item.formatted) + '</span>'
+            + '<span class="quota-extension-token-amount">' + esc(formatted) + '</span>'
             + '<span class="quota-extension-token-percent">' + esc(item.percent) + '</span>'
             + '</div>';
         }).join('');
@@ -682,9 +727,11 @@
       }).join('')
       : '<div class="credit-detail muted">' + esc(t('noResetDetails')) + '</div>';
     const primaryRow = showFiveHours
-      ? '<div class="row"><span class="label">' + esc(t('fiveHours')) + '</span><span class="track"><span class="fill" style="width:' + p.remainingPercent + '%;background:' + pColor + '"></span></span><span class="value popover-primary-value">' + esc(t('remaining') + ' ' + p.remainingPercent + '%（' + formatDate(p.resetsAt) + ' ' + t('resetAt') + (weeklyExhausted ? '' : '，' + t('untilReset') + ' ' + formatDuration(p.secondsRemaining)) + '）') + '</span></div>'
+      ? '<div class="row"><span class="label">' + esc(t('fiveHours')) + '</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value popover-primary-value">' + esc(t('remaining') + ' ' + (p?.remainingPercent ?? '—') + '%（' + formatDate(p?.resetsAt) + ' ' + t('resetAt') + (weeklyExhausted ? '' : '，' + t('untilReset') + ' ' + formatDuration(p?.secondsRemaining)) + '）') + '</span></div>'
       : '';
-    const rows = primaryRow + '<div class="row"><span class="label">' + esc(t('sevenDays')) + '</span><span class="track"><span class="fill" style="width:' + s.remainingPercent + '%;background:' + sColor + '"></span></span><span class="value popover-secondary-value">' + esc(t('remaining') + ' ' + s.remainingPercent + '%（' + formatDate(s.resetsAt, true) + ' ' + t('resetAt') + '）') + '</span></div>';
+    const rows = ready
+      ? (primaryRow + '<div class="row"><span class="label">' + esc(t('sevenDays')) + '</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value popover-secondary-value">' + esc(t('remaining') + ' ' + (s?.remainingPercent ?? '—') + '%（' + formatDate(s?.resetsAt, true) + ' ' + t('resetAt') + '）') + '</span></div>')
+      : '';
     const css = [
       '*{box-sizing:border-box}',
       '.popover-shell{display:block;inline-size:max-content;min-inline-size:min(420px,calc(100vw - 24px));max-inline-size:calc(100vw - 24px);max-height:calc(100vh - 24px);overflow-y:auto;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(35,35,38,.97)' : 'rgba(255,255,255,.97)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.09)') + ';box-shadow:0 12px 34px rgba(0,0,0,.16);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border-radius:15px;padding:16px 18px}',
@@ -693,10 +740,16 @@
       '.popover-actions{display:flex;align-items:center;gap:6px}.language-toggle,.card-refresh{height:28px;border:0;border-radius:8px;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + ';color:' + (dark ? '#F5F5F7' : '#3A3A3C') + ';cursor:pointer;padding:0 8px;font:600 11px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}.card-refresh{width:28px;padding:0;display:grid;place-items:center}.card-refresh .icon{width:16px;height:16px}.card-refresh.state-loading .icon{animation:quota-refresh-spin .72s linear infinite}.language-toggle:hover,.card-refresh:hover{background:' + (dark ? 'rgba(255,255,255,.16)' : 'rgba(0,0,0,.09)') + '}',
       '.rows{display:flex;flex-direction:column;gap:16px;margin-top:16px}.row{display:grid;grid-template-columns:52px 122px minmax(190px,1fr);align-items:center;gap:10px;min-height:22px}.label{font-size:13px;font-weight:700;text-align:right;white-space:nowrap}.track{height:12px;border-radius:999px;overflow:hidden;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.value{min-width:0;color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';font-size:12.5px;font-weight:520;line-height:1.35;white-space:nowrap;font-variant-numeric:tabular-nums}',
       '.divider{height:1px;background:' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + ';margin:15px 0}.meta-row{display:flex;align-items:center;gap:10px;min-height:28px;width:100%;font-size:12.5px}.meta-row.muted{color:' + (dark ? '#A1A1A6' : '#7A7A80') + '}.meta-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;white-space:nowrap;flex-wrap:nowrap}.credits-copy{white-space:nowrap;font-weight:600}.balance{color:' + (dark ? '#E5E5EA' : '#3A3A3C') + ';white-space:nowrap;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.04)') + ';border-radius:999px;padding:7px 13px;font-size:12px}.credit-details{margin-top:8px;padding-top:0}.credit-detail{display:flex;align-items:center;gap:10px;min-height:48px;padding:8px 12px;font-size:12.5px;border:1px solid ' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';border-radius:10px;background:' + (dark ? 'rgba(255,255,255,.035)' : 'rgba(248,249,250,.72)') + '}.credit-icon{display:block;flex:none;width:32px;height:32px;border-radius:8px;object-fit:cover}.credit-detail strong{flex:1;min-width:0;font-size:13px;font-weight:650;white-space:nowrap}.credit-detail span{flex:none;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';white-space:nowrap}.muted,.unavailable{color:' + (dark ? '#A1A1A6' : '#6E6E73') + '}.error-note{margin-top:10px;color:' + (dark ? '#FF6961' : '#C42B1C') + ';font-size:11.5px}',
+      '.credit-details{display:flex;flex-direction:column;gap:5px;margin-top:8px;padding-top:0}',
       '@keyframes quota-refresh-spin{to{transform:rotate(360deg)}}@media(max-width:520px){.popover-subtitle{white-space:normal}.row{grid-template-columns:52px 100px minmax(150px,1fr);gap:10px}.value{white-space:normal}.meta-actions{gap:10px}}',
       '.quota-extension{margin-top:15px;padding-top:15px;border-top:1px solid ' + (dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)') + '}',
       '.quota-extension-section{display:flex;flex-direction:column;gap:8px}',
       '.quota-extension-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}',
+      '.quota-extension-title-wrap{display:flex;align-items:center;gap:8px}',
+      '.quota-extension-account-tabs{display:flex;gap:3px;background:' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.05)') + ';padding:2px;border-radius:7px}',
+      '.quota-extension-account-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6E6E73') + ';border-radius:5px;padding:2px 7px;font-size:11px;font-weight:550;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap;max-width:96px;overflow:hidden;text-overflow:ellipsis}',
+      '.quota-extension-account-tab:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.quota-extension-account-tab.is-active{background:' + (dark ? 'rgba(255,255,255,.20)' : 'rgba(255,255,255,.94)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + ';box-shadow:0 1px 2px rgba(0,0,0,.10)}',
       '.quota-extension-title{font-size:13.5px;font-weight:700;letter-spacing:-.1px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
       '.quota-extension-badge{font-size:11px;padding:2px 7px;border-radius:5px;background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + ';color:' + (dark ? '#A1A1A6' : '#6E6E73') + '}',
       '.quota-extension-row{display:grid;grid-template-columns:112px minmax(100px,1fr) auto;align-items:center;gap:10px;min-height:28px}',

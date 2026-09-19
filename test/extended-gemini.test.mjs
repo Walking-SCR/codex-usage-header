@@ -20,9 +20,10 @@ assert.equal(matchGeminiStandardRow('Gemini Models', 'five_hour'), 'Gemini 5h');
 assert.equal(matchGeminiStandardRow('Gemini Models', 'weekly'), 'Gemini 7d');
 assert.equal(matchGeminiStandardRow('Gemini Models', '7d'), 'Gemini 7d');
 assert.equal(matchGeminiStandardRow('Gemini Models', 'week'), 'Gemini 7d');
-assert.equal(matchGeminiStandardRow('Claude and GPT models', 'weekly'), 'Claude&GPT 7d');
-assert.equal(matchGeminiStandardRow('3p-models', '7d'), 'Claude&GPT 7d');
-assert.equal(matchGeminiStandardRow('Shared Models', 'weekly'), 'Claude&GPT 7d');
+assert.equal(matchGeminiStandardRow('Claude and GPT models', 'weekly'), 'Claude & GPT 7d');
+assert.equal(matchGeminiStandardRow('Claude and GPT models', '5h'), 'Claude & GPT 5h');
+assert.equal(matchGeminiStandardRow('3p-models', '7d'), 'Claude & GPT 7d');
+assert.equal(matchGeminiStandardRow('Shared Models', 'weekly'), 'Claude & GPT 7d');
 
 // 3. Raw payload parsing (camelCase and snake_case support)
 const manager = new GeminiQuotaManager();
@@ -52,7 +53,7 @@ assert.equal(rowsCamel[0].remainingPercent, 68);
 assert.equal(rowsCamel[0].unavailable, false);
 assert.equal(rowsCamel[1].label, 'Gemini 7d');
 assert.equal(rowsCamel[1].remainingPercent, 42);
-assert.equal(rowsCamel[2].label, 'Claude&GPT 7d');
+assert.equal(rowsCamel[2].label, 'Claude & GPT 7d');
 assert.equal(rowsCamel[2].remainingPercent, 95);
 
 // Test snake_case payload
@@ -74,7 +75,7 @@ assert.equal(rowsSnake[0].remainingPercent, 0); // explicitly 0 must stay 0%
 assert.equal(rowsSnake[0].unavailable, false);
 assert.equal(rowsSnake[1].label, 'Gemini 7d');
 assert.equal(rowsSnake[1].remainingPercent, 50);
-assert.equal(rowsSnake[2].label, 'Claude&GPT 7d');
+assert.equal(rowsSnake[2].label, 'Claude & GPT 7d');
 assert.equal(rowsSnake[2].remainingPercent, null);
 assert.equal(rowsSnake[2].unavailable, true); // missing data must not become 0%
 

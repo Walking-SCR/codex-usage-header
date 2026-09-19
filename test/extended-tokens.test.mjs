@@ -30,6 +30,16 @@ assert.equal(formatTokenCount(1920000), '1.92M');
 assert.equal(formatTokenCount(1280000000), '1.28B');
 assert.equal(formatTokenCount(640000), '640K');
 
+// Chinese units (万, 亿)
+assert.equal(formatTokenCount(0, 'zh-CN'), '0');
+assert.equal(formatTokenCount(932, 'zh-CN'), '932');
+assert.equal(formatTokenCount(12400, 'zh-CN'), '1.2万');
+assert.equal(formatTokenCount(338600, 'zh-CN'), '33.9万');
+assert.equal(formatTokenCount(1920000, 'zh-CN'), '192万');
+assert.equal(formatTokenCount(37540000, 'zh-CN'), '3754万');
+assert.equal(formatTokenCount(1460000000, 'zh-CN'), '14.6亿');
+assert.equal(formatTokenCount(1280000000, 'zh-CN'), '12.8亿');
+
 // 3. Timezone conversion
 assert.equal(toShanghaiDate('2026-09-19T14:43:20.636Z'), '2026-09-19');
 assert.equal(toShanghaiDate('2026-09-19T16:05:00.000Z'), '2026-09-20');

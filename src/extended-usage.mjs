@@ -1,6 +1,6 @@
 /**
  * Extended usage coordinator for codex-usage-header:
- * 1. Gemini AI Pro quota fetching and caching via local CLIProxyAPI.
+ * 1. Gemini AI Pro multi-account quota fetching and caching via local CLIProxyAPI.
  * 2. Incremental Token usage rollup from local Codex session rollout logs.
  * Zero credentials or tokens are ever sent to the renderer or logged.
  */
@@ -61,8 +61,22 @@ export function toShanghaiDate(timestamp) {
   }).format(d);
 }
 
-export function formatTokenCount(tokens) {
+export function formatTokenCount(tokens, locale = 'en-US') {
   if (!Number.isFinite(tokens) || tokens <= 0) return '0';
+  const isZh = locale === 'zh-CN' || locale === 'zh';
+
+  if (isZh) {
+    if (tokens >= 1e8) {
+      const val = (tokens / 1e8).toFixed(2).replace(/\.?0+$/, '');
+      return `${val}亿`;
+    }
+    if (tokens >= 1e4) {
+      const val = (tokens / 1e4).toFixed(1).replace(/\.?0+$/, '');
+      return `${val}万`;
+    }
+    return String(tokens);
+  }
+
   if (tokens >= 1e9) {
     const val = (tokens / 1e9).toFixed(2).replace(/\.?0+$/, '');
     return `${val}B`;
@@ -120,7 +134,8 @@ export function matchGeminiStandardRow(groupName, bucketWindow) {
 
   if (isGeminiGroup && is5h) return 'Gemini 5h';
   if (isGeminiGroup && isWeekly) return 'Gemini 7d';
-  if (isClaudeGptGroup && isWeekly) return 'Claude&GPT 7d';
+  if (isClaudeGptGroup && isWeekly) return 'Claude & GPT 7d';
+  if (isClaudeGptGroup && is5h) return 'Claude & GPT 5h';
   return null;
 }
 
@@ -134,13 +149,18 @@ export class GeminiQuotaManager {
     const creds = getAntigravityCredentials();
     this.clientId = options.clientId || creds.clientId;
     this.clientSecret = options.clientSecret || creds.clientSecret;
+    this.accountCaches = new Map();
+    this.selectedAccount = null;
     this.cache = {
       status: 'idle',
       plan: 'Gemini AI Pro',
+      selectedAccount: null,
+      accounts: [],
       rows: [
         { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
         { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
-        { label: 'Claude&GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
+        { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
+        { label: 'Claude & GPT 5h', remainingPercent: null, countdown: null, unavailable: true },
       ],
       fetchedAt: null,
       stale: false,
@@ -162,19 +182,20 @@ export class GeminiQuotaManager {
     return '';
   }
 
-  findAntigravityAuthFile() {
-    if (!existsSync(this.authDir)) return null;
+  findAllAntigravityAuthFiles() {
+    if (!existsSync(this.authDir)) return [];
     try {
       const files = readdirSync(this.authDir);
-      const target = files.find(f => f.startsWith('antigravity-') && f.endsWith('.json'));
-      return target ? join(this.authDir, target) : null;
+      return files
+        .filter(f => f.startsWith('antigravity-') && f.endsWith('.json') && !f.includes('.bak'))
+        .map(f => join(this.authDir, f));
     } catch {
-      return null;
+      return [];
     }
   }
 
   async refreshAccessToken(authData, authFilePath) {
-    if (!authData?.refresh_token) return null;
+    if (!authData?.refresh_token || !this.clientId || !this.clientSecret) return authData?.access_token || null;
     return new Promise((resolve) => {
       const postData = new URLSearchParams({
         client_id: this.clientId,
@@ -216,8 +237,7 @@ export class GeminiQuotaManager {
     });
   }
 
-  async getAccessToken() {
-    const authFilePath = this.findAntigravityAuthFile();
+  async getAccessTokenForFile(authFilePath) {
     if (!authFilePath || !existsSync(authFilePath)) return null;
     try {
       const authData = JSON.parse(readFileSync(authFilePath, 'utf8'));
@@ -316,7 +336,8 @@ export class GeminiQuotaManager {
     const standard = {
       'Gemini 5h': null,
       'Gemini 7d': null,
-      'Claude&GPT 7d': null,
+      'Claude & GPT 7d': null,
+      'Claude & GPT 5h': null,
     };
     const extra = [];
     const groups = Array.isArray(data?.groups) ? data.groups : [];
@@ -347,43 +368,120 @@ export class GeminiQuotaManager {
 
         if (matchKey && standard[matchKey] === null) {
           standard[matchKey] = { label: matchKey, ...entry };
-        } else if (!matchKey && !groupName.toLowerCase().includes('gemini') && !groupName.toLowerCase().includes('claude') && !groupName.toLowerCase().includes('gpt')) {
-          const extraLabel = `${groupName} ${windowName}`.trim();
-          extra.push({ label: extraLabel, ...entry });
+        } else if (!matchKey) {
+          let extraLabel = `${groupName} ${windowName}`.trim();
+          if (extraLabel === 'Claude and GPT models 5h') extraLabel = 'Claude & GPT 5h';
+          if (extraLabel === 'Claude and GPT models weekly') extraLabel = 'Claude & GPT 7d';
+          if (!extra.some(e => e.label === extraLabel)) {
+            extra.push({ label: extraLabel, ...entry });
+          }
         }
       }
     }
 
-    return [
+    const rows = [
       standard['Gemini 5h'] || { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
       standard['Gemini 7d'] || { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
-      standard['Claude&GPT 7d'] || { label: 'Claude&GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
-      ...extra,
+      standard['Claude & GPT 7d'] || { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
     ];
+
+    if (standard['Claude & GPT 5h']) {
+      rows.push(standard['Claude & GPT 5h']);
+    }
+
+    rows.push(...extra);
+    return rows;
+  }
+
+  async fetchQuotaForFile(authFilePath) {
+    const filename = authFilePath.split('/').pop();
+    let email = filename.replace(/^antigravity-/, '').replace(/\.json$/, '');
+    let label = email.split('@')[0] || email;
+
+    try {
+      const authData = JSON.parse(readFileSync(authFilePath, 'utf8'));
+      if (authData.email) email = authData.email;
+      label = email.split('@')[0] || email;
+    } catch { /* ignore */ }
+
+    try {
+      const token = await this.getAccessTokenForFile(authFilePath);
+      if (!token) throw new Error('Token unavailable');
+
+      let data;
+      try {
+        data = await this.fetchQuotaViaApiCall(token);
+      } catch {
+        data = await this.fetchQuotaFromGoogle(token);
+      }
+
+      const rows = this.parseRawQuotaPayload(data);
+      const res = {
+        id: filename,
+        email,
+        label,
+        status: 'ready',
+        rows,
+        fetchedAt: Date.now(),
+        stale: false,
+        error: null,
+      };
+      this.accountCaches.set(email, res);
+      return res;
+    } catch (err) {
+      const prev = this.accountCaches.get(email);
+      if (prev && prev.rows && prev.rows.some(r => !r.unavailable)) {
+        return {
+          ...prev,
+          stale: true,
+          error: String(err.message || err),
+        };
+      }
+      return {
+        id: filename,
+        email,
+        label,
+        status: 'error',
+        rows: [
+          { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
+          { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
+          { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
+          { label: 'Claude & GPT 5h', remainingPercent: null, countdown: null, unavailable: true },
+        ],
+        fetchedAt: null,
+        stale: false,
+        error: String(err.message || err),
+      };
+    }
   }
 
   async fetchQuota() {
     if (this.inFlight) return this.inFlight;
     this.inFlight = (async () => {
       try {
-        const token = await this.getAccessToken();
-        if (!token) throw new Error('Antigravity OAuth token not found');
+        const authFiles = this.findAllAntigravityAuthFiles();
+        if (authFiles.length === 0) throw new Error('Antigravity auth files not found');
 
-        let data;
-        try {
-          data = await this.fetchQuotaViaApiCall(token);
-        } catch {
-          data = await this.fetchQuotaFromGoogle(token);
+        const accountResults = await Promise.all(
+          authFiles.map(f => this.fetchQuotaForFile(f))
+        );
+
+        for (const acc of accountResults) {
+          this.accountCaches.set(acc.email, acc);
         }
 
-        const rows = this.parseRawQuotaPayload(data);
+        const activeEmail = this.selectedAccount || accountResults[0]?.email;
+        const active = accountResults.find(a => a.email === activeEmail) || accountResults[0];
+
         this.cache = {
-          status: 'ready',
+          status: accountResults.some(a => a.status === 'ready') ? 'ready' : 'error',
           plan: 'Gemini AI Pro',
-          rows,
+          selectedAccount: active?.email || null,
+          accounts: accountResults,
+          rows: active?.rows || [],
           fetchedAt: Date.now(),
-          stale: false,
-          error: null,
+          stale: active?.stale || false,
+          error: active?.error || null,
         };
         return this.cache;
       } catch (err) {
@@ -398,10 +496,13 @@ export class GeminiQuotaManager {
         this.cache = {
           status: 'error',
           plan: 'Gemini AI Pro',
+          selectedAccount: null,
+          accounts: [],
           rows: [
             { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
             { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
-            { label: 'Claude&GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
+            { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
+            { label: 'Claude & GPT 5h', remainingPercent: null, countdown: null, unavailable: true },
           ],
           fetchedAt: null,
           stale: false,
@@ -416,7 +517,7 @@ export class GeminiQuotaManager {
   }
 
   getSnapshot() {
-    const rows = this.cache.rows.map(row => {
+    const updateRows = (rows) => rows.map(row => {
       if (!row.resetTime) return row;
       const secondsRemaining = Math.max(0, row.resetTime - Math.floor(Date.now() / 1000));
       return {
@@ -426,13 +527,23 @@ export class GeminiQuotaManager {
       };
     });
 
+    const accounts = (this.cache.accounts || []).map(acc => ({
+      ...acc,
+      rows: updateRows(acc.rows || []),
+    }));
+
+    const activeEmail = this.selectedAccount || accounts[0]?.email || this.cache.selectedAccount;
+    const active = accounts.find(a => a.email === activeEmail) || accounts[0];
+
     return {
       status: this.cache.status,
       plan: this.cache.plan,
-      rows,
+      selectedAccount: active?.email || null,
+      accounts,
+      rows: updateRows(active?.rows || this.cache.rows || []),
       fetchedAt: this.cache.fetchedAt,
-      stale: this.cache.stale,
-      error: this.cache.error,
+      stale: active?.stale || this.cache.stale,
+      error: active?.error || this.cache.error,
     };
   }
 }
