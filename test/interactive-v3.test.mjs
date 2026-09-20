@@ -25,7 +25,17 @@ await new Promise(r => setTimeout(r, 250));
 const expandedHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
 assert.ok(Math.abs(expandedHeight - initialHeight) < 5, 'Expanded height should restore');
 
-// 4. Test range tab switching
+// 4. Test range tab switching & no-wrap on large totals (days30)
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab[data-range=\'days30\']").click()');
+await new Promise(r => setTimeout(r, 200));
+const activeRange30 = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab.is-active").dataset.range');
+assert.equal(activeRange30, 'days30');
+const tokenTotalDays30 = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".token-summary-number").innerText');
+const summaryValHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".token-summary-val").getBoundingClientRect().height');
+assert.ok(summaryValHeight < 45, 'Token summary must remain single-line (no wrap to 72px)');
+console.log('  Switched to days30:', activeRange30, 'total tokens:', tokenTotalDays30, 'valHeight:', summaryValHeight);
+
+// 4.1. Test range tab switching
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab[data-range=\'days7\']").click()');
 await new Promise(r => setTimeout(r, 200));
 const activeRange = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab.is-active").dataset.range');
@@ -54,6 +64,8 @@ if (accounts.length > 1) {
 }
 
 // 6. Test capsule arrow toggle
+await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__.showPopover()');
+await new Promise(r => setTimeout(r, 150));
 const capsuleArrowOpen = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector("codex-usage-header-host").shadowRoot.querySelector(".capsule-arrow")?.innerText');
 assert.equal(capsuleArrowOpen, '▴');
 
