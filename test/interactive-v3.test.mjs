@@ -10,6 +10,11 @@ assert.ok(target, 'Target must exist');
 // 1. Show popover
 await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__.showPopover()');
 await new Promise(r => setTimeout(r, 250));
+
+// Ensure Google AI Pro is toggled ON for interactive checks
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".google-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
+await new Promise(r => setTimeout(r, 250));
+
 const initialHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
 assert.ok(initialHeight > 500, 'Initial height should be > 500');
 
@@ -73,5 +78,20 @@ await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDe
 await new Promise(r => setTimeout(r, 300));
 const capsuleArrowClosed = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector("codex-usage-header-host").shadowRoot.querySelector(".capsule-arrow")?.innerText');
 assert.equal(capsuleArrowClosed, '▾');
+
+// 7. Test toggling Google AI Pro off and on
+await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__.showPopover()');
+await new Promise(r => setTimeout(r, 100));
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".google-toggle-btn").click()');
+await new Promise(r => setTimeout(r, 200));
+const hasGoogleOff = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".quota-extension-title")?.innerText.includes("Google AI Pro"))');
+assert.equal(hasGoogleOff, false);
+console.log('  Google AI Pro toggled off successfully (card hidden)');
+
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".google-toggle-btn").click()');
+await new Promise(r => setTimeout(r, 200));
+const hasGoogleOn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".quota-extension-title")?.innerText.includes("Google AI Pro"))');
+assert.equal(hasGoogleOn, true);
+console.log('  Google AI Pro toggled on successfully (card restored)');
 
 console.log('✓ All V3 Interactive and Layout tests passed perfectly!');

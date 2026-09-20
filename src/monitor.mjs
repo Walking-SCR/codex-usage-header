@@ -36,9 +36,12 @@ function releaseLock() { try { unlinkSync(LOCK_PATH); } catch { /* already relea
 function readSettings() {
   try {
     const value = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'));
-    return { refreshIntervalSeconds: Number(value.refreshIntervalSeconds) === 60 ? 60 : 30 };
+    return {
+      refreshIntervalSeconds: Number(value.refreshIntervalSeconds) === 60 ? 60 : 30,
+      enableGoogleAiPro: Boolean(value.enableGoogleAiPro),
+    };
   } catch {
-    return { refreshIntervalSeconds: 30 };
+    return { refreshIntervalSeconds: 30, enableGoogleAiPro: false };
   }
 }
 
@@ -47,6 +50,7 @@ function persistSettings(settings) {
   writeFileSync(SETTINGS_PATH, JSON.stringify({
     schemaVersion: 1,
     refreshIntervalSeconds: settings.refreshIntervalSeconds,
+    enableGoogleAiPro: Boolean(settings.enableGoogleAiPro),
   }, null, 2));
 }
 
@@ -130,8 +134,11 @@ async function run(cdpPort) {
         const seconds = Number(command.payload?.refreshIntervalSeconds);
         if (seconds === 30 || seconds === 60) {
           settings.refreshIntervalSeconds = seconds;
-          persistSettings(settings);
         }
+        if (typeof command.payload?.enableGoogleAiPro === 'boolean') {
+          settings.enableGoogleAiPro = command.payload.enableGoogleAiPro;
+        }
+        persistSettings(settings);
         seenCommands.add(command.id);
         nextRefreshAt = 0;
       }
@@ -148,7 +155,7 @@ async function run(cdpPort) {
         nextTokensAt = Date.now() + tokensIntervalMs;
       }
 
-      if (Date.now() >= nextGeminiAt) {
+      if (settings.enableGoogleAiPro && Date.now() >= nextGeminiAt) {
         nextGeminiAt = Date.now() + geminiIntervalMs;
         extendedCoordinator.refreshGemini().then(() => {
           extendedRevision += 1;
@@ -157,9 +164,11 @@ async function run(cdpPort) {
 
       if (manualRequests.length > 0) {
         extendedCoordinator.scanTokensIncremental();
-        extendedCoordinator.refreshGemini().then(() => {
-          extendedRevision += 1;
-        }).catch(() => {});
+        if (settings.enableGoogleAiPro) {
+          extendedCoordinator.refreshGemini().then(() => {
+            extendedRevision += 1;
+          }).catch(() => {});
+        }
         extendedRevision += 1;
       }
 

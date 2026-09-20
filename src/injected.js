@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.5.0';
+  const RUNTIME_VERSION = '3.6.0';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -46,6 +46,7 @@
   const defaultSettings = {
     locale: /^zh/i.test(document.documentElement.lang || navigator.language || '') ? 'zh-CN' : 'en-US',
     refreshIntervalSeconds: 30,
+    enableGoogleAiPro: false,
   };
 
   function safeSettings() {
@@ -54,6 +55,7 @@
       return {
         locale: saved.locale === 'zh-CN' || saved.locale === 'en-US' ? saved.locale : defaultSettings.locale,
         refreshIntervalSeconds: Number(saved.refreshIntervalSeconds) === 60 ? 60 : 30,
+        enableGoogleAiPro: Boolean(saved.enableGoogleAiPro ?? defaultSettings.enableGoogleAiPro),
       };
     } catch {
       return { ...defaultSettings };
@@ -160,6 +162,8 @@
       settingsSaved: '刷新频率已保存',
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token处理量',
+      toggleGoogle: 'Google AI Pro (开启/关闭)',
+      noGoogleAccounts: '未检测到本地 Google AI Pro 账号配置',
       today: '今天',
       days7: '近7日',
       days30: '近30日',
@@ -210,6 +214,8 @@
       settingsSaved: 'Refresh interval saved',
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token usage',
+      toggleGoogle: 'Google AI Pro (Toggle on/off)',
+      noGoogleAccounts: 'No local Google AI Pro accounts found',
       today: 'Today',
       days7: 'Last 7 days',
       days30: 'Last 30 days',
@@ -521,6 +527,16 @@
           switchLocale();
         }
       }
+      else if (path.find(node => node?.classList?.contains('google-toggle-btn'))) {
+        settings.enableGoogleAiPro = !settings.enableGoogleAiPro;
+        persistSettings();
+        emitCommand('settings', { enableGoogleAiPro: settings.enableGoogleAiPro });
+        if (settings.enableGoogleAiPro) {
+          emitCommand('refresh', {}, false);
+        }
+        renderAll();
+        positionPopover();
+      }
       else if (googleToggle) {
         googleCollapsed = !googleCollapsed;
         try { localStorage.setItem('codexQuotaHeader.googleCollapsed', String(googleCollapsed)); } catch { /* ignore */ }
@@ -650,72 +666,6 @@
     const anti = extendedUsageState.antigravity || {};
     const tok = extendedUsageState.tokens || {};
 
-    const accounts = anti.accounts || [];
-    const savedAccount = typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.selectedAntigravityAccount') : null;
-    const manualAccount = accounts.find(a => a.email === (anti.selectedAccount || savedAccount));
-    const isManualValid = manualAccount && isAccountAvailable(manualAccount);
-    const activeAccount = (isManualValid ? manualAccount : accounts.find(isAccountAvailable)) || accounts[0] || anti;
-    const activeRows = activeAccount.rows || anti.rows || [];
-
-    let accountTabsHtml = '';
-    if (accounts.length > 1) {
-      accountTabsHtml = '<div class="quota-extension-account-tabs">'
-        + accounts.map((acc, idx) => {
-          const isActive = (acc.email === activeAccount.email);
-          const tabLabel = acc.label || (acc.email ? acc.email.split('@')[0] : '') || (isZh ? ('账号' + (idx + 1)) : ('Account ' + (idx + 1)));
-          return '<button type="button" class="quota-extension-account-tab ' + (isActive ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" title="' + esc(acc.email) + '">'
-            + esc(tabLabel)
-            + '</button>';
-        }).join('')
-        + '</div>';
-    }
-
-    const chevronSvg = '<svg class="chevron-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">'
-      + (googleCollapsed ? '<polyline points="6 9 12 15 18 9"></polyline>' : '<polyline points="18 15 12 9 6 15"></polyline>')
-      + '</svg>';
-
-    let geminiRowsHtml = '';
-    if (!googleCollapsed) {
-      if (activeRows && activeRows.length > 0) {
-        geminiRowsHtml = '<div class="quota-extension-rows">'
-          + activeRows.map((row, idx) => {
-            const color = getQuotaColor(row.remainingPercent);
-            const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
-              ? row.remainingPercent + '%'
-              : '0%';
-            const countdownStr = isZh ? (row.countdown?.zh || '') : (row.countdown?.en || '');
-            const resetInfo = row.unavailable ? esc(t('noData')) : esc(countdownStr || t('imminent'));
-
-            return '<div class="quota-extension-row' + (idx === activeRows.length - 1 ? ' is-last' : '') + '">'
-              + '<span class="quota-extension-label">' + esc(row.label) + '</span>'
-              + '<span class="quota-extension-track"><span class="quota-extension-fill" style="width:' + (row.unavailable ? 0 : (row.remainingPercent || 0)) + '%;background:' + color + '"></span></span>'
-              + '<span class="quota-extension-percent">' + esc(percentText) + '</span>'
-              + '<span class="quota-extension-value">' + esc(resetInfo) + '</span>'
-              + '</div>';
-          }).join('')
-          + '</div>';
-      } else {
-        geminiRowsHtml = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
-      }
-    }
-
-    const sparkleSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#1A73E8"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg>';
-
-    const geminiSection = '<div class="card-section quota-extension-section">'
-      + '<div class="quota-extension-header' + (!googleCollapsed && activeRows?.length ? ' has-rows' : '') + '">'
-      + '<div class="quota-extension-title-wrap">'
-      + sparkleSvg
-      + '<span class="quota-extension-title">' + esc(t('geminiTitle')) + '</span>'
-      + '</div>'
-      + '<div class="quota-extension-header-actions">'
-      + accountTabsHtml
-      + '<button type="button" class="quota-extension-toggle" aria-label="Toggle Google AI Pro">' + chevronSvg + '</button>'
-      + '</div>'
-      + '</div>'
-      + geminiRowsHtml
-      + '</div>';
-
-    // Token Section
     const selectedRange = tok.selectedRange || 'today';
     const rangeTabs = '<div class="quota-extension-range-tabs">'
       + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'today' ? 'is-active' : '') + '" data-range="today">' + esc(t('today')) + '</button>'
@@ -779,6 +729,77 @@
       + rangeTabs
       + '</div>'
       + tokenContent
+      + '</div>';
+
+    if (!settings.enableGoogleAiPro) {
+      return '<div class="quota-extension">' + tokenSection + '</div>';
+    }
+
+    const accounts = anti.accounts || [];
+    const savedAccount = typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.selectedAntigravityAccount') : null;
+    const manualAccount = accounts.find(a => a.email === (anti.selectedAccount || savedAccount));
+    const isManualValid = manualAccount && isAccountAvailable(manualAccount);
+    const activeAccount = (isManualValid ? manualAccount : accounts.find(isAccountAvailable)) || accounts[0] || anti;
+    const activeRows = activeAccount.rows || anti.rows || [];
+
+    let accountTabsHtml = '';
+    if (accounts.length > 1) {
+      accountTabsHtml = '<div class="quota-extension-account-tabs">'
+        + accounts.map((acc, idx) => {
+          const isActive = (acc.email === activeAccount.email);
+          const tabLabel = acc.label || (acc.email ? acc.email.split('@')[0] : '') || (isZh ? ('账号' + (idx + 1)) : ('Account ' + (idx + 1)));
+          return '<button type="button" class="quota-extension-account-tab ' + (isActive ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" title="' + esc(acc.email) + '">'
+            + esc(tabLabel)
+            + '</button>';
+        }).join('')
+        + '</div>';
+    }
+
+    const chevronSvg = '<svg class="chevron-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">'
+      + (googleCollapsed ? '<polyline points="6 9 12 15 18 9"></polyline>' : '<polyline points="18 15 12 9 6 15"></polyline>')
+      + '</svg>';
+
+    let geminiContent = '';
+    if (!accounts.length) {
+      geminiContent = '<div class="quota-extension-note">' + esc(t('noGoogleAccounts')) + '</div>';
+    } else if (!googleCollapsed) {
+      if (activeRows && activeRows.length > 0) {
+        geminiContent = '<div class="quota-extension-rows">'
+          + activeRows.map((row, idx) => {
+            const color = getQuotaColor(row.remainingPercent);
+            const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
+              ? row.remainingPercent + '%'
+              : '0%';
+            const countdownStr = isZh ? (row.countdown?.zh || '') : (row.countdown?.en || '');
+            const resetInfo = row.unavailable ? esc(t('noData')) : esc(countdownStr || t('imminent'));
+
+            return '<div class="quota-extension-row' + (idx === activeRows.length - 1 ? ' is-last' : '') + '">'
+              + '<span class="quota-extension-label">' + esc(row.label) + '</span>'
+              + '<span class="quota-extension-track"><span class="quota-extension-fill" style="width:' + (row.unavailable ? 0 : (row.remainingPercent || 0)) + '%;background:' + color + '"></span></span>'
+              + '<span class="quota-extension-percent">' + esc(percentText) + '</span>'
+              + '<span class="quota-extension-value">' + esc(resetInfo) + '</span>'
+              + '</div>';
+          }).join('')
+          + '</div>';
+      } else {
+        geminiContent = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
+      }
+    }
+
+    const sparkleSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#1A73E8"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg>';
+
+    const geminiSection = '<div class="card-section quota-extension-section">'
+      + '<div class="quota-extension-header' + (!googleCollapsed && activeRows?.length ? ' has-rows' : '') + '">'
+      + '<div class="quota-extension-title-wrap">'
+      + sparkleSvg
+      + '<span class="quota-extension-title">' + esc(t('geminiTitle')) + '</span>'
+      + '</div>'
+      + '<div class="quota-extension-header-actions">'
+      + accountTabsHtml
+      + '<button type="button" class="quota-extension-toggle" aria-label="Toggle Google AI Pro">' + chevronSvg + '</button>'
+      + '</div>'
+      + '</div>'
+      + geminiContent
       + '</div>';
 
     return '<div class="quota-extension">'
@@ -871,7 +892,9 @@
       '.lang-opt{color:' + (dark ? '#8E8E93' : '#8E8E93') + ';font-weight:500;padding:1px 3px;border-radius:4px;transition:all .15s ease}',
       '.lang-opt.is-active{color:#007AFF;font-weight:700}',
       '.lang-sep{color:' + (dark ? 'rgba(255,255,255,.2)' : 'rgba(0,0,0,.15)') + ';font-size:10.5px}',
-      '.card-refresh{width:28px;padding:0;display:grid;place-items:center}',
+      '.card-refresh,.google-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
+      '.google-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.google-toggle-btn.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
       '.card-refresh .icon,.card-refresh svg{width:15px;height:15px}',
       '.card-refresh.state-loading .icon,.card-refresh.state-loading svg{animation:quota-refresh-spin .72s linear infinite}',
       '.language-toggle:hover,.card-refresh:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + '}',
@@ -963,6 +986,7 @@
       + '<span class="lang-sep">/</span>'
       + '<span class="lang-opt' + (!isZh ? ' is-active' : '') + '" data-lang="en-US">EN</span>'
       + '</button> <!-- 中 / EN -->'
+      + '<button type="button" class="google-toggle-btn' + (settings.enableGoogleAiPro ? ' is-active' : '') + '" aria-label="' + esc(t('toggleGoogle')) + '" title="' + esc(t('toggleGoogle')) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg></button>'
       + '<button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button>'
       + '</div>'
       + '</div>'
