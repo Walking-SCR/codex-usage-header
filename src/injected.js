@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.7.0';
+  const RUNTIME_VERSION = '3.8.0';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -465,14 +465,27 @@
     }
   }
 
+  let lastExpiredRefresh = 0;
   function updateCountdowns() {
     if (!host || !usageState.secondary) return;
     const now = Math.floor(Date.now() / 1000);
     if (usageState.primary && usageState.primary.resetsAt > 0) {
       usageState.primary.secondsRemaining = Math.min(5 * 3600, Math.max(0, usageState.primary.resetsAt - now));
+      if (usageState.primary.resetsAt <= now && now - usageState.primary.resetsAt >= 5 && Date.now() - lastExpiredRefresh > 30000) {
+        lastExpiredRefresh = Date.now();
+        requestUsage({ manual: false });
+      }
     }
     if (usageState.secondary && usageState.secondary.resetsAt > 0) {
       usageState.secondary.secondsRemaining = Math.min(7 * 86400, Math.max(0, usageState.secondary.resetsAt - now));
+    }
+    const anti = extendedUsageState.antigravity;
+    if (settings.enableGoogleAiPro && anti && anti.rows && anti.rows.length) {
+      const expiredRow = anti.rows.find(r => !r.unavailable && r.resetTime && r.resetTime <= now && (now - r.resetTime >= 5));
+      if (expiredRow && Date.now() - lastExpiredRefresh > 30000) {
+        lastExpiredRefresh = Date.now();
+        requestUsage({ manual: false });
+      }
     }
     renderHost();
     if (popover?.classList.contains('is-visible')) renderPopover();

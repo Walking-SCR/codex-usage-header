@@ -145,8 +145,9 @@ async function run(cdpPort) {
         seenCommands.add(command.id);
         nextRefreshAt = 0;
       }
-      const manualRequests = commands.filter(command => command.kind === 'refresh' && command.manual && command.id && !seenCommands.has(command.id));
-      for (const command of manualRequests) seenCommands.add(command.id);
+      const refreshCommands = commands.filter(command => command.kind === 'refresh' && command.id && !seenCommands.has(command.id));
+      for (const command of refreshCommands) seenCommands.add(command.id);
+      const manualRequests = refreshCommands.filter(command => command.manual);
       const anyVisible = valid.some(item => !item.state.hidden);
       const tokensIntervalMs = anyVisible ? 30000 : 180000;
       const geminiIntervalMs = anyVisible ? 180000 : 600000;
@@ -165,7 +166,7 @@ async function run(cdpPort) {
         }).catch(() => {});
       }
 
-      if (manualRequests.length > 0) {
+      if (refreshCommands.length > 0) {
         extendedCoordinator.scanTokensIncremental();
         if (settings.enableGoogleAiPro) {
           extendedCoordinator.refreshGemini().then(() => {
@@ -175,7 +176,7 @@ async function run(cdpPort) {
         extendedRevision += 1;
       }
 
-      const shouldRefresh = Date.now() >= nextRefreshAt || notificationPending || manualRequests.length > 0;
+      const shouldRefresh = Date.now() >= nextRefreshAt || notificationPending || refreshCommands.length > 0;
       let refreshed = false;
       let refreshError = null;
       if (shouldRefresh) {
