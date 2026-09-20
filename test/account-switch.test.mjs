@@ -60,4 +60,28 @@ manager.selectedAccount = 'accountA@gmail.com';
 const snapshot = manager.getSnapshot();
 assert.equal(snapshot.selectedAccount, 'accountB@gmail.com');
 
+// 4. Test priority-based initial default selection
+const priorityAccountLow = {
+  ...healthyAccountA,
+  priority: 50,
+};
+const priorityAccountHigh = {
+  ...healthyAccountB,
+  priority: 100,
+};
+
+const priorityManager = new GeminiQuotaManager();
+priorityManager.cache = {
+  status: 'ready',
+  plan: 'Gemini AI Pro',
+  accounts: [priorityAccountLow, priorityAccountHigh],
+  rows: [],
+};
+
+// With no manual override, high priority account (priority 100) must be selected by default
+priorityManager.selectedAccount = null;
+const prioritySnapshot = priorityManager.getSnapshot();
+assert.equal(prioritySnapshot.selectedAccount, 'accountB@gmail.com');
+assert.equal(prioritySnapshot.accounts[0].email, 'accountB@gmail.com');
+
 console.log('✓ Intelligent active account auto-failover passed!');

@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.8.0';
+  const RUNTIME_VERSION = '3.9.3';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -47,6 +47,7 @@
     locale: /^zh/i.test(document.documentElement.lang || navigator.language || '') ? 'zh-CN' : 'en-US',
     refreshIntervalSeconds: 30,
     enableGoogleAiPro: false,
+    enableTokenUsage: false,
   };
 
   function safeSettings() {
@@ -56,6 +57,7 @@
         locale: saved.locale === 'zh-CN' || saved.locale === 'en-US' ? saved.locale : defaultSettings.locale,
         refreshIntervalSeconds: Number(saved.refreshIntervalSeconds) === 60 ? 60 : 30,
         enableGoogleAiPro: Boolean(saved.enableGoogleAiPro ?? defaultSettings.enableGoogleAiPro),
+        enableTokenUsage: Boolean(saved.enableTokenUsage ?? defaultSettings.enableTokenUsage),
       };
     } catch {
       return { ...defaultSettings };
@@ -161,9 +163,11 @@
       locale: '切换语言',
       settingsSaved: '刷新频率已保存',
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
-      tokenUsage: 'Token处理量',
+      tokenUsage: 'Token使用量', // Token处理量
       toggleGoogle: 'Google AI Pro (开启/关闭)',
+      toggleStats: 'Token使用量 (开启/关闭)',
       noGoogleAccounts: '未检测到本地 Google AI Pro 账号配置',
+      noResetCoupons: '暂无可用重置券',
       today: '今天',
       days7: '近7日',
       days30: '近30日',
@@ -215,7 +219,9 @@
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token usage',
       toggleGoogle: 'Google AI Pro (Toggle on/off)',
+      toggleStats: 'Token usage (Toggle on/off)',
       noGoogleAccounts: 'No local Google AI Pro accounts found',
+      noResetCoupons: 'No available reset coupons',
       today: 'Today',
       days7: 'Last 7 days',
       days30: 'Last 30 days',
@@ -550,6 +556,16 @@
         renderAll();
         positionPopover();
       }
+      else if (path.find(node => node?.classList?.contains('stats-toggle-btn'))) {
+        settings.enableTokenUsage = !settings.enableTokenUsage;
+        persistSettings();
+        emitCommand('settings', { enableTokenUsage: settings.enableTokenUsage });
+        if (settings.enableTokenUsage) {
+          emitCommand('refresh', {}, false);
+        }
+        renderAll();
+        positionPopover();
+      }
       else if (googleToggle) {
         googleCollapsed = !googleCollapsed;
         try { localStorage.setItem('codexQuotaHeader.googleCollapsed', String(googleCollapsed)); } catch { /* ignore */ }
@@ -566,8 +582,8 @@
       } else if (accountTab) {
         const account = accountTab.dataset.account;
         if (account) {
+          extendedUsageState.antigravity.userSelectedAccount = account;
           extendedUsageState.antigravity.selectedAccount = account;
-          try { localStorage.setItem('codexQuotaHeader.selectedAntigravityAccount', account); } catch { /* ignore */ }
           renderPopover();
           positionPopover();
         }
@@ -650,7 +666,7 @@
   }
 
   function isAccountAvailable(acc) {
-    if (!acc || acc.status === 'error') return false;
+    if (!acc || acc.disabled || acc.status === 'error' || acc.status === 'disabled') return false;
     const rows = acc.rows || [];
     if (!rows.length) return false;
     const gemini5h = rows.find(r => r.label === 'Gemini 5h');
@@ -699,85 +715,98 @@
     return String(tokens);
   }
 
+  function renderEmptyState(iconSvg, text) {
+    return '<div class="empty-state-box">'
+      + '<div class="empty-state-icon">' + iconSvg + '</div>'
+      + '<div class="empty-state-text">' + esc(text) + '</div>'
+      + '</div>';
+  }
+
   function renderExtendedUsage(dark) {
     const isZh = settings.locale === 'zh-CN';
     const anti = extendedUsageState.antigravity || {};
     const tok = extendedUsageState.tokens || {};
 
-    const selectedRange = tok.selectedRange || 'today';
-    const rangeTabs = '<div class="quota-extension-range-tabs">'
-      + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'today' ? 'is-active' : '') + '" data-range="today">' + esc(t('today')) + '</button>'
-      + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'days7' ? 'is-active' : '') + '" data-range="days7">' + esc(t('days7')) + '</button>'
-      + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'days30' ? 'is-active' : '') + '" data-range="days30">' + esc(t('days30')) + '</button>'
-      + '</div>';
+    let tokenSection = '';
+    if (settings.enableTokenUsage) {
+      const selectedRange = tok.selectedRange || 'today';
+      const rangeTabs = '<div class="quota-extension-range-tabs">'
+        + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'today' ? 'is-active' : '') + '" data-range="today">' + esc(t('today')) + '</button>'
+        + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'days7' ? 'is-active' : '') + '" data-range="days7">' + esc(t('days7')) + '</button>'
+        + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'days30' ? 'is-active' : '') + '" data-range="days30">' + esc(t('days30')) + '</button>'
+        + '</div>';
 
-    let tokenContent = '';
-    if (tok.status === 'building') {
-      tokenContent = '<div class="quota-extension-note">' + esc(t('buildingHistory')) + '...</div>';
-    } else {
-      const rangeData = tok.ranges?.[selectedRange];
-      if (!rangeData) {
-        tokenContent = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
+      const barChartEmptySvg = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="13" width="3.5" height="8" rx="1.2"></rect><rect x="10.25" y="8" width="3.5" height="13" rx="1.2"></rect><rect x="16.5" y="3" width="3.5" height="18" rx="1.2"></rect></svg>';
+
+      let tokenContent = '';
+      if (tok.status === 'building') {
+        tokenContent = renderEmptyState(barChartEmptySvg, t('buildingHistory') + '...');
       } else {
-        const totalFormatted = formatExtendedTokenCount(rangeData.total, isZh);
-        const rawItems = rangeData.items || [];
-        const hasGpt = rawItems.some(i => i.key === 'gpt');
-        const hasGemini = rawItems.some(i => i.key === 'gemini');
-        const hasOther = rawItems.some(i => i.key === 'other');
+        const rangeData = tok.ranges?.[selectedRange];
+        if (!rangeData) {
+          tokenContent = renderEmptyState(barChartEmptySvg, t('noData'));
+        } else {
+          const totalFormatted = formatExtendedTokenCount(rangeData.total, isZh);
+          const rawItems = rangeData.items || [];
+          const hasGpt = rawItems.some(i => i.key === 'gpt');
+          const hasGemini = rawItems.some(i => i.key === 'gemini');
+          const hasOther = rawItems.some(i => i.key === 'other');
 
-        const allItems = [...rawItems];
-        if (!hasGpt) allItems.unshift({ key: 'gpt', label: 'GPT', tokens: 0, percent: '0.0%' });
-        if (!hasGemini) {
-          const gptIdx = allItems.findIndex(i => i.key === 'gpt');
-          allItems.splice(gptIdx + 1, 0, { key: 'gemini', label: 'Gemini', tokens: 0, percent: '0.0%' });
-        }
-        if (!hasOther) {
-          allItems.push({ key: 'other', label: isZh ? '其他' : 'Other', tokens: 0, percent: '0.0%' });
-        }
+          const allItems = [...rawItems];
+          if (!hasGpt) allItems.unshift({ key: 'gpt', label: 'GPT', tokens: 0, percent: '0.0%' });
+          if (!hasGemini) {
+            const gptIdx = allItems.findIndex(i => i.key === 'gpt');
+            allItems.splice(gptIdx + 1, 0, { key: 'gemini', label: 'Gemini', tokens: 0, percent: '0.0%' });
+          }
+          if (!hasOther) {
+            allItems.push({ key: 'other', label: isZh ? '其他' : 'Other', tokens: 0, percent: '0.0%' });
+          }
 
-        const itemRows = allItems.map(item => {
-          const label = item.key === 'other' ? t('other') : item.label;
-          const formatted = formatExtendedTokenCount(item.tokens, isZh);
-          const dotColor = item.key === 'gpt' ? '#007AFF' : item.key === 'gemini' ? '#8B5CF6' : '#9CA3AF';
-          return '<div class="token-model-row">'
-            + '<span class="token-model-label"><span class="token-model-dot" style="background:' + dotColor + '"></span>' + esc(label) + '</span>'
-            + '<span class="token-model-amount">' + esc(formatted) + '</span>'
-            + '<span class="token-model-pct">' + esc(item.percent) + '</span>'
+          const itemRows = allItems.map(item => {
+            const label = item.key === 'other' ? t('other') : item.label;
+            const formatted = formatExtendedTokenCount(item.tokens, isZh);
+            const dotColor = item.key === 'gpt' ? '#007AFF' : item.key === 'gemini' ? '#8B5CF6' : '#9CA3AF';
+            return '<div class="token-model-row">'
+              + '<span class="token-model-label"><span class="token-model-dot" style="background:' + dotColor + '"></span>' + esc(label) + '</span>'
+              + '<span class="token-model-amount">' + esc(formatted) + '</span>'
+              + '<span class="token-model-pct">' + esc(item.percent) + '</span>'
+              + '</div>';
+          }).join('');
+
+          tokenContent = '<div class="quota-extension-token-table">'
+            + '<div class="token-summary-col">'
+            + '<span class="token-summary-label">' + esc(t('total')) + '</span>'
+            + '<div class="token-summary-val"><span class="token-summary-number">' + esc(totalFormatted) + '</span><span class="token-summary-unit"> Token</span></div>'
+            + '</div>'
+            + '<div class="token-models-col">' + itemRows + '</div>'
             + '</div>';
-        }).join('');
-
-        tokenContent = '<div class="quota-extension-token-table">'
-          + '<div class="token-summary-col">'
-          + '<span class="token-summary-label">' + esc(t('total')) + '</span>'
-          + '<div class="token-summary-val"><span class="token-summary-number">' + esc(totalFormatted) + '</span><span class="token-summary-unit"> Token</span></div>'
-          + '</div>'
-          + '<div class="token-models-col">' + itemRows + '</div>'
-          + '</div>';
+        }
       }
+
+      const chartSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#007AFF"><rect x="3" y="11" width="3.8" height="10" rx="1.2"></rect><rect x="10.1" y="6" width="3.8" height="15" rx="1.2"></rect><rect x="17.2" y="2" width="3.8" height="19" rx="1.2"></rect></svg>';
+
+      tokenSection = '<div class="card-section quota-extension-section">'
+        + '<div class="quota-extension-header has-rows">'
+        + '<div class="quota-extension-title-wrap">'
+        + chartSvg
+        + '<span class="quota-extension-title">' + esc(t('tokenUsage')) + '</span>'
+        + '</div>'
+        + rangeTabs
+        + '</div>'
+        + tokenContent
+        + '</div>';
     }
 
-    const chartSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#007AFF"><rect x="3" y="11" width="3.8" height="10" rx="1.2"></rect><rect x="10.1" y="6" width="3.8" height="15" rx="1.2"></rect><rect x="17.2" y="2" width="3.8" height="19" rx="1.2"></rect></svg>';
-
-    const tokenSection = '<div class="card-section quota-extension-section">'
-      + '<div class="quota-extension-header has-rows">'
-      + '<div class="quota-extension-title-wrap">'
-      + chartSvg
-      + '<span class="quota-extension-title">' + esc(t('tokenUsage')) + '</span>'
-      + '</div>'
-      + rangeTabs
-      + '</div>'
-      + tokenContent
-      + '</div>';
-
+    let geminiSection = '';
     if (!settings.enableGoogleAiPro) {
+      if (!tokenSection) return '';
       return '<div class="quota-extension">' + tokenSection + '</div>';
     }
 
     const accounts = anti.accounts || [];
-    const savedAccount = typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.selectedAntigravityAccount') : null;
-    const manualAccount = accounts.find(a => a.email === (anti.selectedAccount || savedAccount));
+    const manualAccount = anti.userSelectedAccount ? accounts.find(a => a.email === anti.userSelectedAccount) : null;
     const isManualValid = manualAccount && isAccountAvailable(manualAccount);
-    const activeAccount = (isManualValid ? manualAccount : accounts.find(isAccountAvailable)) || accounts[0] || anti;
+    const activeAccount = (isManualValid ? manualAccount : (accounts.find(a => a.email === anti.selectedAccount) || accounts.find(isAccountAvailable))) || accounts[0] || anti;
     const activeRows = activeAccount.rows || anti.rows || [];
 
     let accountTabsHtml = '';
@@ -797,11 +826,12 @@
       + (googleCollapsed ? '<polyline points="6 9 12 15 18 9"></polyline>' : '<polyline points="18 15 12 9 6 15"></polyline>')
       + '</svg>';
 
+    const docEmptySvg = '<svg width="22" height="24" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M5 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5zm3 5a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1zm0 4a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1zm0 4a1 1 0 0 1 1-1h4a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1z"/></svg>';
+
     let geminiContent = '';
-    if (!accounts.length) {
-      geminiContent = '<div class="quota-extension-note">' + esc(t('noGoogleAccounts')) + '</div>';
+    if (!accounts.length || !activeRows || activeRows.length === 0) {
+      geminiContent = renderEmptyState(docEmptySvg, t('noData'));
     } else if (!googleCollapsed) {
-      if (activeRows && activeRows.length > 0) {
         geminiContent = '<div class="quota-extension-rows">'
           + activeRows.map((row, idx) => {
             const color = getQuotaColor(row.remainingPercent);
@@ -819,14 +849,11 @@
               + '</div>';
           }).join('')
           + '</div>';
-      } else {
-        geminiContent = '<div class="quota-extension-note">' + esc(t('noData')) + '</div>';
-      }
     }
 
     const sparkleSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#1A73E8"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg>';
 
-    const geminiSection = '<div class="card-section quota-extension-section">'
+    geminiSection = '<div class="card-section quota-extension-section">'
       + '<div class="quota-extension-header' + (!googleCollapsed && activeRows?.length ? ' has-rows' : '') + '">'
       + '<div class="quota-extension-title-wrap">'
       + sparkleSvg
@@ -840,6 +867,7 @@
       + geminiContent
       + '</div>';
 
+    if (!geminiSection && !tokenSection) return '';
     return '<div class="quota-extension">'
       + geminiSection
       + tokenSection
@@ -857,6 +885,8 @@
     const sColor = getQuotaColor(s?.remainingPercent);
     const message = usageState.status === 'error' ? t('unavailable') : t('syncing');
 
+    const ticketEmptySvg = '<svg width="24" height="20" viewBox="0 0 24 20" fill="currentColor"><path d="M22 6C20.9 6 20 5.1 20 4V3C20 1.9 19.1 1 18 1H6C4.9 1 4 1.9 4 3V4C4 5.1 3.1 6 2 6C0.9 6 0 6.9 0 8V12C0 13.1 0.9 14 2 14C3.1 14 4 14.9 4 16V17C4 18.1 4.9 19 6 19H18C19.1 19 20 18.1 20 17V16C20 14.9 20.9 14 22 14C23.1 14 24 13.1 24 12V8C24 6.9 23.1 6 22 6ZM12 4.5a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1ZM12 11.5a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1Z"/></svg>';
+
     const details = usageState.resetCreditDetails.length
       ? usageState.resetCreditDetails.map(item => {
         const expiry = item.expiresAt
@@ -866,7 +896,7 @@
           : t('noResetDetails');
         return '<div class="credit-detail"><strong>' + esc(t('fullReset')) + '</strong><span>' + esc(expiry) + '</span></div>';
       }).join('')
-      : '<div class="credit-detail muted"><span>' + esc(t('noResetDetails')) + '</span></div>';
+      : renderEmptyState(ticketEmptySvg, t('noResetCoupons'));
 
     const pPercent = (p?.remainingPercent ?? '—') + '%';
     const sPercent = (s?.remainingPercent ?? '—') + '%';
@@ -909,7 +939,7 @@
       + '</span>'
       + '</div>';
 
-    const voucherSection = '<div class="reset-voucher-section">'
+    const voucherSection = '<div class="card-section reset-voucher-section">'
       + voucherBanner
       + '<div class="credit-details">' + details + '</div>'
       + '</div>';
@@ -930,13 +960,17 @@
       '.lang-opt{color:' + (dark ? '#8E8E93' : '#8E8E93') + ';font-weight:500;padding:1px 3px;border-radius:4px;transition:all .15s ease}',
       '.lang-opt.is-active{color:#007AFF;font-weight:700}',
       '.lang-sep{color:' + (dark ? 'rgba(255,255,255,.2)' : 'rgba(0,0,0,.15)') + ';font-size:10.5px}',
-      '.card-refresh,.google-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
-      '.google-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
-      '.google-toggle-btn.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
-      '.card-refresh .icon,.card-refresh svg{width:15px;height:15px}',
+      '.card-refresh,.google-toggle-btn,.stats-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
+      '.google-toggle-btn:hover,.stats-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.google-toggle-btn.is-active,.stats-toggle-btn.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
+      '.card-refresh .icon,.card-refresh svg{width:15px;height:15px;display:block}',
+      '.card-refresh.state-loading{color:#007AFF;border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';background:' + (dark ? 'rgba(10,132,255,.15)' : 'rgba(0,122,255,.08)') + '}',
       '.card-refresh.state-loading .icon,.card-refresh.state-loading svg{animation:quota-refresh-spin .72s linear infinite}',
       '.language-toggle:hover,.card-refresh:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + '}',
       '@keyframes quota-refresh-spin{to{transform:rotate(360deg)}}',
+      '@keyframes quota-number-shimmer{0%{opacity:.35;filter:blur(0.4px)}50%{opacity:.85;filter:blur(0px)}100%{opacity:.35;filter:blur(0.4px)}}',
+      '.popover-shell.is-refreshing .percent,.popover-shell.is-refreshing .row .value,.popover-shell.is-refreshing .quota-extension-percent,.popover-shell.is-refreshing .quota-extension-value,.popover-shell.is-refreshing .token-summary-number,.popover-shell.is-refreshing .token-model-amount,.popover-shell.is-refreshing .token-model-pct,.popover-shell.is-refreshing .credits-text,.popover-shell.is-refreshing .balance{animation:quota-number-shimmer .75s ease-in-out infinite;transition:opacity .2s ease}',
+      '.popover-shell.is-refreshing .fill,.popover-shell.is-refreshing .quota-extension-fill{opacity:.45;transition:opacity .2s ease}',
       '.refresh-error-note{font-size:11.5px;color:#FF3B30;margin-top:4px}',
 
       '.card-section{background:' + (dark ? 'rgba(255,255,255,.04)' : '#F9FAFB') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.04)') + ';border-radius:12px;padding:14px 16px;margin-top:10px}',
@@ -955,17 +989,21 @@
       '.row .value .info-remain{font-size:11px;color:' + (dark ? '#A1A1A6' : '#6B7280') + '}',
 
       '.reset-voucher-section{margin-top:10px}',
-      '.meta-row{display:flex;align-items:center;width:100%;background:' + (dark ? 'rgba(10,132,255,.14)' : 'rgba(239,246,255,.85)') + ';border:1px solid ' + (dark ? 'rgba(10,132,255,.24)' : 'rgba(59,130,246,.15)') + ';border-radius:10px;padding:9px 14px}',
+      '.meta-row{display:flex;align-items:center;width:100%;background:transparent;border:0;border-radius:0;padding:0;margin-bottom:12px}',
       '.meta-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;white-space:nowrap;flex-wrap:nowrap}',
       '.credits-copy{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-weight:600;font-size:12.5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
       '.credits-copy .credit-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}',
-      '.credits-copy .info-bubble{cursor:default;font-size:13px;color:' + (dark ? '#A1A1A6' : '#9CA3AF') + ';margin-left:2px}',
       '.balance{color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font-size:12px;font-weight:550;white-space:nowrap}',
-      '.credit-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin-top:8px;padding-top:0;border-top-width:0px}',
+      '.credit-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin-top:0;padding-top:0;border-top-width:0px}',
       '.credit-detail{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding:12px 16px;font-size:12px;border:1px solid ' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';border-radius:10px;background:' + (dark ? 'rgba(255,255,255,.04)' : '#FFFFFF') + ';transition:all .15s ease}',
       '.credit-detail:hover{border-color:' + (dark ? 'rgba(10,132,255,.4)' : 'rgba(0,122,255,.28)') + ';background:' + (dark ? 'rgba(10,132,255,.08)' : 'rgba(0,122,255,.02)') + '}',
       '.credit-detail strong{font-size:12.5px;font-weight:650;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
       '.credit-detail span{font-size:11px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';white-space:nowrap;margin-top:4px}',
+
+      '.empty-state-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:22px 16px;border:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.05)') + ';border-radius:10px;background:' + (dark ? 'rgba(255,255,255,.02)' : '#FFFFFF') + ';gap:7px}',
+      '.credit-details .empty-state-box{grid-column:1 / -1;margin-top:0}',
+      '.empty-state-icon{display:flex;align-items:center;justify-content:center;color:' + (dark ? '#636366' : '#9CA3AF') + '}',
+      '.empty-state-text{font-size:12px;font-weight:500;color:' + (dark ? '#8E8E93' : '#6B7280') + ';white-space:nowrap}',
 
       '.quota-extension{}',
       '.quota-extension-section{background:' + (dark ? 'rgba(255,255,255,.04)' : '#F9FAFB') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.04)') + ';border-radius:12px;padding:14px 16px;margin-top:10px}',
@@ -1011,7 +1049,7 @@
     ].join('');
 
     return '<style>' + css + '</style>'
-      + '<div class="popover-shell">'
+      + '<div class="popover-shell' + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
       + '<div class="popover-header">'
       + '<div class="popover-title-group">'
       + '<div class="popover-title">' + esc(t('title')) + '</div>'
@@ -1025,6 +1063,7 @@
       + '<span class="lang-opt' + (!isZh ? ' is-active' : '') + '" data-lang="en-US">EN</span>'
       + '</button> <!-- 中 / EN -->'
       + '<button type="button" class="google-toggle-btn' + (settings.enableGoogleAiPro ? ' is-active' : '') + '" aria-label="' + esc(t('toggleGoogle')) + '" title="' + esc(t('toggleGoogle')) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg></button>'
+      + '<button type="button" class="stats-toggle-btn' + (settings.enableTokenUsage ? ' is-active' : '') + '" aria-label="' + esc(t('toggleStats')) + '" title="' + esc(t('toggleStats')) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="11" width="3.8" height="10" rx="1.2"></rect><rect x="10.1" y="6" width="3.8" height="15" rx="1.2"></rect><rect x="17.2" y="2" width="3.8" height="19" rx="1.2"></rect></svg></button>'
       + '<button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button>'
       + '</div>'
       + '</div>'
@@ -1100,7 +1139,6 @@
     const pPie = ' style="--remaining:' + (p?.remainingPercent || 0) + '%;color:' + pColor + '"';
     const sPie = ' style="--remaining:' + (s?.remainingPercent || 0) + '%;color:' + sColor + '"';
     const detailsOpen = popoverState !== 'closed';
-    const arrowMarkup = '<span class="capsule-arrow" aria-hidden="true">' + (detailsOpen ? '▴' : '▾') + '</span>';
     let content;
     if (!showFiveHours && currentMode === 'nano') {
       content = '<span class="label">' + pieLabel + '</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
@@ -1109,15 +1147,15 @@
     } else if (!showFiveHours && currentMode === 'minimal') {
       content = '<span class="label">7d</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
     } else if (!showFiveHours) {
-      content = '<span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span><span class="capsule-arrow" aria-hidden="true">' + (detailsOpen ? '▴' : '▾') + '</span>';
+      content = '<span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
     } else if (currentMode === 'minimal') {
       content = '<span class="label">5h</span><span class="mini-pie"' + pPie + ' aria-hidden="true"></span><span class="divider"></span><span class="label">7d</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
     } else if (currentMode === 'compact') {
-      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value" style="color:' + pColorText + '">' + pValue + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>' + arrowMarkup;
+      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value" style="color:' + pColorText + '">' + pValue + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
     } else {
-      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining, 5 * 3600) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>' + arrowMarkup;
+      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining, 5 * 3600) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>';
     }
-    const style = '<style>*{box-sizing:border-box}:host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}.capsule{height:34px;min-width:0;padding:0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}.details-trigger{height:32px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.details-trigger:focus-visible{outline:2px solid ' + (dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)') + ';outline-offset:2px}.label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}.track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ' + CONFIG.colors.track + ' var(--remaining) 100%);transform:rotate(-90deg)}.value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}.primary-countdown{min-width:0}.divider{flex:none;width:1px;height:16px;margin:0;background:' + (dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)') + '}.capsule-arrow{flex:none;font-size:10px;color:' + (dark ? '#A1A1A6' : '#8E8E93') + ';margin-left:2px;line-height:1;display:inline-flex;align-items:center;justify-content:center}</style><div class="capsule"><button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button></div>';
+    const style = '<style>*{box-sizing:border-box}:host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}.capsule{height:34px;min-width:0;padding:0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}.details-trigger{height:32px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.details-trigger:focus-visible{outline:2px solid ' + (dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)') + ';outline-offset:2px}.label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}.track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ' + CONFIG.colors.track + ' var(--remaining) 100%);transform:rotate(-90deg)}.value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}.primary-countdown{min-width:0}.divider{flex:none;width:1px;height:16px;margin:0;background:' + (dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)') + '}@keyframes quota-number-shimmer{0%{opacity:.35;filter:blur(0.4px)}50%{opacity:.85;filter:blur(0px)}100%{opacity:.35;filter:blur(0.4px)}}.capsule.is-refreshing .value{animation:quota-number-shimmer .75s ease-in-out infinite}</style><div class="capsule' + (refreshState === 'loading' ? ' is-refreshing' : '') + '"><button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button></div>';
     host.shadowRoot.innerHTML = style;
   }
   function updateMode() {

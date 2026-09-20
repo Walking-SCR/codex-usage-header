@@ -15,6 +15,10 @@ await new Promise(r => setTimeout(r, 250));
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".google-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
 await new Promise(r => setTimeout(r, 250));
 
+// Ensure Token Usage is toggled ON for interactive checks
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".stats-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
+await new Promise(r => setTimeout(r, 250));
+
 const initialHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
 assert.ok(initialHeight > 500, 'Initial height should be > 500');
 
@@ -68,16 +72,10 @@ if (accounts.length > 1) {
   console.log('  Switched back to primary account');
 }
 
-// 6. Test capsule arrow toggle
-await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__.showPopover()');
-await new Promise(r => setTimeout(r, 150));
-const capsuleArrowOpen = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector("codex-usage-header-host").shadowRoot.querySelector(".capsule-arrow")?.innerText');
-assert.equal(capsuleArrowOpen, '▴');
-
-await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__.hidePopover()');
-await new Promise(r => setTimeout(r, 300));
-const capsuleArrowClosed = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector("codex-usage-header-host").shadowRoot.querySelector(".capsule-arrow")?.innerText');
-assert.equal(capsuleArrowClosed, '▾');
+ // 6. Verify capsule arrow icon is removed
+ const capsuleArrow = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector("codex-usage-header-host")?.shadowRoot?.querySelector(".capsule-arrow")');
+ assert.equal(capsuleArrow, null, 'Capsule arrow should be removed');
+ console.log('  Capsule arrow icon successfully verified as removed');
 
 // 7. Test toggling Google AI Pro off and on
 await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__.showPopover()');
@@ -93,5 +91,25 @@ await new Promise(r => setTimeout(r, 200));
 const hasGoogleOn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".quota-extension-title")?.innerText.includes("Google AI Pro"))');
 assert.equal(hasGoogleOn, true);
 console.log('  Google AI Pro toggled on successfully (card restored)');
+
+// 8. Test toggling Token Usage (stats-toggle-btn) off and on
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".stats-toggle-btn").click()');
+await new Promise(r => setTimeout(r, 200));
+const hasTokensOff = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean([...document.querySelectorAll(".quota-extension-title")].some(el => el.innerText.includes("Token使用量") || el.innerText.includes("Token处理量")))');
+assert.equal(hasTokensOff, false);
+console.log('  Token Usage toggled off successfully (card hidden)');
+
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".stats-toggle-btn").click()');
+await new Promise(r => setTimeout(r, 200));
+const hasTokensOn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean([...document.querySelectorAll(".quota-extension-title")].some(el => el.innerText.includes("Token使用量") || el.innerText.includes("Token处理量")))');
+assert.equal(hasTokensOn, true);
+console.log('  Token Usage toggled on successfully (card restored)');
+
+// 9. Test refresh animation and loading state
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".card-refresh").click()');
+await new Promise(r => setTimeout(r, 80));
+const isRefreshing = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".popover-shell")?.classList.contains("is-refreshing")');
+assert.equal(isRefreshing, true, 'Popover shell should have is-refreshing class during refresh');
+console.log('  Refresh loading animation state verified (is-refreshing present)');
 
 console.log('✓ All V3 Interactive and Layout tests passed perfectly!');

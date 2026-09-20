@@ -140,7 +140,7 @@ export function matchGeminiStandardRow(groupName, bucketWindow) {
 }
 
 export function isAccountAvailable(acc) {
-  if (!acc || acc.status === 'error') return false;
+  if (!acc || acc.disabled || acc.status === 'error' || acc.status === 'disabled') return false;
   const rows = acc.rows || [];
   if (!rows.length) return false;
   const gemini5h = rows.find(r => r.label === 'Gemini 5h');
@@ -412,10 +412,14 @@ export class GeminiQuotaManager {
     const filename = authFilePath.split('/').pop();
     let email = filename.replace(/^antigravity-/, '').replace(/\.json$/, '');
     let label = email.split('@')[0] || email;
+    let priority = 0;
+    let disabled = false;
 
     try {
       const authData = JSON.parse(readFileSync(authFilePath, 'utf8'));
       if (authData.email) email = authData.email;
+      if (authData.priority !== undefined) priority = Number(authData.priority) || 0;
+      if (authData.disabled !== undefined) disabled = Boolean(authData.disabled);
       label = email.split('@')[0] || email;
     } catch { /* ignore */ }
 
@@ -435,7 +439,9 @@ export class GeminiQuotaManager {
         id: filename,
         email,
         label,
-        status: 'ready',
+        priority,
+        disabled,
+        status: disabled ? 'disabled' : 'ready',
         rows,
         fetchedAt: Date.now(),
         stale: false,
@@ -456,7 +462,9 @@ export class GeminiQuotaManager {
         id: filename,
         email,
         label,
-        status: 'error',
+        priority,
+        disabled,
+        status: disabled ? 'disabled' : 'error',
         rows: [
           { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
           { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
@@ -481,11 +489,13 @@ export class GeminiQuotaManager {
           authFiles.map(f => this.fetchQuotaForFile(f))
         );
 
+        accountResults.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+
         for (const acc of accountResults) {
           this.accountCaches.set(acc.email, acc);
         }
 
-        const manualAccount = accountResults.find(a => a.email === this.selectedAccount);
+        const manualAccount = this.selectedAccount ? accountResults.find(a => a.email === this.selectedAccount) : null;
         const isManualValid = manualAccount && isAccountAvailable(manualAccount);
         const active = (isManualValid ? manualAccount : accountResults.find(isAccountAvailable)) || accountResults[0];
 
@@ -551,7 +561,9 @@ export class GeminiQuotaManager {
       rows: updateRows(acc.rows || []),
     }));
 
-    const manualAccount = accounts.find(a => a.email === this.selectedAccount);
+    accounts.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+
+    const manualAccount = this.selectedAccount ? accounts.find(a => a.email === this.selectedAccount) : null;
     const isManualValid = manualAccount && isAccountAvailable(manualAccount);
     const active = (isManualValid ? manualAccount : accounts.find(isAccountAvailable)) || accounts[0];
 

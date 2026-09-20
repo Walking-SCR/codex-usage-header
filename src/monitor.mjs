@@ -39,9 +39,10 @@ function readSettings() {
     return {
       refreshIntervalSeconds: Number(value.refreshIntervalSeconds) === 60 ? 60 : 30,
       enableGoogleAiPro: Boolean(value.enableGoogleAiPro),
+      enableTokenUsage: Boolean(value.enableTokenUsage),
     };
   } catch {
-    return { refreshIntervalSeconds: 30, enableGoogleAiPro: false };
+    return { refreshIntervalSeconds: 30, enableGoogleAiPro: false, enableTokenUsage: false };
   }
 }
 
@@ -51,6 +52,7 @@ function persistSettings(settings) {
     schemaVersion: 1,
     refreshIntervalSeconds: settings.refreshIntervalSeconds,
     enableGoogleAiPro: Boolean(settings.enableGoogleAiPro),
+    enableTokenUsage: Boolean(settings.enableTokenUsage),
   }, null, 2));
 }
 
@@ -141,6 +143,12 @@ async function run(cdpPort) {
             nextGeminiAt = 0;
           }
         }
+        if (typeof command.payload?.enableTokenUsage === 'boolean') {
+          settings.enableTokenUsage = command.payload.enableTokenUsage;
+          if (settings.enableTokenUsage) {
+            nextTokensAt = 0;
+          }
+        }
         persistSettings(settings);
         seenCommands.add(command.id);
         nextRefreshAt = 0;
@@ -153,7 +161,7 @@ async function run(cdpPort) {
       const geminiIntervalMs = anyVisible ? 180000 : 600000;
       const refreshMs = anyVisible ? settings.refreshIntervalSeconds * 1000 : IDLE_REFRESH_MS;
 
-      if (Date.now() >= nextTokensAt) {
+      if (settings.enableTokenUsage && Date.now() >= nextTokensAt) {
         extendedCoordinator.scanTokensIncremental();
         extendedRevision += 1;
         nextTokensAt = Date.now() + tokensIntervalMs;
@@ -167,7 +175,9 @@ async function run(cdpPort) {
       }
 
       if (refreshCommands.length > 0) {
-        extendedCoordinator.scanTokensIncremental();
+        if (settings.enableTokenUsage) {
+          extendedCoordinator.scanTokensIncremental();
+        }
         if (settings.enableGoogleAiPro) {
           extendedCoordinator.refreshGemini().then(() => {
             extendedRevision += 1;
