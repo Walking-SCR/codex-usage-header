@@ -17,6 +17,12 @@
    // 7d format (days, hours, and minutes)
    assert.equal(formatCountdown(3 * 86400 + 14 * 3600 + 20 * 60, true), '3d 14h 20m');
    assert.equal(formatCountdown(1 * 86400 + 2 * 3600 + 5 * 60, true), '1d 2h 5m');
+
+   // 5h ceiling and exact hour formatting (preventing 5h 1m overflow)
+   assert.equal(formatCountdown(5 * 3600, false, 5 * 3600), '5h');
+   assert.equal(formatCountdown(5 * 3600 + 30, false, 5 * 3600), '5h');
+   assert.equal(formatCountdown(4 * 3600, false, 5 * 3600), '4h');
+   assert.equal(formatCountdown(3600, false, 5 * 3600), '1h');
  }
  
  // 2. Adaptive Breakpoint Classification

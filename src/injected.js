@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.1.0';
+  const RUNTIME_VERSION = '3.2.0';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -254,14 +254,27 @@
     return Number.isFinite(numeric) ? numeric.toFixed(2) : String(value);
   }
 
-  function formatDuration(seconds) {
+  function formatDuration(seconds, maxSeconds = null) {
     if (!Number.isFinite(seconds) || seconds <= 0) return t('imminent');
-    const d = Math.floor(seconds / 86400);
-    const h = Math.floor((seconds % 86400) / 3600);
-    const m = Math.max(1, Math.floor((seconds % 3600) / 60));
-    if (d > 0) return settings.locale === 'zh-CN' ? d + t('days') + ' ' + h + '小时' : d + 'd ' + h + 'h';
-    if (h > 0) return settings.locale === 'zh-CN' ? h + '小时 ' + m + '分钟' : h + 'h ' + m + 'm';
-    return settings.locale === 'zh-CN' ? m + '分钟' : m + 'm';
+    let sec = Math.max(0, seconds);
+    if (Number.isFinite(maxSeconds) && maxSeconds > 0) sec = Math.min(maxSeconds, sec);
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (d > 0) {
+      if (settings.locale === 'zh-CN') {
+        return h > 0 ? d + t('days') + ' ' + h + '小时' : d + t('days');
+      }
+      return h > 0 ? d + 'd ' + h + 'h' : d + 'd';
+    }
+    if (h > 0) {
+      if (settings.locale === 'zh-CN') {
+        return m > 0 ? h + '小时 ' + m + '分钟' : h + '小时';
+      }
+      return m > 0 ? h + 'h ' + m + 'm' : h + 'h';
+    }
+    const displayMinutes = Math.max(1, m);
+    return settings.locale === 'zh-CN' ? displayMinutes + '分钟' : displayMinutes + 'm';
   }
 
   function formatDate(timestamp, includeDate = false) {
@@ -288,18 +301,22 @@
     return ' · ' + formatDate(window.resetsAt, true) + ' ' + t('resetAt');
   }
 
-  function parseWindow(value) {
+  function parseWindow(value, maxSeconds = null) {
     if (!value || typeof value !== 'object') return null;
     const usedRaw = Number(value.usedPercent ?? value.used_percent);
     const used = Number.isFinite(usedRaw) ? Math.max(0, Math.min(100, Math.round(usedRaw))) : 0;
     const resetsAt = Number(value.resetsAt ?? value.reset_at ?? 0);
     const resetAfter = Number(value.resetAfterSeconds ?? value.reset_after_seconds ?? 0);
     const now = Math.floor(Date.now() / 1000);
+    let secondsRemaining = Math.max(0, resetsAt > 0 ? resetsAt - now : resetAfter);
+    if (Number.isFinite(maxSeconds) && maxSeconds > 0) {
+      secondsRemaining = Math.min(maxSeconds, secondsRemaining);
+    }
     return {
       usedPercent: used,
       remainingPercent: 100 - used,
       resetsAt,
-      secondsRemaining: Math.max(0, resetsAt > 0 ? resetsAt - now : resetAfter),
+      secondsRemaining,
     };
   }
 
@@ -312,8 +329,8 @@
       || buckets.codex_other?.primary || legacy.secondary;
     const planType = String(root.planType ?? legacy.planType ?? raw.planType ?? '').toLowerCase();
     const showFiveHours = !planType || planType === 'plus';
-    const primary = parseWindow(root.primary || root.primary_window || root.primaryWindow);
-    const secondary = parseWindow(secondarySource);
+    const primary = parseWindow(root.primary || root.primary_window || root.primaryWindow, 5 * 3600);
+    const secondary = parseWindow(secondarySource, 7 * 86400);
     if (!secondary || (showFiveHours && !primary)) return null;
     // The weekly window is an account-wide ceiling. Once it is exhausted,
     // the shorter window cannot be usable even if its raw bucket is ahead.
@@ -444,6 +461,13 @@
 
   function updateCountdowns() {
     if (!host || !usageState.secondary) return;
+    const now = Math.floor(Date.now() / 1000);
+    if (usageState.primary && usageState.primary.resetsAt > 0) {
+      usageState.primary.secondsRemaining = Math.min(5 * 3600, Math.max(0, usageState.primary.resetsAt - now));
+    }
+    if (usageState.secondary && usageState.secondary.resetsAt > 0) {
+      usageState.secondary.secondsRemaining = Math.min(7 * 86400, Math.max(0, usageState.secondary.resetsAt - now));
+    }
     renderHost();
     if (popover?.classList.contains('is-visible')) renderPopover();
   }
@@ -764,9 +788,9 @@
     const pPercent = (p?.remainingPercent ?? '—') + '%';
     const sPercent = (s?.remainingPercent ?? '—') + '%';
     const pInfoTime = p ? formatDate(p.resetsAt) + ' ' + t('resetAt') : '--:--';
-    const pInfoRemain = weeklyExhausted ? '' : (t('untilReset') + ' ' + formatDuration(p?.secondsRemaining));
+    const pInfoRemain = weeklyExhausted ? '' : (t('untilReset') + ' ' + formatDuration(p?.secondsRemaining, 5 * 3600));
     const sInfoTime = s ? formatDate(s.resetsAt, true) + ' ' + t('resetAt') : '--:--';
-    const sInfoRemain = s ? t('untilReset') + ' ' + formatDuration(s?.secondsRemaining) : '';
+    const sInfoRemain = s ? t('untilReset') + ' ' + formatDuration(s?.secondsRemaining, 7 * 86400) : '';
 
     const primaryRow = showFiveHours
       ? '<div class="row">'
@@ -999,7 +1023,7 @@
     } else if (currentMode === 'compact') {
       content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value" style="color:' + pColorText + '">' + pValue + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>' + arrowMarkup;
     } else {
-      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>' + arrowMarkup;
+      content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining, 5 * 3600) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>' + arrowMarkup;
     }
     const style = '<style>*{box-sizing:border-box}:host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}.capsule{height:34px;min-width:0;padding:0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}.details-trigger{height:32px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.details-trigger:focus-visible{outline:2px solid ' + (dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)') + ';outline-offset:2px}.label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}.track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ' + CONFIG.colors.track + ' var(--remaining) 100%);transform:rotate(-90deg)}.value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}.primary-countdown{min-width:0}.divider{flex:none;width:1px;height:16px;margin:0;background:' + (dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)') + '}.capsule-arrow{flex:none;font-size:10px;color:' + (dark ? '#A1A1A6' : '#8E8E93') + ';margin-left:2px;line-height:1;display:inline-flex;align-items:center;justify-content:center}</style><div class="capsule"><button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button></div>';
     host.shadowRoot.innerHTML = style;

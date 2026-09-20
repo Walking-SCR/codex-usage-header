@@ -8,23 +8,25 @@
   * @param {boolean} includeDays - Whether to include days for multi-day windows
   * @returns {string} e.g. "2h 15m" or "3d 14h 20m"
   */
- export function formatCountdown(seconds, includeDays = false) {
-   if (!Number.isFinite(seconds) || seconds <= 0) {
-     return '即将重置';
-   }
- 
-   const d = Math.floor(seconds / 86400);
-   const h = Math.floor((seconds % 86400) / 3600);
-   const m = Math.floor((seconds % 3600) / 60);
- 
-   if (includeDays && d > 0) {
-     return `${d}d ${h}h ${m}m`;
-   }
-   if (h > 0) {
-     return `${h}h ${m}m`;
-   }
-   return `${Math.max(1, m)}m`;
- }
+ export function formatCountdown(seconds, includeDays = false, maxSeconds = null) {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return '即将重置';
+  }
+  let sec = Math.max(0, seconds);
+  if (Number.isFinite(maxSeconds) && maxSeconds > 0) sec = Math.min(maxSeconds, sec);
+
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+
+  if (includeDays && d > 0) {
+    return h > 0 ? `${d}d ${h}h ${m}m` : `${d}d ${m}m`;
+  }
+  if (h > 0) {
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+  return `${Math.max(1, m)}m`;
+}
  
  /**
   * Formats clock reset time (e.g. "16:30" or "周一 08:00")
@@ -78,14 +80,16 @@ export function resolveAdaptiveMode(width, currentMode = null, hysteresis = 24) 
    const primary = root.primary_window || root.primary || root.primaryWindow || null;
    const secondary = root.secondary_window || root.secondary || root.secondaryWindow || null;
  
-   function parseWindow(win) {
+   function parseWindow(win, maxSeconds = null) {
      if (!win) return null;
      const usedPercent = Number(win.used_percent ?? win.usedPercent ?? 0);
      const remainingPercent = Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
      const resetsAt = Number(win.reset_at ?? win.resetsAt ?? 0);
      const nowSec = Math.floor(Date.now() / 1000);
-     const secondsRemaining = Math.max(0, resetsAt > 0 ? resetsAt - nowSec : (win.reset_after_seconds ?? 0));
- 
+     let secondsRemaining = Math.max(0, resetsAt > 0 ? resetsAt - nowSec : (win.reset_after_seconds ?? 0));
+     if (Number.isFinite(maxSeconds) && maxSeconds > 0) {
+       secondsRemaining = Math.min(maxSeconds, secondsRemaining);
+     }
      return {
        usedPercent: Math.round(usedPercent),
        remainingPercent,
@@ -94,8 +98,8 @@ export function resolveAdaptiveMode(width, currentMode = null, hysteresis = 24) 
      };
    }
  
-  const primaryWindow = parseWindow(primary);
-  const secondaryWindow = parseWindow(secondary);
+  const primaryWindow = parseWindow(primary, 5 * 3600);
+  const secondaryWindow = parseWindow(secondary, 7 * 86400);
   const effectivePrimaryWindow = primaryWindow && secondaryWindow?.remainingPercent === 0
     ? { ...primaryWindow, usedPercent: 100, remainingPercent: 0 }
     : primaryWindow;
