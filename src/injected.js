@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.9.4';
+  const RUNTIME_VERSION = '3.9.6';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -500,7 +500,43 @@
       }
     }
     renderHost();
-    if (popover?.classList.contains('is-visible')) renderPopover();
+    if (popover?.classList.contains('is-visible')) updatePopoverCountdowns();
+  }
+
+  function updatePopoverCountdowns() {
+    if (!popover || !popover.classList.contains('is-visible')) return;
+    const isZh = settings.locale === 'zh-CN';
+    const p = usageState.primary;
+    const s = usageState.secondary;
+    const weeklyExhausted = isWeeklyExhausted(s);
+
+    const pRemainEl = popover.querySelector('.popover-primary-value .info-remain');
+    if (pRemainEl && p) {
+      pRemainEl.textContent = weeklyExhausted ? '' : (t('untilReset') + ' ' + formatDuration(p.secondsRemaining, 5 * 3600));
+    }
+    const sRemainEl = popover.querySelector('.popover-secondary-value .info-remain');
+    if (sRemainEl && s) {
+      sRemainEl.textContent = t('untilReset') + ' ' + formatDuration(s.secondsRemaining, 7 * 86400);
+    }
+
+    const anti = extendedUsageState.antigravity;
+    if (settings.enableGoogleAiPro && anti?.accounts?.length) {
+      const accounts = anti.accounts;
+      const manualAccount = anti.userSelectedAccount ? accounts.find(a => a.email === anti.userSelectedAccount) : null;
+      const isManualValid = manualAccount && isAccountAvailable(manualAccount);
+      const activeAccount = (isManualValid ? manualAccount : (accounts.find(a => a.email === anti.selectedAccount) || accounts.find(isAccountAvailable))) || accounts[0] || anti;
+      const rows = activeAccount.rows || [];
+
+      const rowEls = popover.querySelectorAll('.quota-extension-row');
+      rowEls.forEach((rowEl, idx) => {
+        const rowData = rows[idx];
+        if (!rowData) return;
+        const valEl = rowEl.querySelector('.quota-extension-value');
+        if (valEl) {
+          valEl.textContent = rowData.unavailable ? t('noData') : formatDynamicCountdown(rowData, isZh);
+        }
+      });
+    }
   }
 
   function ensurePopoverStyles() {

@@ -736,11 +736,14 @@ export class TokenRollupEngine {
     }
   }
 
-  collectSessionFiles() {
+  collectSessionFiles(recentOnly = false) {
     const results = [];
     if (!existsSync(this.sessionsDir)) return results;
 
     const queue = [this.sessionsDir];
+    const now = Date.now();
+    const maxAgeMs = 3 * 86400000;
+
     while (queue.length > 0) {
       const current = queue.shift();
       try {
@@ -748,6 +751,12 @@ export class TokenRollupEngine {
         for (const entry of entries) {
           const full = join(current, entry.name);
           if (entry.isDirectory()) {
+            if (recentOnly) {
+              try {
+                const stat = statSync(full);
+                if (now - stat.mtimeMs > maxAgeMs) continue;
+              } catch {}
+            }
             queue.push(full);
           } else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
             results.push(full);
@@ -764,7 +773,7 @@ export class TokenRollupEngine {
     this.status = 'building';
 
     try {
-      const files = this.collectSessionFiles();
+      const files = this.collectSessionFiles(false);
       if (!this.data.coverageStartedAt) {
         this.data.coverageStartedAt = new Date().toISOString();
       }
@@ -791,7 +800,7 @@ export class TokenRollupEngine {
   scanIncremental() {
     if (this.backfillInProgress) return;
     try {
-      const files = this.collectSessionFiles();
+      const files = this.collectSessionFiles(true);
       for (const file of files) {
         this.scanFileIncremental(file);
       }

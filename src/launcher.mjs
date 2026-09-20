@@ -116,26 +116,110 @@ export function selectUsageTargets(targets) {
   return selectRendererTargets(targets).filter(target => (target.url || '').toLowerCase() === 'app://-/index.html');
 }
 
-export function evaluateInTarget(wsUrl, expression, timeoutMs = 6000) {
+const cdpSocketPool = new Map();
+
+export function closeAllCdpSockets() {
+  for (const [wsUrl, entry] of cdpSocketPool.entries()) {
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    try { entry.ws.close(); } catch {}
+    cdpSocketPool.delete(wsUrl);
+  }
+}
+
+function resetIdleTimer(entry, wsUrl) {
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  entry.idleTimer = setTimeout(() => {
+    if (entry.pending.size === 0) {
+      try { entry.ws.close(); } catch {}
+      cdpSocketPool.delete(wsUrl);
+    }
+  }, 1200);
+}
+
+function getOrCreateCdpSocket(wsUrl) {
+  let entry = cdpSocketPool.get(wsUrl);
+  if (entry && (entry.ws.readyState === WebSocket.OPEN || entry.ws.readyState === WebSocket.CONNECTING)) {
+    resetIdleTimer(entry, wsUrl);
+    return entry;
+  }
+  if (entry) {
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    try { entry.ws.close(); } catch {}
+    cdpSocketPool.delete(wsUrl);
+  }
+
+  const ws = new WebSocket(wsUrl);
+  entry = {
+    ws,
+    nextId: 1,
+    pending: new Map(),
+    readyPromise: null,
+    idleTimer: null,
+  };
+
+  entry.readyPromise = new Promise((resolve, reject) => {
+    ws.onopen = () => resolve(entry);
+    ws.onerror = err => reject(err);
+  });
+
+  ws.onmessage = event => {
+    try {
+      const message = JSON.parse(event.data);
+      if (message.id === undefined) return;
+      const waiter = entry.pending.get(message.id);
+      if (!waiter) return;
+      entry.pending.delete(message.id);
+      resetIdleTimer(entry, wsUrl);
+      if (message.error) {
+        waiter.reject(new Error(`cdp_eval_failed: ${JSON.stringify(message.error)}`));
+        return;
+      }
+      if (message.result?.exceptionDetails) {
+        const description = message.result.exceptionDetails.exception?.description
+          || message.result.exceptionDetails.text
+          || 'renderer_exception';
+        waiter.reject(new Error(`renderer_eval_failed: ${description}`));
+        return;
+      }
+      waiter.resolve(message.result?.result?.value);
+    } catch (err) {}
+  };
+
+  ws.onclose = () => {
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    cdpSocketPool.delete(wsUrl);
+    for (const waiter of entry.pending.values()) {
+      waiter.reject(new Error('cdp_websocket_closed'));
+    }
+    entry.pending.clear();
+  };
+
+  cdpSocketPool.set(wsUrl, entry);
+  resetIdleTimer(entry, wsUrl);
+  return entry;
+}
+
+export async function evaluateInTarget(wsUrl, expression, timeoutMs = 6000) {
+  const entry = getOrCreateCdpSocket(wsUrl);
+  if (entry.ws.readyState !== WebSocket.OPEN) {
+    await entry.readyPromise;
+  }
+
   return new Promise((resolve, reject) => {
-    const requestId = 1;
-    const ws = new WebSocket(wsUrl);
-    let settled = false;
+    const id = entry.nextId++;
+    const timer = setTimeout(() => {
+      entry.pending.delete(id);
+      reject(new Error('cdp_evaluation_timeout'));
+    }, timeoutMs);
 
-    const finish = (error, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { ws.close(); } catch { /* already closed */ }
-      if (error) reject(error);
-      else resolve(value);
-    };
+    entry.pending.set(id, {
+      resolve: value => { clearTimeout(timer); resolve(value); },
+      reject: error => { clearTimeout(timer); reject(error); },
+    });
 
-    const timer = setTimeout(() => finish(new Error('cdp_evaluation_timeout')), timeoutMs);
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        id: requestId,
+    try {
+      entry.ws.send(JSON.stringify({
+        id,
         method: 'Runtime.evaluate',
         params: {
           expression,
@@ -143,30 +227,11 @@ export function evaluateInTarget(wsUrl, expression, timeoutMs = 6000) {
           returnByValue: true,
         },
       }));
-    };
-
-    ws.onmessage = event => {
-      try {
-        const message = JSON.parse(event.data);
-        if (message.id !== requestId) return;
-        if (message.error) {
-          finish(new Error(`cdp_eval_failed: ${JSON.stringify(message.error)}`));
-          return;
-        }
-        if (message.result?.exceptionDetails) {
-          const description = message.result.exceptionDetails.exception?.description
-            || message.result.exceptionDetails.text
-            || 'renderer_exception';
-          finish(new Error(`renderer_eval_failed: ${description}`));
-          return;
-        }
-        finish(null, message.result?.result?.value);
-      } catch (error) {
-        finish(error);
-      }
-    };
-
-    ws.onerror = () => finish(new Error('cdp_websocket_error'));
+    } catch (err) {
+      clearTimeout(timer);
+      entry.pending.delete(id);
+      reject(err);
+    }
   });
 }
 
