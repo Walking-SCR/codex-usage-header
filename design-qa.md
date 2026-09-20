@@ -1,9 +1,7 @@
 # Design QA — Codex Quota Header
 
-- Source visual truth: `/Users/scr/Documents/Codex/2026-09-18/ni/outputs/codex-usage-header/audit/2026-09-18-quota-header/03-target-design.png`
-- Implementation screenshot: `/Users/scr/Documents/Codex/2026-09-18/ni/outputs/codex-usage-header/audit/2026-09-18-quota-header/04-implementation-wide-popover.png`
-- Normalized implementation: `/Users/scr/Documents/Codex/2026-09-18/ni/outputs/codex-usage-header/audit/2026-09-18-quota-header/05-implementation-normalized.png`
-- Combined comparison: `/Users/scr/Documents/Codex/2026-09-18/ni/outputs/codex-usage-header/audit/2026-09-18-quota-header/comparison.html`
+- Visual comparison source files are retained locally under `audit/2026-09-18-quota-header/` and intentionally excluded from the GitHub source repository.
+- This document records the final visual QA findings and acceptance evidence; screenshots are local-only QA artifacts.
 - Source pixels: 1444 × 308
 - Implementation pixels: 2880 × 1640
 - CSS viewport: 1440 × 820
