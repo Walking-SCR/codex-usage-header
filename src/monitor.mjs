@@ -58,12 +58,17 @@ function persistSettings(settings) {
 
 async function inspectTarget(target) {
   return evaluateInTarget(target.webSocketDebuggerUrl, `(() => {
-    const command = window.__codexUsageHeaderCommand__ || null;
+    let commands = [];
+    if (Array.isArray(window.__codexUsageHeaderCommands__) && window.__codexUsageHeaderCommands__.length) {
+      commands = window.__codexUsageHeaderCommands__.splice(0);
+    } else if (window.__codexUsageHeaderCommand__) {
+      commands = [window.__codexUsageHeaderCommand__];
+    }
     window.__codexUsageHeaderCommand__ = null;
     return {
       mounted: Boolean(document.querySelector('codex-usage-header-host')),
       hidden: document.hidden,
-      command,
+      commands,
     };
   })()`);
 }
@@ -101,6 +106,7 @@ async function run(cdpPort) {
     extendedCoordinator.init();
     let nextTokensAt = 0;
     let nextGeminiAt = 0;
+    let lastExpiredAutoRefresh = 0;
     let extendedRevision = 0;
     const deliveredExtendedRevision = new Map();
     let nextRefreshAt = 0;
@@ -130,7 +136,7 @@ async function run(cdpPort) {
           valid = inspections.filter(Boolean);
         } catch { /* the target may be between route transitions */ }
       }
-      const commands = valid.flatMap(item => item.state.command ? [{ ...item.state.command, target: item.target }] : []);
+      const commands = valid.flatMap(item => (item.state.commands || (item.state.command ? [item.state.command] : [])).map(cmd => ({ ...cmd, target: item.target })));
       for (const command of commands) {
         if (command.kind !== 'settings' || !command.id || seenCommands.has(command.id)) continue;
         const seconds = Number(command.payload?.refreshIntervalSeconds);
@@ -167,22 +173,31 @@ async function run(cdpPort) {
         nextTokensAt = Date.now() + tokensIntervalMs;
       }
 
-      if (settings.enableGoogleAiPro && Date.now() >= nextGeminiAt) {
+      if (Date.now() >= nextGeminiAt) {
         nextGeminiAt = Date.now() + geminiIntervalMs;
         extendedCoordinator.refreshGemini().then(() => {
           extendedRevision += 1;
         }).catch(() => {});
       }
 
+      const currentAnti = extendedCoordinator.getSnapshot()?.antigravity;
+      const nowSec = Math.floor(Date.now() / 1000);
+      const hasExpiredReset = (currentAnti?.accounts || []).some(acc =>
+        (acc.rows || []).some(r => !r.unavailable && r.resetTime && r.resetTime <= nowSec)
+      );
+      if (hasExpiredReset && Date.now() - lastExpiredAutoRefresh > 10000) {
+        lastExpiredAutoRefresh = Date.now();
+        try {
+          await extendedCoordinator.refreshGemini();
+          extendedRevision += 1;
+        } catch {}
+      }
+
       if (refreshCommands.length > 0) {
-        if (settings.enableTokenUsage) {
-          extendedCoordinator.scanTokensIncremental();
-        }
-        if (settings.enableGoogleAiPro) {
-          extendedCoordinator.refreshGemini().then(() => {
-            extendedRevision += 1;
-          }).catch(() => {});
-        }
+        extendedCoordinator.scanTokensIncremental();
+        try {
+          await extendedCoordinator.refreshGemini();
+        } catch {}
         extendedRevision += 1;
       }
 

@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.9.3';
+  const RUNTIME_VERSION = '3.9.4';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -244,7 +244,12 @@
 
   function emitCommand(kind, payload = {}, manual = false) {
     const id = 'cmd-' + Date.now() + '-' + (++commandCounter);
-    window.__codexUsageHeaderCommand__ = { id, kind, payload, manual, createdAt: Date.now() };
+    const cmd = { id, kind, payload, manual, createdAt: Date.now() };
+    if (!Array.isArray(window.__codexUsageHeaderCommands__)) {
+      window.__codexUsageHeaderCommands__ = [];
+    }
+    window.__codexUsageHeaderCommands__.push(cmd);
+    window.__codexUsageHeaderCommand__ = cmd;
     return id;
   }
 
@@ -486,9 +491,10 @@
       usageState.secondary.secondsRemaining = Math.min(7 * 86400, Math.max(0, usageState.secondary.resetsAt - now));
     }
     const anti = extendedUsageState.antigravity;
-    if (settings.enableGoogleAiPro && anti && anti.rows && anti.rows.length) {
-      const expiredRow = anti.rows.find(r => !r.unavailable && r.resetTime && r.resetTime <= now && (now - r.resetTime >= 5));
-      if (expiredRow && Date.now() - lastExpiredRefresh > 30000) {
+    if (anti && anti.accounts && anti.accounts.length) {
+      const allRows = anti.accounts.flatMap(a => a.rows || []);
+      const expiredRow = allRows.find(r => !r.unavailable && r.resetTime && r.resetTime <= now && (now - r.resetTime >= 2));
+      if (expiredRow && Date.now() - lastExpiredRefresh > 12000) {
         lastExpiredRefresh = Date.now();
         requestUsage({ manual: false });
       }
@@ -683,6 +689,9 @@
       return isZh ? (row.countdown?.zh || t('imminent')) : (row.countdown?.en || t('imminent'));
     }
     const now = Math.floor(Date.now() / 1000);
+    if (row.resetTime <= now) {
+      return t('syncing');
+    }
     let secondsRemaining = Math.max(0, row.resetTime - now);
     if (row.label && row.label.includes('5h')) {
       secondsRemaining = Math.min(18000, secondsRemaining);
