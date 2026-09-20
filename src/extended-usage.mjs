@@ -186,10 +186,10 @@ export class GeminiQuotaManager {
     if (!existsSync(this.configPath)) return '';
     try {
       const text = readFileSync(this.configPath, 'utf8');
-      const secretMatch = text.match(/secret-key:\s*["']?([^"'\r\n]+)["']?/);
-      if (secretMatch && secretMatch[1]) return secretMatch[1].trim();
       const apiKeyMatch = text.match(/- ["']?(sk-[^"'\r\n]+)["']?/);
       if (apiKeyMatch && apiKeyMatch[1]) return apiKeyMatch[1].trim();
+      const secretMatch = text.match(/secret-key:\s*["']?([^"'\r\n]+)["']?/);
+      if (secretMatch && secretMatch[1] && !secretMatch[1].startsWith('$2')) return secretMatch[1].trim();
     } catch { /* ignore */ }
     return '';
   }
@@ -368,7 +368,10 @@ export class GeminiQuotaManager {
 
         const resetTimeRaw = bucket.resetTime || bucket.reset_time;
         const resetTimestamp = resetTimeRaw ? new Date(resetTimeRaw).getTime() : 0;
-        const resetSeconds = resetTimestamp ? Math.max(0, Math.floor((resetTimestamp - Date.now()) / 1000)) : null;
+        let resetSeconds = resetTimestamp ? Math.max(0, Math.floor((resetTimestamp - Date.now()) / 1000)) : null;
+        if (windowName === '5h' && Number.isFinite(resetSeconds)) {
+          resetSeconds = Math.min(18000, resetSeconds);
+        }
 
         const entry = {
           remainingPercent: percent,
@@ -532,7 +535,10 @@ export class GeminiQuotaManager {
   getSnapshot() {
     const updateRows = (rows) => rows.map(row => {
       if (!row.resetTime) return row;
-      const secondsRemaining = Math.max(0, row.resetTime - Math.floor(Date.now() / 1000));
+      let secondsRemaining = Math.max(0, row.resetTime - Math.floor(Date.now() / 1000));
+      if (row.label && row.label.includes('5h')) {
+        secondsRemaining = Math.min(18000, secondsRemaining);
+      }
       return {
         ...row,
         secondsRemaining,

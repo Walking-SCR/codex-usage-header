@@ -137,6 +137,9 @@ async function run(cdpPort) {
         }
         if (typeof command.payload?.enableGoogleAiPro === 'boolean') {
           settings.enableGoogleAiPro = command.payload.enableGoogleAiPro;
+          if (settings.enableGoogleAiPro) {
+            nextGeminiAt = 0;
+          }
         }
         persistSettings(settings);
         seenCommands.add(command.id);

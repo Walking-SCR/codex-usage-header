@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.6.0';
+  const RUNTIME_VERSION = '3.7.0';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -648,6 +648,31 @@
     return valid.length > 0 && valid.some(r => r.remainingPercent > 0);
   }
 
+  function formatDynamicCountdown(row, isZh) {
+    if (row.unavailable) return t('noData');
+    if (!Number.isFinite(row.resetTime) || row.resetTime <= 0) {
+      return isZh ? (row.countdown?.zh || t('imminent')) : (row.countdown?.en || t('imminent'));
+    }
+    const now = Math.floor(Date.now() / 1000);
+    let secondsRemaining = Math.max(0, row.resetTime - now);
+    if (row.label && row.label.includes('5h')) {
+      secondsRemaining = Math.min(18000, secondsRemaining);
+    }
+    if (secondsRemaining < 60) {
+      return t('imminent');
+    }
+    if (secondsRemaining < 86400) {
+      const hours = Math.floor(secondsRemaining / 3600);
+      const mins = Math.floor((secondsRemaining % 3600) / 60);
+      if (hours === 0) {
+        return isZh ? (mins + 'min后重置') : ('resets in ' + mins + 'm');
+      }
+      return isZh ? (hours + 'h' + mins + 'min后重置') : ('resets in ' + hours + 'h ' + mins + 'm');
+    }
+    const days = Math.floor(secondsRemaining / 86400);
+    return isZh ? (days + '天后重置') : ('resets in ' + days + 'd');
+  }
+
   function formatExtendedTokenCount(tokens, isZh) {
     if (!Number.isFinite(tokens) || tokens <= 0) return '0';
     if (isZh) {
@@ -770,8 +795,8 @@
             const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
               ? row.remainingPercent + '%'
               : '0%';
-            const countdownStr = isZh ? (row.countdown?.zh || '') : (row.countdown?.en || '');
-            const resetInfo = row.unavailable ? esc(t('noData')) : esc(countdownStr || t('imminent'));
+            const countdownStr = formatDynamicCountdown(row, isZh);
+            const resetInfo = row.unavailable ? esc(t('noData')) : esc(countdownStr);
 
             return '<div class="quota-extension-row' + (idx === activeRows.length - 1 ? ' is-last' : '') + '">'
               + '<span class="quota-extension-label">' + esc(row.label) + '</span>'
