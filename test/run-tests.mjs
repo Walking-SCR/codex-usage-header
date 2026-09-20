@@ -18,6 +18,7 @@
   'refresh-contract.test.mjs',
   'extended-tokens.test.mjs',
   'extended-gemini.test.mjs',
+  'account-switch.test.mjs',
 ];
 
 console.log('========================================================');

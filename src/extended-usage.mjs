@@ -139,6 +139,18 @@ export function matchGeminiStandardRow(groupName, bucketWindow) {
   return null;
 }
 
+export function isAccountAvailable(acc) {
+  if (!acc || acc.status === 'error') return false;
+  const rows = acc.rows || [];
+  if (!rows.length) return false;
+  const gemini5h = rows.find(r => r.label === 'Gemini 5h');
+  if (gemini5h && gemini5h.remainingPercent === 0) return false;
+  const gemini7d = rows.find(r => r.label === 'Gemini 7d');
+  if (gemini7d && gemini7d.remainingPercent === 0) return false;
+  const valid = rows.filter(r => !r.unavailable && Number.isFinite(r.remainingPercent));
+  return valid.length > 0 && valid.some(r => r.remainingPercent > 0);
+}
+
 export class GeminiQuotaManager {
   constructor(options = {}) {
     this.cliProxyUrl = options.cliProxyUrl || DEFAULT_CLI_PROXY_URL;
@@ -470,8 +482,9 @@ export class GeminiQuotaManager {
           this.accountCaches.set(acc.email, acc);
         }
 
-        const activeEmail = this.selectedAccount || accountResults[0]?.email;
-        const active = accountResults.find(a => a.email === activeEmail) || accountResults[0];
+        const manualAccount = accountResults.find(a => a.email === this.selectedAccount);
+        const isManualValid = manualAccount && isAccountAvailable(manualAccount);
+        const active = (isManualValid ? manualAccount : accountResults.find(isAccountAvailable)) || accountResults[0];
 
         this.cache = {
           status: accountResults.some(a => a.status === 'ready') ? 'ready' : 'error',
@@ -532,8 +545,9 @@ export class GeminiQuotaManager {
       rows: updateRows(acc.rows || []),
     }));
 
-    const activeEmail = this.selectedAccount || accounts[0]?.email || this.cache.selectedAccount;
-    const active = accounts.find(a => a.email === activeEmail) || accounts[0];
+    const manualAccount = accounts.find(a => a.email === this.selectedAccount);
+    const isManualValid = manualAccount && isAccountAvailable(manualAccount);
+    const active = (isManualValid ? manualAccount : accounts.find(isAccountAvailable)) || accounts[0];
 
     return {
       status: this.cache.status,

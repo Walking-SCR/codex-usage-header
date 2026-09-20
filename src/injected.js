@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.3.0';
+  const RUNTIME_VERSION = '3.5.0';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -510,7 +510,17 @@
       const accountTab = path.find(node => node?.classList?.contains('quota-extension-account-tab'));
       const googleToggle = path.find(node => node?.classList?.contains('quota-extension-toggle'));
       if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
-      else if (language) switchLocale();
+      else if (language) {
+        const opt = path.find(node => node?.classList?.contains('lang-opt'));
+        const targetLang = opt?.dataset?.lang;
+        if (targetLang && targetLang !== settings.locale) {
+          settings.locale = targetLang;
+          persistSettings();
+          renderAll();
+        } else if (!opt) {
+          switchLocale();
+        }
+      }
       else if (googleToggle) {
         googleCollapsed = !googleCollapsed;
         try { localStorage.setItem('codexQuotaHeader.googleCollapsed', String(googleCollapsed)); } catch { /* ignore */ }
@@ -610,6 +620,18 @@
     }, 240);
   }
 
+  function isAccountAvailable(acc) {
+    if (!acc || acc.status === 'error') return false;
+    const rows = acc.rows || [];
+    if (!rows.length) return false;
+    const gemini5h = rows.find(r => r.label === 'Gemini 5h');
+    if (gemini5h && gemini5h.remainingPercent === 0) return false;
+    const gemini7d = rows.find(r => r.label === 'Gemini 7d');
+    if (gemini7d && gemini7d.remainingPercent === 0) return false;
+    const valid = rows.filter(r => !r.unavailable && Number.isFinite(r.remainingPercent));
+    return valid.length > 0 && valid.some(r => r.remainingPercent > 0);
+  }
+
   function formatExtendedTokenCount(tokens, isZh) {
     if (!Number.isFinite(tokens) || tokens <= 0) return '0';
     if (isZh) {
@@ -630,15 +652,16 @@
 
     const accounts = anti.accounts || [];
     const savedAccount = typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.selectedAntigravityAccount') : null;
-    const selectedEmail = anti.selectedAccount || savedAccount || accounts[0]?.email;
-    const activeAccount = accounts.find(a => a.email === selectedEmail) || accounts[0] || anti;
+    const manualAccount = accounts.find(a => a.email === (anti.selectedAccount || savedAccount));
+    const isManualValid = manualAccount && isAccountAvailable(manualAccount);
+    const activeAccount = (isManualValid ? manualAccount : accounts.find(isAccountAvailable)) || accounts[0] || anti;
     const activeRows = activeAccount.rows || anti.rows || [];
 
     let accountTabsHtml = '';
     if (accounts.length > 1) {
       accountTabsHtml = '<div class="quota-extension-account-tabs">'
         + accounts.map((acc, idx) => {
-          const isActive = (acc.email === (activeAccount.email || selectedEmail));
+          const isActive = (acc.email === activeAccount.email);
           const tabLabel = acc.label || (acc.email ? acc.email.split('@')[0] : '') || (isZh ? ('账号' + (idx + 1)) : ('Account ' + (idx + 1)));
           return '<button type="button" class="quota-extension-account-tab ' + (isActive ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" title="' + esc(acc.email) + '">'
             + esc(tabLabel)
@@ -765,6 +788,7 @@
   }
 
   function popoverMarkup(dark) {
+    const isZh = settings.locale === 'zh-CN';
     const p = usageState.primary;
     const s = usageState.secondary;
     const showFiveHours = usageState.showFiveHours !== false;
@@ -821,7 +845,6 @@
       + '<span class="credits-copy">'
       + ticketSvg
       + '<span class="credits-text">' + esc(t('resetCredits') + '：' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span>'
-      + '<span class="info-bubble" title="' + esc(t('resetDetails')) + '">ⓘ</span>'
       + '</span>'
       + '<span class="balance">' + esc(t('balance') + '：' + usageState.creditBalance.displayValue) + '</span>'
       + '</span>'
@@ -844,7 +867,10 @@
       '.popover-subtitle{font-size:11.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';line-height:1.3;white-space:nowrap}',
       '.popover-actions{display:flex;align-items:center;gap:8px}',
       '.language-toggle,.card-refresh{height:28px;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';cursor:pointer;font:600 11.5px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;transition:all .15s ease}',
-      '.language-toggle{padding:0 10px;color:' + (dark ? '#70B4FF' : '#007AFF') + '}',
+      '.language-toggle{padding:0 8px;display:inline-flex;align-items:center;justify-content:center;gap:2px;user-select:none}',
+      '.lang-opt{color:' + (dark ? '#8E8E93' : '#8E8E93') + ';font-weight:500;padding:1px 3px;border-radius:4px;transition:all .15s ease}',
+      '.lang-opt.is-active{color:#007AFF;font-weight:700}',
+      '.lang-sep{color:' + (dark ? 'rgba(255,255,255,.2)' : 'rgba(0,0,0,.15)') + ';font-size:10.5px}',
       '.card-refresh{width:28px;padding:0;display:grid;place-items:center}',
       '.card-refresh .icon,.card-refresh svg{width:15px;height:15px}',
       '.card-refresh.state-loading .icon,.card-refresh.state-loading svg{animation:quota-refresh-spin .72s linear infinite}',
@@ -932,7 +958,11 @@
       + errorNote
       + '</div>'
       + '<div class="popover-actions">'
-      + '<button class="language-toggle" aria-label="' + esc(t('locale')) + '">中 / EN</button>'
+      + '<button class="language-toggle" aria-label="' + esc(t('locale')) + '">'
+      + '<span class="lang-opt' + (isZh ? ' is-active' : '') + '" data-lang="zh-CN">中</span>'
+      + '<span class="lang-sep">/</span>'
+      + '<span class="lang-opt' + (!isZh ? ' is-active' : '') + '" data-lang="en-US">EN</span>'
+      + '</button> <!-- 中 / EN -->'
       + '<button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button>'
       + '</div>'
       + '</div>'
