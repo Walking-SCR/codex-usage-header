@@ -84,9 +84,9 @@ export class AppServerClient {
     });
   }
 
-  async readRateLimits() {
+  async readRateLimits({ excludeResetCreditDetails = false } = {}) {
     await this.ensureStarted();
-    return this.request('account/rateLimits/read', { excludeResetCreditDetails: false });
+    return this.request('account/rateLimits/read', { excludeResetCreditDetails });
   }
 
   close() {

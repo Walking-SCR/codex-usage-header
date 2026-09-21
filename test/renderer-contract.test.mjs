@@ -62,6 +62,7 @@ assert.match(source, /renderExtendedUsage/);
 assert.match(source, /Gemini AI Pro/);
 assert.match(source, /Token使用量/);
 assert.match(source, /Token处理量/);
+assert.match(source, /voucher-toggle-btn/);
 assert.match(source, /stats-toggle-btn/);
 assert.doesNotMatch(source, /__codexUsageBridgeUrl__/);
 assert.doesNotMatch(source, /refresh-interval/);

@@ -40,9 +40,10 @@ function readSettings() {
       refreshIntervalSeconds: Number(value.refreshIntervalSeconds) === 60 ? 60 : 30,
       enableGoogleAiPro: Boolean(value.enableGoogleAiPro),
       enableTokenUsage: Boolean(value.enableTokenUsage),
+      enableResetCredits: Boolean(value.enableResetCredits),
     };
   } catch {
-    return { refreshIntervalSeconds: 30, enableGoogleAiPro: false, enableTokenUsage: false };
+    return { refreshIntervalSeconds: 30, enableGoogleAiPro: false, enableTokenUsage: false, enableResetCredits: false };
   }
 }
 
@@ -53,6 +54,7 @@ function persistSettings(settings) {
     refreshIntervalSeconds: settings.refreshIntervalSeconds,
     enableGoogleAiPro: Boolean(settings.enableGoogleAiPro),
     enableTokenUsage: Boolean(settings.enableTokenUsage),
+    enableResetCredits: Boolean(settings.enableResetCredits),
   }, null, 2));
 }
 
@@ -155,6 +157,12 @@ async function run(cdpPort) {
             nextTokensAt = 0;
           }
         }
+        if (typeof command.payload?.enableResetCredits === 'boolean') {
+          settings.enableResetCredits = command.payload.enableResetCredits;
+          if (settings.enableResetCredits) {
+            nextRefreshAt = 0;
+          }
+        }
         persistSettings(settings);
         seenCommands.add(command.id);
         nextRefreshAt = 0;
@@ -206,7 +214,7 @@ async function run(cdpPort) {
       let refreshError = null;
       if (shouldRefresh) {
         notificationPending = false;
-        if (!inFlight) inFlight = client.readRateLimits().finally(() => { inFlight = null; });
+        if (!inFlight) inFlight = client.readRateLimits({ excludeResetCreditDetails: !settings.enableResetCredits }).finally(() => { inFlight = null; });
         try {
           payload = await inFlight;
           revision += 1;

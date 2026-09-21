@@ -15,6 +15,10 @@ await new Promise(r => setTimeout(r, 250));
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".google-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
 await new Promise(r => setTimeout(r, 250));
 
+// Ensure Vouchers is toggled ON for interactive checks
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".voucher-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
+await new Promise(r => setTimeout(r, 250));
+
 // Ensure Token Usage is toggled ON for interactive checks
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".stats-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
 await new Promise(r => setTimeout(r, 250));
@@ -105,7 +109,20 @@ const hasTokensOn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean
 assert.equal(hasTokensOn, true);
 console.log('  Token Usage toggled on successfully (card restored)');
 
-// 9. Test refresh animation and loading state
+// 9. Test toggling Reset Vouchers (voucher-toggle-btn) off and on
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".voucher-toggle-btn").click()');
+await new Promise(r => setTimeout(r, 200));
+const hasVoucherOff = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".reset-voucher-section"))');
+assert.equal(hasVoucherOff, false, 'Voucher section should be hidden when toggled off');
+console.log('  Voucher section toggled off successfully (card hidden)');
+
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".voucher-toggle-btn").click()');
+await new Promise(r => setTimeout(r, 200));
+const hasVoucherOn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".reset-voucher-section"))');
+assert.equal(hasVoucherOn, true, 'Voucher section should be restored when toggled on');
+console.log('  Voucher section toggled on successfully (card restored)');
+
+// 10. Test refresh animation and loading state
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".card-refresh").click()');
 await new Promise(r => setTimeout(r, 80));
 const isRefreshing = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".popover-shell")?.classList.contains("is-refreshing")');

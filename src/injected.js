@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.9.6';
+  const RUNTIME_VERSION = '3.10.0';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -48,6 +48,7 @@
     refreshIntervalSeconds: 30,
     enableGoogleAiPro: false,
     enableTokenUsage: false,
+    enableResetCredits: false,
   };
 
   function safeSettings() {
@@ -58,6 +59,7 @@
         refreshIntervalSeconds: Number(saved.refreshIntervalSeconds) === 60 ? 60 : 30,
         enableGoogleAiPro: Boolean(saved.enableGoogleAiPro ?? defaultSettings.enableGoogleAiPro),
         enableTokenUsage: Boolean(saved.enableTokenUsage ?? defaultSettings.enableTokenUsage),
+        enableResetCredits: Boolean(saved.enableResetCredits ?? defaultSettings.enableResetCredits),
       };
     } catch {
       return { ...defaultSettings };
@@ -166,6 +168,7 @@
       tokenUsage: 'Token使用量', // Token处理量
       toggleGoogle: 'Google AI Pro (开启/关闭)',
       toggleStats: 'Token使用量 (开启/关闭)',
+      toggleVouchers: '额度重置券 (开启/关闭)',
       noGoogleAccounts: '未检测到本地 Google AI Pro 账号配置',
       noResetCoupons: '暂无可用重置券',
       today: '今天',
@@ -220,6 +223,7 @@
       tokenUsage: 'Token usage',
       toggleGoogle: 'Google AI Pro (Toggle on/off)',
       toggleStats: 'Token usage (Toggle on/off)',
+      toggleVouchers: 'Reset credits (Toggle on/off)',
       noGoogleAccounts: 'No local Google AI Pro accounts found',
       noResetCoupons: 'No available reset coupons',
       today: 'Today',
@@ -593,6 +597,16 @@
         persistSettings();
         emitCommand('settings', { enableGoogleAiPro: settings.enableGoogleAiPro });
         if (settings.enableGoogleAiPro) {
+          emitCommand('refresh', {}, false);
+        }
+        renderAll();
+        positionPopover();
+      }
+      else if (path.find(node => node?.classList?.contains('voucher-toggle-btn'))) {
+        settings.enableResetCredits = !settings.enableResetCredits;
+        persistSettings();
+        emitCommand('settings', { enableResetCredits: settings.enableResetCredits });
+        if (settings.enableResetCredits) {
           emitCommand('refresh', {}, false);
         }
         renderAll();
@@ -1008,6 +1022,9 @@
       '.card-refresh,.google-toggle-btn,.stats-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
       '.google-toggle-btn:hover,.stats-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
       '.google-toggle-btn.is-active,.stats-toggle-btn.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
+      '.card-refresh,.google-toggle-btn,.stats-toggle-btn,.voucher-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
+      '.google-toggle-btn:hover,.stats-toggle-btn:hover,.voucher-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.google-toggle-btn.is-active,.stats-toggle-btn.is-active,.voucher-toggle-btn.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
       '.card-refresh .icon,.card-refresh svg{width:15px;height:15px;display:block}',
       '.card-refresh.state-loading{color:#007AFF;border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';background:' + (dark ? 'rgba(10,132,255,.15)' : 'rgba(0,122,255,.08)') + '}',
       '.card-refresh.state-loading .icon,.card-refresh.state-loading svg{animation:quota-refresh-spin .72s linear infinite}',
@@ -1107,13 +1124,14 @@
       + '<span class="lang-sep">/</span>'
       + '<span class="lang-opt' + (!isZh ? ' is-active' : '') + '" data-lang="en-US">EN</span>'
       + '</button> <!-- 中 / EN -->'
+      + '<button type="button" class="voucher-toggle-btn' + (settings.enableResetCredits ? ' is-active' : '') + '" aria-label="' + esc(t('toggleVouchers')) + '" title="' + esc(t('toggleVouchers')) + '"><svg width="14" height="14" viewBox="0 0 24 20" fill="currentColor"><path d="M22 6C20.9 6 20 5.1 20 4V3C20 1.9 19.1 1 18 1H6C4.9 1 4 1.9 4 3V4C4 5.1 3.1 6 2 6C0.9 6 0 6.9 0 8V12C0 13.1 0.9 14 2 14C3.1 14 4 14.9 4 16V17C4 18.1 4.9 19 6 19H18C19.1 19 20 18.1 20 17V16C20 14.9 20.9 14 22 14C23.1 14 24 13.1 24 12V8C24 6.9 23.1 6 22 6Z"/><path d="M12 4V16" stroke="white" stroke-width="2" stroke-dasharray="2 2"/></svg></button>'
       + '<button type="button" class="google-toggle-btn' + (settings.enableGoogleAiPro ? ' is-active' : '') + '" aria-label="' + esc(t('toggleGoogle')) + '" title="' + esc(t('toggleGoogle')) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg></button>'
       + '<button type="button" class="stats-toggle-btn' + (settings.enableTokenUsage ? ' is-active' : '') + '" aria-label="' + esc(t('toggleStats')) + '" title="' + esc(t('toggleStats')) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="11" width="3.8" height="10" rx="1.2"></rect><rect x="10.1" y="6" width="3.8" height="15" rx="1.2"></rect><rect x="17.2" y="2" width="3.8" height="19" rx="1.2"></rect></svg></button>'
       + '<button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button>'
       + '</div>'
       + '</div>'
       + usageContent
-      + voucherSection
+      + (settings.enableResetCredits ? voucherSection : '')
       + extensionMarkup
       + '</div>';
   }  function renderPopover() {
