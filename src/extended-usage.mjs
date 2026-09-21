@@ -605,6 +605,7 @@ export class TokenRollupEngine {
       this.runBackfillWorker().catch(() => {});
     } else {
       this.status = 'ready';
+      this.scanIncremental();
     }
   }
 
@@ -659,7 +660,10 @@ export class TokenRollupEngine {
     if (!line || !line.trim()) return;
     try {
       const event = JSON.parse(line);
-      if (event.type === 'turn_context') {
+      if (event.type === 'session_meta') {
+        const model = event.payload?.model || event.payload?.base_instructions?.provenance?.model;
+        if (model && typeof model === 'string') fileRecord.currentModel = model;
+      } else if (event.type === 'turn_context') {
         const model = event.payload?.model;
         if (model && typeof model === 'string') fileRecord.currentModel = model;
       } else if (event.type === 'event_msg' && event.payload?.type === 'token_count') {
@@ -740,10 +744,39 @@ export class TokenRollupEngine {
     const results = [];
     if (!existsSync(this.sessionsDir)) return results;
 
-    const queue = [this.sessionsDir];
-    const now = Date.now();
-    const maxAgeMs = 3 * 86400000;
+    if (recentOnly) {
+      const targetDays = new Set();
+      for (let i = 0; i < 4; i++) {
+        const dateStr = toShanghaiDate(Date.now() - (i * 86400000));
+        targetDays.add(dateStr.replace(/-/g, '/'));
+      }
 
+      for (const dateRel of targetDays) {
+        const dir = join(this.sessionsDir, dateRel);
+        if (!existsSync(dir)) continue;
+        try {
+          const entries = readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+              results.push(join(dir, entry.name));
+            }
+          }
+        } catch {}
+      }
+
+      try {
+        const rootEntries = readdirSync(this.sessionsDir, { withFileTypes: true });
+        for (const entry of rootEntries) {
+          if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+            results.push(join(this.sessionsDir, entry.name));
+          }
+        }
+      } catch {}
+
+      return results;
+    }
+
+    const queue = [this.sessionsDir];
     while (queue.length > 0) {
       const current = queue.shift();
       try {
@@ -751,12 +784,6 @@ export class TokenRollupEngine {
         for (const entry of entries) {
           const full = join(current, entry.name);
           if (entry.isDirectory()) {
-            if (recentOnly) {
-              try {
-                const stat = statSync(full);
-                if (now - stat.mtimeMs > maxAgeMs) continue;
-              } catch {}
-            }
             queue.push(full);
           } else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
             results.push(full);

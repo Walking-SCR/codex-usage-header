@@ -167,7 +167,7 @@ async function run(cdpPort) {
       const geminiIntervalMs = anyVisible ? 180000 : 600000;
       const refreshMs = anyVisible ? settings.refreshIntervalSeconds * 1000 : IDLE_REFRESH_MS;
 
-      if (settings.enableTokenUsage && Date.now() >= nextTokensAt) {
+      if (Date.now() >= nextTokensAt) {
         extendedCoordinator.scanTokensIncremental();
         extendedRevision += 1;
         nextTokensAt = Date.now() + tokensIntervalMs;

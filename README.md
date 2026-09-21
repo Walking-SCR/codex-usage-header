@@ -67,7 +67,7 @@
  自动识别会员类型：Plus 账号展示 5 小时滚动与 7 天周期窗口，其他会员类型自适应展示 7 天窗口，按需呈现核心指标。
 
 ### 10. 纯本地安全机制与智能自愈
- 额度读取由后台进程直接通过 Codex App Server 及本地回环接口完成，渲染器只接收脱敏后的额度与 Token 统计快照；不暴露本地 HTTP/CORS 数据桥，**绝不读取、记录或向页面传递 OAuth Token、管理密钥和对话正文，更不会将任何数据上传至第三方服务器**。新对话页、会话切换以及页面软硬刷新均支持秒级自动检测与补挂载。
+ 额度读取由后台进程直接通过 Codex App Server、CLIProxyAPI 及本地回环接口完成，渲染器只接收脱敏后的额度与 Token 统计快照；OAuth Token 和管理密钥仅在后台本机读取并用于必要请求，不会传入页面、不写入插件日志，也不会将数据上传至第三方服务器。对话正文不参与 Google 配额读取。新对话页、会话切换以及页面软硬刷新均支持秒级自动检测与补挂载。
 
 ---
  
@@ -119,6 +119,119 @@ git pull
 > codex-header --inject-only
 > ```
 > 顶栏组件便会瞬间自动重载为最新版本！或者下次直接通过 `Codex Quota Header.app` 启动也会自动生效。
+
+## Google AI Pro 用量：新装前置条件与配置
+
+### 先看结论
+
+- **只使用 Codex 5 小时 / 7 天额度**：不需要 Google 账号，也不需要配置 Antigravity、CLIProxyAPI 或 Google OAuth。插件安装后即可使用。
+- **显示 Google AI Pro 用量**：需要本机已有可用的 Antigravity OAuth 账号，并且本机的 CLIProxyAPI / Model Bridge 能正常工作。该模块默认关闭，打开详情卡片右上角的 `✦` 开关后才会读取和轮询。
+- **Token 处理量统计**：不依赖 Google 账号，只读取本机 `~/.codex/sessions` 会话日志；首次开启可能需要后台建立本地汇总。
+
+### Google AI Pro 的必要条件
+
+新安装时，Google 用量模块至少需要满足以下条件：
+
+1. macOS、Node.js 18+，以及已经安装并登录的 Codex / ChatGPT 桌面客户端。
+2. 本机存在至少一个未禁用的 Antigravity OAuth 认证文件，默认目录和命名格式为：
+
+   ```text
+   ~/.cli-proxy-api/
+   ├── config.yaml                 # 管理接口配置，可选但推荐
+   └── antigravity-<account>.json  # Google OAuth 账号，必须有至少一个
+   ```
+
+   认证文件应包含有效的 `access_token`；如果希望自动续期，还必须有可用的 `refresh_token`。文件名为 `antigravity-*.json`，`.bak` 备份文件不会被读取。
+3. OAuth 刷新所需的客户端凭证可用，满足以下任一方式即可：
+
+   - 环境变量 `ANTIGRAVITY_CLIENT_ID` 与 `ANTIGRAVITY_CLIENT_SECRET`；
+   - 本机已有的 Model Bridge 配置文件 `~/.config/codex-cli-model-bridge/codex-model-router.mjs` 中的同名配置。
+4. 本机可访问以下地址：
+
+   - CLIProxyAPI 回环服务：`http://127.0.0.1:8317`；
+   - Google OAuth 刷新服务：`https://oauth2.googleapis.com`；
+   - Google 配额服务：`https://daily-cloudcode-pa.googleapis.com`。
+
+   CLIProxyAPI 端口以现有 Model Bridge 配置为准；如果已经有一套 bridge 在运行，不要为了插件再启动第二套实例或更换认证目录。
+5. 推荐配置 CLIProxyAPI 的本机管理密钥，以便优先通过回环管理接口访问 Google 配额。可以在 `~/.cli-proxy-api/config.yaml` 配置 `remote-management.secret-key`，或通过环境变量 `MANAGEMENT_PASSWORD` 提供。管理密钥只应保存在本机，不能提交到 GitHub。
+
+> 管理接口是推荐链路，不是 Codex 主额度的前置条件。当前插件在管理接口不可用时会尝试使用有效的 Google `access_token` 直连配额服务；但没有有效 OAuth 账号或账号已过期时，Google 模块仍然无法显示。
+
+CLIProxyAPI 管理配置的结构示例（只填入你自己的本机密钥，不要照抄示例值）：
+
+```yaml
+remote-management:
+  allow-remote: false
+  secret-key: "<本机管理密钥>"
+```
+
+如果 bridge 已经有管理配置，保留原配置并只确认 `secret-key` 可用即可；不要为了插件重复创建配置文件。若没有 CLIProxyAPI / Antigravity 账号池，插件不会自动替你完成 Google OAuth 登录，需先完成 bridge 自身的登录流程。
+
+### 推荐配置方式：复用已有 Antigravity / CLIProxyAPI
+
+不要手工复制或粘贴 `access_token`、`refresh_token`、`client_secret`。新装插件时建议按下面顺序操作：
+
+1. 先按现有 Antigravity / CLIProxyAPI 的登录流程登录 Google 账号，让 bridge 生成认证文件；插件会自动扫描 `~/.cli-proxy-api/antigravity-*.json`。
+2. 确认 bridge 已启动并使用预期的 `8317` 回环端口。
+3. 启动插件，展开用量卡片，点击右上角 `✦` 开启 **Google AI Pro**；如果还需要本地 Token 统计，再单独开启图表开关。
+4. 首次开启后等待一次后台刷新，卡片中出现 `Gemini AI Pro` 及对应的 5h / 7d 行，即表示配置生效。关闭开关后不会继续轮询 Google 配额。
+
+如果使用的是本机已有的 `codex-autoheal-bridge` / Model Bridge 配置，应继续使用它提供的登录、账号池和自愈流程；插件只消费其本地认证文件和配额结果，不额外创建账号池。
+
+### 安全的只读检查
+
+以下命令只检查目录、文件名和回环服务状态，不会打印 OAuth 内容。请不要把包含邮箱、Token 或管理密钥的完整终端输出贴到公开 Issue：
+
+```bash
+# 是否存在认证目录和配置文件
+test -d "$HOME/.cli-proxy-api" && echo "auth dir: OK" || echo "auth dir: MISSING"
+test -f "$HOME/.cli-proxy-api/config.yaml" && echo "config: OK" || echo "config: MISSING"
+
+# 只列出认证文件名，不要打开或复制文件内容
+find "$HOME/.cli-proxy-api" -maxdepth 1 -type f \
+  -name 'antigravity-*.json' -not -name '*.bak' -print
+
+# 检查本机 bridge 是否监听预期端口；HTTP 状态码为 2xx/4xx 均说明端口有响应
+curl -sS -o /dev/null -w 'CLIProxyAPI: %{http_code}\n' \
+  'http://127.0.0.1:8317/v1/models'
+
+# 检查插件监控和注入状态
+codex-header --status
+```
+
+### 配置文件和数据位置
+
+| 内容 | 默认位置 | 说明 |
+| --- | --- | --- |
+| Antigravity OAuth 账号 | `~/.cli-proxy-api/antigravity-*.json` | 由 bridge 登录流程生成；不要手工写入或提交 |
+| CLIProxyAPI 配置 | `~/.cli-proxy-api/config.yaml` | 可包含本机 `remote-management.secret-key`，必须保护权限 |
+| Model Bridge 客户端凭证 | `~/.config/codex-cli-model-bridge/codex-model-router.mjs` 或环境变量 | 仅用于 OAuth 自动刷新 |
+| 插件开关 | `~/Library/Application Support/Codex Quota Header/settings.json` | 保存 Google / Token 模块是否启用 |
+| Token 本地汇总 | `~/Library/Application Support/Codex Quota Header/token-rollup.json` | 仅本机增量汇总，不上传网络 |
+| Codex 会话日志 | `~/.codex/sessions` | Token 统计的本地数据源；缺少该目录时只影响 Token 统计 |
+
+### Google 模块故障排查
+
+| 现象 | 常见原因 | 处理方法 |
+| --- | --- | --- |
+| 显示“未配置账号 / 暂无数据” | 没有匹配的 `antigravity-*.json`，或账号被禁用 | 重新走 bridge 的 Google 登录流程，确认文件位于 `~/.cli-proxy-api/` 且不是 `.bak` |
+| 显示 Token 过期、刷新失败 | `refresh_token` 无效，或 OAuth client id / secret 缺失 | 重新登录 Google；确认环境变量或 Model Bridge 配置中存在客户端凭证 |
+| CLIProxyAPI 返回 401 | 管理密钥不匹配或服务未加载新配置 | 检查 `MANAGEMENT_PASSWORD` 与 `remote-management.secret-key`，修改后重启现有 bridge |
+| CLIProxyAPI 无响应 | bridge 未启动、端口不是 8317，或启动了错误的认证目录 | 先检查现有 bridge 的启动配置；不要重复启动第二个实例 |
+| Google 返回 403 / 429 | 账号资格、Google 服务策略、临时限流或上游配额问题 | 先用 bridge 自身的账号检查/登录流程验证；这不是 Codex 顶栏注入问题 |
+| 数据暂时保持旧值 | 网络或 OAuth 刷新暂时失败 | 恢复网络或重新登录后点击卡片刷新；插件会保留最近一次有效快照，避免白屏 |
+| Token 统计显示“建立中” | 首次正在扫描历史会话日志 | 等待后台完成；Google 账号配置不会影响 Token 统计 |
+
+### 凭证安全边界
+
+插件后台只在本机读取完成 Google 配额所需的认证文件和本地管理配置，并将请求发送到本机 CLIProxyAPI 或 Google 配额服务；这些凭证不会传入页面渲染器，也不会写入插件日志或上传到第三方服务器。请不要把以下内容写入 README、Issue、截图或 Git：
+
+- `access_token`、`refresh_token`；
+- `ANTIGRAVITY_CLIENT_SECRET`；
+- `MANAGEMENT_PASSWORD` 或 `remote-management.secret-key`；
+- 包含上述字段的完整 JSON / YAML 文件。
+
+Google 配额接口使用的是上游内部配额端点，未来可能因 Google 或 bridge 版本变化而调整；即使 Google 模块不可用，Codex 自身的 5h / 7d 额度和插件注入功能仍应独立工作。
 
 ---
 
