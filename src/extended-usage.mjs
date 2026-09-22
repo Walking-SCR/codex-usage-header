@@ -171,8 +171,8 @@ export class GeminiQuotaManager {
       rows: [
         { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
         { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
-        { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
         { label: 'Claude & GPT 5h', remainingPercent: null, countdown: null, unavailable: true },
+        { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
       ],
       fetchedAt: null,
       stale: false,
@@ -397,12 +397,15 @@ export class GeminiQuotaManager {
     const rows = [
       standard['Gemini 5h'] || { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
       standard['Gemini 7d'] || { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
-      standard['Claude & GPT 7d'] || { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
     ];
 
     if (standard['Claude & GPT 5h']) {
       rows.push(standard['Claude & GPT 5h']);
     }
+
+    rows.push(
+      standard['Claude & GPT 7d'] || { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true }
+    );
 
     rows.push(...extra);
     return rows;
@@ -468,8 +471,8 @@ export class GeminiQuotaManager {
         rows: [
           { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
           { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
-          { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
           { label: 'Claude & GPT 5h', remainingPercent: null, countdown: null, unavailable: true },
+          { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
         ],
         fetchedAt: null,
         stale: false,
@@ -527,8 +530,8 @@ export class GeminiQuotaManager {
           rows: [
             { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
             { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
-            { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
             { label: 'Claude & GPT 5h', remainingPercent: null, countdown: null, unavailable: true },
+            { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
           ],
           fetchedAt: null,
           stale: false,

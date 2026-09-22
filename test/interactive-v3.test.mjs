@@ -110,6 +110,8 @@ assert.equal(hasTokensOn, true);
 console.log('  Token Usage toggled on successfully (card restored)');
 
 // 9. Test toggling Reset Vouchers (voucher-toggle-btn) off and on
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (!b?.classList.contains("is-active")) b.click(); })()');
+await new Promise(r => setTimeout(r, 200));
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".voucher-toggle-btn").click()');
 await new Promise(r => setTimeout(r, 200));
 const hasVoucherOff = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".reset-voucher-section"))');
@@ -132,6 +134,11 @@ console.log('  Refresh loading animation state verified (is-refreshing present)'
 // 11. Test account name mask toggling (eye button)
 const maskBtn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".account-mask-toggle-btn"))');
 assert.equal(maskBtn, true, 'Account mask toggle button should exist');
+
+// Ensure starting in unmasked state
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".account-mask-toggle-btn"); if (btn?.classList.contains("is-active")) btn.click(); })()');
+await new Promise(r => setTimeout(r, 200));
+
 const initialAccounts = await evaluateInTarget(target.webSocketDebuggerUrl, '[...document.querySelectorAll(".quota-extension-account-tab")].map(t => t.innerText)');
 // Toggle mask ON
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".account-mask-toggle-btn").click()');

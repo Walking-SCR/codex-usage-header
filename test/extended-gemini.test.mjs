@@ -79,6 +79,32 @@ assert.equal(rowsSnake[2].label, 'Claude & GPT 7d');
 assert.equal(rowsSnake[2].remainingPercent, null);
 assert.equal(rowsSnake[2].unavailable, true); // missing data must not become 0%
 
+// Test full 4-row payload: Claude & GPT 7d must be placed after Claude & GPT 5h
+const fullPayload = {
+  groups: [
+    {
+      displayName: 'Gemini Models',
+      buckets: [
+        { window: '5h', remainingFraction: 0.80, resetTime: new Date(Date.now() + 5520000).toISOString() },
+        { window: 'weekly', remainingFraction: 0.50, resetTime: new Date(Date.now() + 356400000).toISOString() },
+      ],
+    },
+    {
+      displayName: 'Claude and GPT models',
+      buckets: [
+        { window: '5h', remainingFraction: 1.0, resetTime: new Date(Date.now() + 18000000).toISOString() },
+        { window: 'weekly', remainingFraction: 0.90, resetTime: new Date(Date.now() + 356400000).toISOString() },
+      ],
+    },
+  ],
+};
+const fullRows = manager.parseRawQuotaPayload(fullPayload);
+assert.equal(fullRows.length, 4);
+assert.equal(fullRows[0].label, 'Gemini 5h');
+assert.equal(fullRows[1].label, 'Gemini 7d');
+assert.equal(fullRows[2].label, 'Claude & GPT 5h');
+assert.equal(fullRows[3].label, 'Claude & GPT 7d');
+
 // 4. Stale cache retention on error
 manager.cache = {
   status: 'ready',
