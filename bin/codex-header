@@ -17,8 +17,8 @@ if [[ -n "$NODE_BINARY" ]]; then
     exit 127
   fi
 else
-  # Finder/Dock apps receive a minimal PATH that omits both common Homebrew
-  # locations. Resolve Node explicitly before falling back to PATH lookup.
+  # Finder/Dock 应用收到的 PATH 很精简，通常不包含 Homebrew 的两个常见路径。
+  # 先显式解析 Node.js，找不到时再回退到 PATH 查找。
   for candidate in /opt/homebrew/bin/node /usr/local/bin/node; do
     if [[ -x "$candidate" ]]; then
       NODE_BINARY="$candidate"

@@ -1,31 +1,31 @@
  /**
-  * Test Suite: Formatting, Countdown, & 4-Tier Adaptive Breakpoints
+  * 测试套件：格式化、倒计时和四级自适应断点
   */
  import assert from 'node:assert/strict';
  import { formatCountdown, resolveAdaptiveMode, normalizeUsagePayload } from '../src/utils.mjs';
  
  console.log('Testing: Countdown & Adaptive Breakpoints...');
  
- // 1. Countdown Formatting
+ // 1. 倒计时格式化
  {
-   // 5h format (hours and minutes)
+   // 5 小时格式（小时和分钟）
    assert.equal(formatCountdown(2 * 3600 + 15 * 60), '2h 15m');
    assert.equal(formatCountdown(45 * 60), '45m');
    assert.equal(formatCountdown(0), '即将重置');
    assert.equal(formatCountdown(-10), '即将重置');
  
-   // 7d format (days, hours, and minutes)
+   // 7 天格式（天、小时和分钟）
    assert.equal(formatCountdown(3 * 86400 + 14 * 3600 + 20 * 60, true), '3d 14h 20m');
    assert.equal(formatCountdown(1 * 86400 + 2 * 3600 + 5 * 60, true), '1d 2h 5m');
 
-   // 5h ceiling and exact hour formatting (preventing 5h 1m overflow)
+   // 5 小时上限和整点格式化（避免显示为 5h 1m）
    assert.equal(formatCountdown(5 * 3600, false, 5 * 3600), '5h');
    assert.equal(formatCountdown(5 * 3600 + 30, false, 5 * 3600), '5h');
    assert.equal(formatCountdown(4 * 3600, false, 5 * 3600), '4h');
    assert.equal(formatCountdown(3600, false, 5 * 3600), '1h');
  }
  
- // 2. Adaptive Breakpoint Classification
+ // 2. 自适应断点分类
  {
    assert.equal(resolveAdaptiveMode(700), 'full');
    assert.equal(resolveAdaptiveMode(520), 'full');
@@ -36,7 +36,7 @@
    assert.equal(resolveAdaptiveMode(209), 'nano');
    assert.equal(resolveAdaptiveMode(50), 'nano');
 
-   // A 24px dead-band prevents resize feedback from bouncing between modes.
+   // 24px 的死区可避免调整大小时在模式之间反复跳转。
    assert.equal(resolveAdaptiveMode(510, 'full'), 'full');
    assert.equal(resolveAdaptiveMode(495, 'full'), 'compact');
    assert.equal(resolveAdaptiveMode(530, 'compact'), 'compact');
@@ -45,7 +45,7 @@
    assert.equal(resolveAdaptiveMode(235, 'nano'), 'minimal');
  }
  
- // 3. Usage Payload Normalization
+ // 3. 用量数据归一化
  {
    const sampleBackendApiPayload = {
      rate_limit: {

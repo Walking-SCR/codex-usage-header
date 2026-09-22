@@ -1,6 +1,6 @@
 /**
- * Single-owner usage scheduler. Renderer targets only submit commands and
- * receive sanitized snapshots through localhost CDP Runtime.evaluate.
+ * 单实例用量调度器。渲染器目标只提交命令，
+ * 并通过本机 CDP Runtime.evaluate 接收脱敏快照。
  */
 import { openSync, closeSync, readFileSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,13 +25,13 @@ function acquireLock() {
     return true;
   } catch {
     try { process.kill(Number(readFileSync(LOCK_PATH, 'utf8')), 0); return false; } catch {
-      try { unlinkSync(LOCK_PATH); } catch { /* stale lock */ }
+      try { unlinkSync(LOCK_PATH); } catch { /* 忽略过期锁清理异常 */ }
       return acquireLock();
     }
   }
 }
 
-function releaseLock() { try { unlinkSync(LOCK_PATH); } catch { /* already released */ } }
+function releaseLock() { try { unlinkSync(LOCK_PATH); } catch { /* 锁已经释放时忽略异常 */ } }
 
 function readSettings() {
   try {
@@ -117,9 +117,9 @@ async function run(cdpPort) {
     let inFlight = null;
     const deliveredRevision = new Map();
     const seenCommands = new Set();
-    // Keep one owner alive and let the CDP target list drive availability.
-    // A synchronous process scan here can block the event loop and starve
-    // renderer commands, which makes manual refresh appear unresponsive.
+    // 保持单个所有者运行，并由 CDP 目标列表驱动可用性判断。
+    // 这里执行同步进程扫描可能阻塞事件循环，使渲染器命令得不到处理，
+    // 从而导致手动刷新看起来没有响应。
     while (true) {
       let targets;
       try { targets = selectUsageTargets(await fetchCdpTargets(cdpPort)); } catch { await sleep(POLL_MS); continue; }
@@ -136,7 +136,7 @@ async function run(cdpPort) {
             try { return { target, state: await inspectTarget(target) }; } catch { return null; }
           }));
           valid = inspections.filter(Boolean);
-        } catch { /* the target may be between route transitions */ }
+        } catch { /* 目标可能正处于路由切换过程中 */ }
       }
       const commands = valid.flatMap(item => (item.state.commands || (item.state.command ? [item.state.command] : [])).map(cmd => ({ ...cmd, target: item.target })));
       for (const command of commands) {

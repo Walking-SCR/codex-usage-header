@@ -3,7 +3,7 @@ import { isAccountAvailable, GeminiQuotaManager } from '../src/extended-usage.mj
 
 console.log('Testing: Intelligent Google AI Pro active account selection & auto-failover...');
 
-// 1. Account with available quota is considered available
+// 1. 有可用配额的账号应被视为可用
 const healthyAccountA = {
   id: 'antigravity-accountA.json',
   email: 'accountA@gmail.com',
@@ -33,7 +33,7 @@ const healthyAccountB = {
 assert.equal(isAccountAvailable(healthyAccountA), true);
 assert.equal(isAccountAvailable(healthyAccountB), true);
 
-// 2. Account A runs out of 5h quota (Gemini 5h = 0)
+// 2. 账号 A 的 5 小时配额耗尽（Gemini 5h = 0）
 const exhaustedAccountA = {
   ...healthyAccountA,
   rows: [
@@ -46,7 +46,7 @@ const exhaustedAccountA = {
 
 assert.equal(isAccountAvailable(exhaustedAccountA), false);
 
-// 3. Test manager resolution
+// 3. 测试管理器解析
 const manager = new GeminiQuotaManager();
 manager.cache = {
   status: 'ready',
@@ -55,12 +55,12 @@ manager.cache = {
   rows: [],
 };
 
-// Even if user or default was accountA, because accountA is exhausted, it automatically fails over to accountB!
+// 即使用户选择或默认账号是账号 A，由于账号 A 已耗尽，也应自动切换到账号 B。
 manager.selectedAccount = 'accountA@gmail.com';
 const snapshot = manager.getSnapshot();
 assert.equal(snapshot.selectedAccount, 'accountB@gmail.com');
 
-// 4. Test priority-based initial default selection
+// 4. 测试基于优先级的初始默认账号选择
 const priorityAccountLow = {
   ...healthyAccountA,
   priority: 50,
@@ -78,7 +78,7 @@ priorityManager.cache = {
   rows: [],
 };
 
-// With no manual override, high priority account (priority 100) must be selected by default
+// 没有手动覆盖时，优先级较高的账号（priority 100）必须被默认选中
 priorityManager.selectedAccount = null;
 const prioritySnapshot = priorityManager.getSnapshot();
 assert.equal(prioritySnapshot.selectedAccount, 'accountB@gmail.com');

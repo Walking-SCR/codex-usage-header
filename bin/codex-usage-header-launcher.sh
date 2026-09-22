@@ -77,11 +77,10 @@ else
     exit "$initial_rc"
   fi
 
-  # Opening Codex Quota Header is the user's explicit request to relaunch the
-  # desktop client with its localhost-only debugging channel. Try a normal
-  # application quit first, without presenting an error-like confirmation.
-  # Do not let AppleScript block the recovery flow if ChatGPT's normal quit
-  # handler is waiting on a renderer or a background helper.
+  # 打开 Codex Quota Header 就是用户明确要求使用仅限本机回环的调试通道
+  # 重新启动桌面客户端。先尝试正常退出应用，不显示类似错误的确认提示。
+  # 如果 ChatGPT 的正常退出处理器正在等待渲染器或后台辅助进程，
+  # 也不能让 AppleScript 阻塞恢复流程。
   /usr/bin/osascript -e 'tell application "ChatGPT" to quit' >/dev/null 2>&1 &
   quit_pid=$!
   if ! wait_for_desktop_exit; then
@@ -104,8 +103,8 @@ else
 fi
 exit_code=0
 
-# Keep the regular .app process alive while the live monitor is serving the
-# Codex window, so macOS keeps a normal Dock menu available for pinning.
+# 实时监控器服务 Codex 窗口期间，保持常规 .app 进程运行，
+# 这样 macOS 才会保留可用于固定图标的正常 Dock 菜单。
 while pgrep -f 'codex-usage-header/src/monitor\.mjs' >/dev/null 2>&1; do
   sleep 2
 done

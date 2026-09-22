@@ -1,4 +1,4 @@
- # Codex Quota Header - Windows Installer (PowerShell)
+ # Codex Quota Header - Windows 安装程序（PowerShell）
  $ErrorActionPreference = "Stop"
  
  Write-Host "=== Installing Codex Quota Header (Windows) ===" -ForegroundColor Cyan
@@ -14,7 +14,7 @@
  Copy-Item -Path "$RootDir\*" -Destination $PluginDir -Recurse -Force
  Write-Host "✓ Plugin copied to $PluginDir" -ForegroundColor Green
  
- # Create a desktop shortcut if possible
+ # 如果条件允许，则创建桌面快捷方式
  try {
      $WshShell = New-Object -ComObject WScript.Shell
      $ShortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "ChatGPT (Quota Header).lnk"

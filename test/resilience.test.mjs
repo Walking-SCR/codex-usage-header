@@ -1,11 +1,11 @@
  /**
-  * Test Suite: Cascading Anchor Resilience & Idempotent Mounting
+  * 测试套件：级联锚点容错和幂等挂载
   */
  import assert from 'node:assert/strict';
  
  console.log('Testing: Cascading Anchor Resilience & Idempotence...');
  
- // Mock DOM structure to simulate ChatGPT desktop header
+ // 模拟 DOM 结构，以模拟 ChatGPT 桌面端标题栏
  function createMockHeaderHierarchy(tier = 1) {
    const header = {
      tagName: 'HEADER',
@@ -64,19 +64,19 @@ function resolveMountStrategy(header) {
  }
  
  {
-   // Tier 1: Standard layout with Share button
+   // 第 1 级：带分享按钮的标准布局
    const h1 = createMockHeaderHierarchy(1);
    assert.equal(resolveMountStrategy(h1).tier, 1);
  
-   // Tier 2: Altered button attributes, but action group remains
+   // 第 2 级：按钮属性变化，但操作按钮组仍存在
    const h2 = createMockHeaderHierarchy(2);
    assert.equal(resolveMountStrategy(h2).tier, 2);
  
-   // Tier 3: Extreme DOM mutation where action group is removed
+   // 第 3 级：操作按钮组被移除的极端 DOM 变化
    const h3 = createMockHeaderHierarchy(3);
    assert.equal(resolveMountStrategy(h3).tier, 3);
  
- // Tier 4: never cover native controls while the safe anchor is unavailable.
+ // 第 4 级：安全锚点不可用时，绝不覆盖原生控件。
  assert.equal(resolveMountStrategy(null).mode, 'defer_until_safe_anchor');
 }
  

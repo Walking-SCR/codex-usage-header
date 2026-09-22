@@ -81,7 +81,7 @@ try {
   assert.equal(hover.inside, true);
   assert.match(hover.text, /用量额度|Usage quota/);
 
-  // Ensure voucher section is visible for cardLayout checks
+  // 确保重置券区域可见，以便检查卡片布局
   await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".voucher-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
   await new Promise(resolve => setTimeout(resolve, 150));
 
@@ -108,9 +108,8 @@ try {
   assert.notEqual(cardAfterLocale, cardBeforeLocale);
   await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24 .language-toggle")?.click()');
 
-  // Re-open after the card's language rerender so this assertion
-  // tests moving into a live card, not a stale hide timer from the previous
-  // hover target.
+  // 卡片因语言重新渲染后再次打开，使这项断言测试进入当前卡片，
+  // 而不是命中上一次悬停目标遗留的隐藏计时器。
   await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.showPopover()');
   await new Promise(resolve => setTimeout(resolve, 120));
   const cardPoint = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const r=document.querySelector(".codex-usage-popover-v24")?.getBoundingClientRect(); return r?{x:r.left+r.width/2,y:r.top+20}:null; })()');
@@ -130,8 +129,8 @@ try {
   await new Promise(resolve => setTimeout(resolve, 260));
   let hiddenAfterHoverOut = await evaluateInTarget(target.webSocketDebuggerUrl, '!document.querySelector(".codex-usage-popover-v24")?.classList.contains("is-visible")');
   if (!hiddenAfterHoverOut) {
-    // Electron may drop a synthetic move while the native titlebar is
-    // relayouting; verify the close path directly before continuing.
+    // Electron 可能在原生标题栏重新布局时丢弃模拟移动事件；
+    // 继续之前直接验证关闭路径。
     await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.hidePopover()');
     hiddenAfterHoverOut = await evaluateInTarget(target.webSocketDebuggerUrl, '!document.querySelector(".codex-usage-popover-v24")?.classList.contains("is-visible")');
   }
@@ -174,8 +173,8 @@ try {
     writeFileSync(screenshotPath, Buffer.from(screenshot.data, 'base64'));
     screenshotCaptured = true;
   } catch {
-    // Screenshot capture is optional evidence; interaction assertions above
-    // remain authoritative when Electron's surface is temporarily busy.
+    // 截图仅作为可选证据；当 Electron 界面暂时繁忙时，
+    // 以上交互断言仍然是最终依据。
   }
   console.log(JSON.stringify({ snapshots, hover, finalState, screenshotPath: screenshotCaptured ? screenshotPath : null }, null, 2));
   console.log('✓ Live renderer responsive, popover, and card-refresh checks passed!');

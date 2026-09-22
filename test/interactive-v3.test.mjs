@@ -7,38 +7,38 @@ const targets = selectUsageTargets(await fetchCdpTargets(9229));
 const [target] = targets;
 assert.ok(target, 'Target must exist');
 
-// 1. Show popover
+// 1. 显示弹出卡片
 await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__.showPopover()');
 await new Promise(r => setTimeout(r, 250));
 
-// Ensure Google AI Pro is toggled ON for interactive checks
+// 确保 Google AI Pro 已开启，以便执行交互检查
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".google-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
 await new Promise(r => setTimeout(r, 250));
 
-// Ensure Vouchers is toggled ON for interactive checks
+// 确保重置券已开启，以便执行交互检查
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".voucher-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
 await new Promise(r => setTimeout(r, 250));
 
-// Ensure Token Usage is toggled ON for interactive checks
+// 确保 Token 用量已开启，以便执行交互检查
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".stats-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
 await new Promise(r => setTimeout(r, 250));
 
 const initialHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
 assert.ok(initialHeight > 500, 'Initial height should be > 500');
 
-// 2. Collapse Google AI Pro
+// 2. 收起 Google AI Pro
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-toggle").click()');
 await new Promise(r => setTimeout(r, 250));
 const collapsedHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
 assert.ok(collapsedHeight < initialHeight - 100, 'Collapsed height must be significantly lower (>100px reduction)');
 
-// 3. Expand Google AI Pro back
+// 3. 再次展开 Google AI Pro
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-toggle").click()');
 await new Promise(r => setTimeout(r, 250));
 const expandedHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
 assert.ok(Math.abs(expandedHeight - initialHeight) < 5, 'Expanded height should restore');
 
-// 4. Test range tab switching & no-wrap on large totals (days30)
+// 4. 测试时间范围切换，以及大数值（近 30 日）不换行
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab[data-range=\'days30\']").click()');
 await new Promise(r => setTimeout(r, 200));
 const activeRange30 = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab.is-active").dataset.range');
@@ -48,7 +48,7 @@ const summaryValHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'do
 assert.ok(summaryValHeight < 45, 'Token summary must remain single-line (no wrap to 72px)');
 console.log('  Switched to days30:', activeRange30, 'total tokens:', tokenTotalDays30, 'valHeight:', summaryValHeight);
 
-// 4.1. Test range tab switching
+// 4.1. 测试时间范围切换
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab[data-range=\'days7\']").click()');
 await new Promise(r => setTimeout(r, 200));
 const activeRange = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab.is-active").dataset.range');
@@ -63,7 +63,7 @@ assert.equal(activeRangeToday, 'today');
 const tokenTotalToday = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".token-summary-number").innerText');
 console.log('  Switched back to today, total tokens:', tokenTotalToday);
 
-// 5. Test account switching
+// 5. 测试账号切换
 const accounts = await evaluateInTarget(target.webSocketDebuggerUrl, '[...document.querySelectorAll(".quota-extension-account-tab")].map(t => t.innerText)');
 console.log('  Available account tabs:', accounts);
 if (accounts.length > 1) {
@@ -76,12 +76,12 @@ if (accounts.length > 1) {
   console.log('  Switched back to primary account');
 }
 
- // 6. Verify capsule arrow icon is removed
+// 6. 验证胶囊上的箭头图标已移除
  const capsuleArrow = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector("codex-usage-header-host")?.shadowRoot?.querySelector(".capsule-arrow")');
  assert.equal(capsuleArrow, null, 'Capsule arrow should be removed');
  console.log('  Capsule arrow icon successfully verified as removed');
 
-// 7. Test toggling Google AI Pro off and on
+// 7. 测试关闭和开启 Google AI Pro
 await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__.showPopover()');
 await new Promise(r => setTimeout(r, 100));
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".google-toggle-btn").click()');
@@ -96,7 +96,7 @@ const hasGoogleOn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean
 assert.equal(hasGoogleOn, true);
 console.log('  Google AI Pro toggled on successfully (card restored)');
 
-// 8. Test toggling Token Usage (stats-toggle-btn) off and on
+// 8. 测试关闭和开启 Token 用量（stats-toggle-btn）
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".stats-toggle-btn").click()');
 await new Promise(r => setTimeout(r, 200));
 const hasTokensOff = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean([...document.querySelectorAll(".quota-extension-title")].some(el => el.innerText.includes("Token使用量") || el.innerText.includes("Token处理量")))');
@@ -109,7 +109,7 @@ const hasTokensOn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean
 assert.equal(hasTokensOn, true);
 console.log('  Token Usage toggled on successfully (card restored)');
 
-// 9. Test toggling Reset Vouchers (voucher-toggle-btn) off and on
+// 9. 测试关闭和开启重置券（voucher-toggle-btn）
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (!b?.classList.contains("is-active")) b.click(); })()');
 await new Promise(r => setTimeout(r, 200));
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".voucher-toggle-btn").click()');
@@ -124,23 +124,23 @@ const hasVoucherOn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolea
 assert.equal(hasVoucherOn, true, 'Voucher section should be restored when toggled on');
 console.log('  Voucher section toggled on successfully (card restored)');
 
-// 10. Test refresh animation and loading state
+// 10. 测试刷新动画和加载状态
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".card-refresh").click()');
 await new Promise(r => setTimeout(r, 80));
 const isRefreshing = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".popover-shell")?.classList.contains("is-refreshing")');
 assert.equal(isRefreshing, true, 'Popover shell should have is-refreshing class during refresh');
 console.log('  Refresh loading animation state verified (is-refreshing present)');
 
-// 11. Test account name mask toggling (eye button)
+// 11. 测试账号名称遮罩切换（眼睛按钮）
 const maskBtn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".account-mask-toggle-btn"))');
 assert.equal(maskBtn, true, 'Account mask toggle button should exist');
 
-// Ensure starting in unmasked state
+// 确保从未遮罩状态开始
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".account-mask-toggle-btn"); if (btn?.classList.contains("is-active")) btn.click(); })()');
 await new Promise(r => setTimeout(r, 200));
 
 const initialAccounts = await evaluateInTarget(target.webSocketDebuggerUrl, '[...document.querySelectorAll(".quota-extension-account-tab")].map(t => t.innerText)');
-// Toggle mask ON
+// 开启遮罩
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".account-mask-toggle-btn").click()');
 await new Promise(r => setTimeout(r, 200));
 const maskedAccounts = await evaluateInTarget(target.webSocketDebuggerUrl, '[...document.querySelectorAll(".quota-extension-account-tab")].map(t => t.innerText)');
@@ -152,18 +152,18 @@ if (maskedAccounts.some(name => name.startsWith('wa'))) {
 if (maskedAccounts.some(name => name.startsWith('she'))) {
   assert.ok(maskedAccounts.includes('she*****rong'), 'shekchoyrong should be masked to she*****rong');
 }
-// Toggle mask OFF (restore full names)
+// 关闭遮罩（恢复完整名称）
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".account-mask-toggle-btn").click()');
 await new Promise(r => setTimeout(r, 200));
 const restoredAccounts = await evaluateInTarget(target.webSocketDebuggerUrl, '[...document.querySelectorAll(".quota-extension-account-tab")].map(t => t.innerText)');
 assert.deepEqual(restoredAccounts, initialAccounts, 'Restored account names should match initial names');
 console.log('  Account name mask toggle verified successfully');
 
-// 12. Test voucher loading state on toggle
-// Turn off vouchers first
+// 12. 测试切换重置券时的加载状态
+// 先关闭重置券
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (b?.classList.contains("is-active")) b.click(); })()');
 await new Promise(r => setTimeout(r, 150));
-// Turn on vouchers - should show loading state or valid vouchers
+// 开启重置券：应显示加载状态或有效的重置券
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (!b?.classList.contains("is-active")) b.click(); })()');
 await new Promise(r => setTimeout(r, 50));
 const hasVoucherSectionOrLoading = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".reset-voucher-section"))');

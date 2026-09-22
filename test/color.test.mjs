@@ -1,31 +1,31 @@
  /**
-  * Test Suite: Apple HIG Battery Color Palette & Threshold Mapping
+  * 测试套件：Apple HIG 电池配色和阈值映射
   */
  import assert from 'node:assert/strict';
  import { getQuotaColor, defaultConfig } from '../src/config.mjs';
  
  console.log('Testing: Apple HIG Battery Color Mapping...');
  
- // Light Theme Tests
+ // 浅色主题测试
  {
-   // Green Range: 41% - 100% remaining
+   // 绿色区间：剩余 41% - 100%
    assert.equal(getQuotaColor(100, false), defaultConfig.colors.light.green);
    assert.equal(getQuotaColor(75, false), defaultConfig.colors.light.green);
    assert.equal(getQuotaColor(41, false), defaultConfig.colors.light.green);
  
-   // Yellow Range: 11% - 40% remaining (Low Power Battery Amber)
+   // 黄色区间：剩余 11% - 40%（低电量电池琥珀色）
    assert.equal(getQuotaColor(40, false), defaultConfig.colors.light.yellow);
    assert.equal(getQuotaColor(30, false), defaultConfig.colors.light.yellow);
    assert.equal(getQuotaColor(11, false), defaultConfig.colors.light.yellow);
  
-   // Red Range: 0% - 10% remaining
+   // 红色区间：剩余 0% - 10%
    assert.equal(getQuotaColor(10, false), defaultConfig.colors.light.red);
    assert.equal(getQuotaColor(11, false), defaultConfig.colors.light.yellow);
    assert.equal(getQuotaColor(10, false), defaultConfig.colors.light.red);
    assert.equal(getQuotaColor(0, false), defaultConfig.colors.light.red);
  }
  
- // Dark Theme Tests
+ // 深色主题测试
  {
    assert.equal(getQuotaColor(85, true), defaultConfig.colors.dark.green);
    assert.equal(getQuotaColor(35, true), defaultConfig.colors.dark.yellow);

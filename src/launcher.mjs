@@ -1,9 +1,8 @@
 /**
- * Codex Quota Header launcher and CDP injector.
+ * Codex Quota Header 启动器和 CDP 注入器。
  *
- * The desktop app must be started with a localhost-only Chromium debugging
- * port. The launcher starts it when needed, injects the component, verifies
- * the DOM mount, and then exits.
+ * 桌面应用必须使用仅限本机回环的 Chromium 调试端口启动。
+ * 启动器会在需要时启动应用、注入组件、验证 DOM 挂载，然后退出。
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, realpathSync } from 'node:fs';
@@ -57,9 +56,9 @@ export function isDesktopAppRunning() {
     `${process.env.HOME}/Applications/ChatGPT.app/Contents/MacOS/ChatGPT`,
   ];
   try {
-    // Do not use `pgrep -f` here: the pattern itself can occur in the
-    // command line of the shell that launched this check. Read the exact
-    // process command instead, while allowing the CDP flags appended by us.
+    // 这里不要使用 `pgrep -f`：匹配模式本身可能出现在启动检查的
+    // shell 命令行中。改为读取准确的进程命令，同时允许命令末尾存在
+    // 由本程序追加的 CDP 参数。
     const processes = execFileSync('/bin/ps', ['-ax', '-o', 'command='], { encoding: 'utf8' });
     return processes.split('\n').some(line => {
       const command = line.trim();
@@ -307,7 +306,7 @@ export async function getStatus(port = DEFAULT_PORT) {
         })()`);
         mounted.push(result);
       } catch {
-        // One inaccessible renderer should not hide healthy targets.
+        // 单个不可访问的渲染器不应隐藏正常的目标页面。
       }
     }
     return {

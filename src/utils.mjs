@@ -1,12 +1,12 @@
  /**
-  * Utility functions for Codex Quota Header
+  * Codex Quota Header 工具函数
   */
  
  /**
-  * Formats remaining time in seconds into human-readable duration
-  * @param {number} seconds - Seconds until reset
-  * @param {boolean} includeDays - Whether to include days for multi-day windows
-  * @returns {string} e.g. "2h 15m" or "3d 14h 20m"
+  * 将秒数形式的剩余时间格式化为易读的时长
+  * @param {number} seconds - 距离重置的秒数
+  * @param {boolean} includeDays - 是否在多日窗口中包含天数
+  * @returns {string} 例如 "2h 15m" 或 "3d 14h 20m"
   */
  export function formatCountdown(seconds, includeDays = false, maxSeconds = null) {
   if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -29,8 +29,8 @@
 }
  
  /**
-  * Formats clock reset time (e.g. "16:30" or "周一 08:00")
-  * @param {number} timestamp - Unix timestamp in seconds
+  * 格式化额度重置时间（例如 "16:30" 或 "周一 08:00"）
+  * @param {number} timestamp - 以秒为单位的 Unix 时间戳
   * @returns {string}
   */
  export function formatResetClock(timestamp) {
@@ -49,8 +49,8 @@
  }
  
  /**
-  * Determines the responsive display mode based on available width
-  * @param {number} width - Available pixel width in container
+  * 根据可用宽度确定响应式显示模式
+  * @param {number} width - 容器中的可用像素宽度
   * @returns {'full' | 'compact' | 'minimal' | 'nano'}
   */
 export function resolveAdaptiveMode(width, currentMode = null, hysteresis = 24) {
@@ -69,13 +69,13 @@ export function resolveAdaptiveMode(width, currentMode = null, hysteresis = 24) 
 }
  
  /**
-  * Normalizes rate limit data from multiple backend shapes
-  * Handles both /backend-api/wham/usage and account/rateLimits/read
+  * 将多种后端结构的限额数据归一化
+  * 同时支持 /backend-api/wham/usage 和 account/rateLimits/read
   */
  export function normalizeUsagePayload(raw) {
    if (!raw || typeof raw !== 'object') return null;
  
-   // Handle nested rate_limit from /backend-api/wham/usage
+  // 处理 /backend-api/wham/usage 返回的嵌套 rate_limit
    const root = raw.rate_limit || raw.rateLimits || raw;
    const primary = root.primary_window || root.primary || root.primaryWindow || null;
    const secondary = root.secondary_window || root.secondary || root.secondaryWindow || null;

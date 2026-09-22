@@ -7,13 +7,13 @@ import {
 
 console.log('Testing: Gemini quota manager and matching contract...');
 
-// 1. Countdown format tests
+// 1. 倒计时格式测试
 assert.deepEqual(formatGeminiCountdown(0), { zh: '即将重置', en: 'resets soon' });
 assert.deepEqual(formatGeminiCountdown(45), { zh: '即将重置', en: 'resets soon' });
 assert.deepEqual(formatGeminiCountdown(5520), { zh: '1h32min后重置', en: 'resets in 1h 32m' });
 assert.deepEqual(formatGeminiCountdown(356400), { zh: '4天后重置', en: 'resets in 4d' });
 
-// 2. Standard row matching
+// 2. 标准行匹配测试
 assert.equal(matchGeminiStandardRow('Gemini Models', '5h'), 'Gemini 5h');
 assert.equal(matchGeminiStandardRow('Gemini Models', 'five-hour'), 'Gemini 5h');
 assert.equal(matchGeminiStandardRow('Gemini Models', 'five_hour'), 'Gemini 5h');
@@ -25,7 +25,7 @@ assert.equal(matchGeminiStandardRow('Claude and GPT models', '5h'), 'Claude & GP
 assert.equal(matchGeminiStandardRow('3p-models', '7d'), 'Claude & GPT 7d');
 assert.equal(matchGeminiStandardRow('Shared Models', 'weekly'), 'Claude & GPT 7d');
 
-// 3. Raw payload parsing (camelCase and snake_case support)
+// 3. 原始数据解析测试（支持 camelCase 和 snake_case）
 const manager = new GeminiQuotaManager();
 
 const camelPayload = {
@@ -56,7 +56,7 @@ assert.equal(rowsCamel[1].remainingPercent, 42);
 assert.equal(rowsCamel[2].label, 'Claude & GPT 7d');
 assert.equal(rowsCamel[2].remainingPercent, 95);
 
-// Test snake_case payload
+// 测试 snake_case 数据
 const snakePayload = {
   groups: [
     {
@@ -79,7 +79,7 @@ assert.equal(rowsSnake[2].label, 'Claude & GPT 7d');
 assert.equal(rowsSnake[2].remainingPercent, null);
 assert.equal(rowsSnake[2].unavailable, true); // missing data must not become 0%
 
-// Test full 4-row payload: Claude & GPT 7d must be placed after Claude & GPT 5h
+// 测试完整的 4 行数据：Claude & GPT 7d 必须排在 Claude & GPT 5h 之后
 const fullPayload = {
   groups: [
     {
@@ -105,7 +105,7 @@ assert.equal(fullRows[1].label, 'Gemini 7d');
 assert.equal(fullRows[2].label, 'Claude & GPT 5h');
 assert.equal(fullRows[3].label, 'Claude & GPT 7d');
 
-// 4. Stale cache retention on error
+// 4. 出错时保留过期缓存
 manager.cache = {
   status: 'ready',
   plan: 'Gemini AI Pro',
@@ -115,7 +115,7 @@ manager.cache = {
   error: null,
 };
 
-// Simulate failure while having cached data
+// 模拟已有缓存数据时发生失败
 manager.fetchQuota = async () => {
   manager.cache = {
     ...manager.cache,

@@ -1,7 +1,7 @@
 /**
- * Direct JSON-RPC client for the Codex App Server.
- * The renderer never receives credentials and no localhost HTTP bridge is
- * exposed. This process owns the single app-server connection.
+ * Codex App Server 的直接 JSON-RPC 客户端。
+ * 渲染器不会接收凭证，也不会暴露本机 HTTP 桥接。
+ * 该进程负责维护唯一的 App Server 连接。
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -13,7 +13,7 @@ function locateCodexBinary() {
     `${home}/Applications/ChatGPT.app/Contents/Resources/codex`,
     '/usr/local/bin/codex',
   ];
-  try { candidates.push(execFileSync('which', ['codex'], { encoding: 'utf8' }).trim()); } catch { /* optional */ }
+  try { candidates.push(execFileSync('which', ['codex'], { encoding: 'utf8' }).trim()); } catch { /* 可选路径不存在时忽略 */ }
   return candidates.find(candidate => candidate && existsSync(candidate));
 }
 

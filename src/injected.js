@@ -1,7 +1,7 @@
 /**
- * Codex Quota Header renderer.
- * The component is mounted through localhost CDP, but never opens a local
- * HTTP bridge. The background monitor owns account reads and scheduling.
+ * Codex Quota Header 渲染器。
+ * 组件通过本机 CDP 挂载，但不会打开本地 HTTP 桥接。
+ * 账号读取和调度由后台监控器负责。
  */
 (() => {
   'use strict';
@@ -251,7 +251,7 @@
   }[char]));
 
   function persistSettings() {
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* best effort */ }
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* 尽力保存，失败时忽略 */ }
   }
 
   function emitCommand(kind, payload = {}, manual = false) {
@@ -358,8 +358,8 @@
     const primary = parseWindow(root.primary || root.primary_window || root.primaryWindow, 5 * 3600);
     const secondary = parseWindow(secondarySource, 7 * 86400);
     if (!secondary || (showFiveHours && !primary)) return null;
-    // The weekly window is an account-wide ceiling. Once it is exhausted,
-    // the shorter window cannot be usable even if its raw bucket is ahead.
+    // 周窗口是账号级别的总上限。一旦周窗口耗尽，
+    // 即使短窗口的原始数值仍然较高，也不能继续使用。
     const effectivePrimary = primary && secondary.remainingPercent === 0
       ? { ...primary, usedPercent: 100, remainingPercent: 0 }
       : primary;
@@ -641,14 +641,14 @@
       }
       else if (googleToggle) {
         googleCollapsed = !googleCollapsed;
-        try { localStorage.setItem('codexQuotaHeader.googleCollapsed', String(googleCollapsed)); } catch { /* ignore */ }
+        try { localStorage.setItem('codexQuotaHeader.googleCollapsed', String(googleCollapsed)); } catch { /* 忽略保存异常 */ }
         renderPopover();
         positionPopover();
       } else if (rangeTab) {
         const range = rangeTab.dataset.range;
         if (range && ['today', 'days7', 'days30'].includes(range)) {
           extendedUsageState.tokens.selectedRange = range;
-          try { localStorage.setItem('codexQuotaHeader.selectedTokenRange', range); } catch { /* ignore */ }
+          try { localStorage.setItem('codexQuotaHeader.selectedTokenRange', range); } catch { /* 忽略保存异常 */ }
           renderPopover();
           positionPopover();
         }
@@ -1306,9 +1306,9 @@
     ensureHostHitArea();
     if (host.__eventsBound) return;
     host.__eventsBound = true;
-    // Codex's titlebar is a drag surface with pointer-events disabled on
-    // several ancestors. Make the injected island an explicit hit target and
-    // keep the usual event path for browsers that deliver pointer events.
+    // Codex 标题栏是拖拽区域，多个祖先节点上禁用了 pointer-events。
+    // 将注入区域设置为明确的命中目标，并保留浏览器正常派发
+    // pointer 事件时使用的事件路径。
     const openFromHost = event => {
       lastPointerX = event.clientX;
       lastPointerY = event.clientY;
@@ -1336,9 +1336,8 @@
       }
     }, true);
 
-    // Coordinate fallback: if Electron routes the physical pointer to the
-    // drag surface instead of the shadow button, document-level mousemove can
-    // still recognize the component's visible bounds.
+    // 坐标兜底：如果 Electron 将物理指针事件路由到拖拽区域，
+    // 而不是影子按钮，文档级 mousemove 仍可识别组件的可见边界。
     const handleDocumentPointerMove = event => {
       lastPointerX = event.clientX;
       lastPointerY = event.clientY;

@@ -1,8 +1,8 @@
 /**
- * Extended usage coordinator for codex-usage-header:
- * 1. Gemini AI Pro multi-account quota fetching and caching via local CLIProxyAPI.
- * 2. Incremental Token usage rollup from local Codex session rollout logs.
- * Zero credentials or tokens are ever sent to the renderer or logged.
+ * codex-usage-header 的扩展用量协调器：
+ * 1. 通过本地 CLIProxyAPI 获取并缓存 Gemini AI Pro 多账号配额。
+ * 2. 通过本地 Codex 会话 rollout 日志增量汇总 Token 用量。
+ * 凭证或 Token 不会传递给渲染器，也不会写入日志。
  */
 import {
   existsSync,
@@ -46,7 +46,7 @@ export function getAntigravityCredentials() {
       if (idMatch && secretMatch) {
         return { clientId: idMatch[1], clientSecret: secretMatch[1] };
       }
-    } catch { /* ignore */ }
+    } catch { /* 忽略异常 */ }
   }
   return { clientId: '', clientSecret: '' };
 }
@@ -190,7 +190,7 @@ export class GeminiQuotaManager {
       if (apiKeyMatch && apiKeyMatch[1]) return apiKeyMatch[1].trim();
       const secretMatch = text.match(/secret-key:\s*["']?([^"'\r\n]+)["']?/);
       if (secretMatch && secretMatch[1] && !secretMatch[1].startsWith('$2')) return secretMatch[1].trim();
-    } catch { /* ignore */ }
+    } catch { /* 忽略异常 */ }
     return '';
   }
 
@@ -234,11 +234,11 @@ export class GeminiQuotaManager {
                 authData.access_token = parsed.access_token;
                 authData.expires_in = parsed.expires_in || 3599;
                 authData.expired = new Date(Date.now() + (authData.expires_in * 1000)).toISOString();
-                try { writeFileSync(authFilePath, JSON.stringify(authData, null, 2)); } catch { /* ignore */ }
+                try { writeFileSync(authFilePath, JSON.stringify(authData, null, 2)); } catch { /* 忽略写回异常 */ }
                 return resolve(parsed.access_token);
               }
             }
-          } catch { /* ignore */ }
+          } catch { /* 忽略刷新异常 */ }
           resolve(authData.access_token || null);
         });
       });
@@ -424,7 +424,7 @@ export class GeminiQuotaManager {
       if (authData.priority !== undefined) priority = Number(authData.priority) || 0;
       if (authData.disabled !== undefined) disabled = Boolean(authData.disabled);
       label = email.split('@')[0] || email;
-    } catch { /* ignore */ }
+    } catch { /* 忽略解析异常 */ }
 
     try {
       const token = await this.getAccessTokenForFile(authFilePath);
@@ -626,7 +626,7 @@ export class TokenRollupEngine {
         };
       }
     } catch {
-      // Corrupt state file will be rebuilt
+      // 状态文件损坏时重新建立。
     }
   }
 
@@ -644,7 +644,7 @@ export class TokenRollupEngine {
       chmodSync(this.storagePath, 0o600);
       this.dirty = false;
       this.lastSavedAt = now;
-    } catch { /* ignore disk write errors */ }
+    } catch { /* 忽略磁盘写入错误 */ }
   }
 
   pruneOldDays() {
@@ -689,7 +689,7 @@ export class TokenRollupEngine {
           }
         }
       }
-    } catch { /* ignore corrupted line */ }
+    } catch { /* 忽略损坏的日志行 */ }
   }
 
   scanFileIncremental(filePath) {
@@ -738,7 +738,7 @@ export class TokenRollupEngine {
       record.offset += validBytesLength;
     } catch {
       if (fd !== undefined) {
-        try { closeSync(fd); } catch { /* ignore */ }
+        try { closeSync(fd); } catch { /* 忽略关闭异常 */ }
       }
     }
   }
@@ -792,7 +792,7 @@ export class TokenRollupEngine {
             results.push(full);
           }
         }
-      } catch { /* ignore permission errors */ }
+      } catch { /* 忽略权限错误 */ }
     }
     return results;
   }

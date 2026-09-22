@@ -1,4 +1,4 @@
- # Codex Quota Header - Windows Uninstaller (PowerShell)
+ # Codex Quota Header - Windows 卸载程序（PowerShell）
  $ErrorActionPreference = "SilentlyContinue"
  
  Write-Host "=== Uninstalling Codex Quota Header (Windows) ===" -ForegroundColor Cyan

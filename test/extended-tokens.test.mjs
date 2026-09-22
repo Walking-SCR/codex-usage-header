@@ -11,7 +11,7 @@ import {
 
 console.log('Testing: extended token usage engine...');
 
-// 1. Classification
+// 1. 模型分类
 assert.equal(classifyModel('gpt-5.6-sol'), 'GPT');
 assert.equal(classifyModel('gpt-6-astra'), 'GPT');
 assert.equal(classifyModel('o1-preview'), 'GPT');
@@ -22,7 +22,7 @@ assert.equal(classifyModel('deepseek-v4-flash'), 'Other');
 assert.equal(classifyModel('claude-sonnet-4-6'), 'Other');
 assert.equal(classifyModel('minimax-m3'), 'Other');
 
-// 2. Number formatting
+// 2. 数字格式化
 assert.equal(formatTokenCount(0), '0');
 assert.equal(formatTokenCount(932), '932');
 assert.equal(formatTokenCount(12400), '12.4K');
@@ -30,7 +30,7 @@ assert.equal(formatTokenCount(1920000), '1.92M');
 assert.equal(formatTokenCount(1280000000), '1.28B');
 assert.equal(formatTokenCount(640000), '640K');
 
-// Chinese units (万, 亿)
+// 中文单位（万、亿）
 assert.equal(formatTokenCount(0, 'zh-CN'), '0');
 assert.equal(formatTokenCount(932, 'zh-CN'), '932');
 assert.equal(formatTokenCount(12400, 'zh-CN'), '1.2万');
@@ -40,11 +40,11 @@ assert.equal(formatTokenCount(37540000, 'zh-CN'), '3754万');
 assert.equal(formatTokenCount(1460000000, 'zh-CN'), '14.6亿');
 assert.equal(formatTokenCount(1280000000, 'zh-CN'), '12.8亿');
 
-// 3. Timezone conversion
+// 3. 时区转换
 assert.equal(toShanghaiDate('2026-09-19T14:43:20.636Z'), '2026-09-19');
 assert.equal(toShanghaiDate('2026-09-19T16:05:00.000Z'), '2026-09-20');
 
-// 4. TokenRollupEngine Delta & Inode Tracking
+// 4. TokenRollupEngine 增量与 inode 跟踪
 const testDir = mkdtempSync(join(tmpdir(), 'token-test-'));
 const storagePath = join(testDir, 'rollup.json');
 const sessionsDir = join(testDir, 'sessions');
@@ -54,7 +54,7 @@ try {
   const fileRecord = { inode: 101, offset: 0, lastTotal: undefined, currentModel: 'gpt-5.6-sol' };
   const todayDate = toShanghaiDate(Date.now());
 
-  // Turn 1: GPT-5.6-sol with initial tokens
+  // 第 1 轮：GPT-5.6-sol 携带初始 Token 数
   engine.processLine(JSON.stringify({
     type: 'turn_context',
     payload: { model: 'gpt-5.6-sol' },
@@ -66,11 +66,11 @@ try {
     payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 1000 } } },
   }), fileRecord, todayDate);
 
-  // Baseline established, no delta counted yet
+  // 建立基线，此时不计入增量
   assert.equal(fileRecord.lastTotal, 1000);
   assert.equal(engine.data.days[todayDate], undefined);
 
-  // Turn 2: same model, token increment
+  // 第 2 轮：同一模型，Token 数增加
   engine.processLine(JSON.stringify({
     type: 'event_msg',
     timestamp: new Date().toISOString(),
@@ -80,7 +80,7 @@ try {
   assert.equal(fileRecord.lastTotal, 1600);
   assert.equal(engine.data.days[todayDate]['gpt-5.6-sol'], 600);
 
-  // Duplicate token_count event (delta === 0), must ignore
+  // 重复的 token_count 事件（delta === 0），必须忽略
   engine.processLine(JSON.stringify({
     type: 'event_msg',
     timestamp: new Date().toISOString(),
@@ -88,7 +88,7 @@ try {
   }), fileRecord, todayDate);
   assert.equal(engine.data.days[todayDate]['gpt-5.6-sol'], 600);
 
-  // Model switch in same session: GPT -> Gemini -> GPT
+  // 同一会话内切换模型：GPT -> Gemini -> GPT
   engine.processLine(JSON.stringify({
     type: 'turn_context',
     payload: { model: 'gemini-3.8-flash-high' },
@@ -101,7 +101,7 @@ try {
   }), fileRecord, todayDate);
   assert.equal(engine.data.days[todayDate]['gemini-3.8-flash-high'], 600);
 
-  // Switch back to GPT
+  // 切回 GPT
   engine.processLine(JSON.stringify({
     type: 'turn_context',
     payload: { model: 'gpt-5.6-sol' },
@@ -114,7 +114,7 @@ try {
   }), fileRecord, todayDate);
   assert.equal(engine.data.days[todayDate]['gpt-5.6-sol'], 1400);
 
-  // total_tokens drop (delta < 0), must reset baseline without adding negative count
+  // total_tokens 下降（delta < 0），必须重置基线，不能累加负数
   engine.processLine(JSON.stringify({
     type: 'event_msg',
     timestamp: new Date().toISOString(),
@@ -123,12 +123,12 @@ try {
   assert.equal(fileRecord.lastTotal, 500);
   assert.equal(engine.data.days[todayDate]['gpt-5.6-sol'], 1400); // unchanged
 
-  // Incomplete line and corrupted line
+  // 不完整行和损坏行
   engine.processLine('', fileRecord, todayDate);
   engine.processLine('{ corrupt json', fileRecord, todayDate);
   assert.equal(fileRecord.lastTotal, 500);
 
-  // Rollup calculations
+  // 汇总计算
   const rollup = engine.calculateRollup();
   const todayRange = rollup.today;
   const gptItem = todayRange.items.find(i => i.key === 'gpt');
@@ -139,11 +139,11 @@ try {
   assert.equal(gptItem.percent, '70.0%');
   assert.equal(geminiItem.tokens, 600);
   assert.equal(geminiItem.percent, '30.0%');
-  // Total must strictly equal sum of items
+  // 总数必须严格等于各项之和
   const sumTokens = todayRange.items.reduce((s, i) => s + i.tokens, 0);
   assert.equal(sumTokens, todayRange.total);
 
-  // Test zero tokens: no NaN%
+  // 测试零 Token：不能产生 NaN%
   const emptyEngine = new TokenRollupEngine({ baseDir: testDir });
   const emptyRollup = emptyEngine.calculateRollup();
   assert.equal(emptyRollup.today.total, 0);
@@ -151,7 +151,7 @@ try {
   assert.equal(emptyRollup.today.items[0].percent, '—');
   assert.equal(emptyRollup.today.items[1].percent, '—');
 
-  // Test save and reload
+  // 测试保存和重新加载
   engine.dirty = true;
   engine.save(true);
   assert.equal(statSync(storagePath).mode & 0o777, 0o600);

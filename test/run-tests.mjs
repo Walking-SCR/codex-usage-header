@@ -1,5 +1,5 @@
  /**
-  * Master Test Runner for Codex Quota Header
+  * Codex Quota Header 主测试运行器
   */
  import { spawnSync } from 'node:child_process';
  import { fileURLToPath } from 'node:url';

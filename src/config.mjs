@@ -1,20 +1,20 @@
  /**
-  * Codex Quota Header Configuration
+  * Codex Quota Header 配置
   */
  export const defaultConfig = {
-   // Active window refresh interval in seconds
+  // 活跃窗口的刷新间隔，单位为秒
    refreshIntervalSeconds: 30,
  
-   // Inactive/hidden window fallback refresh interval in seconds
+  // 非活跃或隐藏窗口的备用刷新间隔，单位为秒
    idleRefreshIntervalSeconds: 180,
  
-   // Minimum time in ms between manual refresh button clicks
+  // 手动刷新按钮两次点击之间的最短间隔，单位为毫秒
    debounceCooldownMs: 5000,
  
-  // The UI and progress bars consistently describe remaining quota.
+  // 界面和进度条统一表示剩余额度。
   displayMode: 'remaining',
  
-   // Apple Human Interface Guidelines (HIG) Colors
+  // Apple 人机界面指南（HIG）配色
    colors: {
      light: {
        green: '#34C759',   // Remaining 41% - 100%
@@ -40,7 +40,7 @@
      },
    },
  
-   // Breakpoints for 4-tier adaptive responsive modes
+  // 四级自适应响应模式的断点
   breakpoints: {
     full: 520,
     compact: 330,
