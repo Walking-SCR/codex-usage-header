@@ -129,4 +129,38 @@ const isRefreshing = await evaluateInTarget(target.webSocketDebuggerUrl, 'docume
 assert.equal(isRefreshing, true, 'Popover shell should have is-refreshing class during refresh');
 console.log('  Refresh loading animation state verified (is-refreshing present)');
 
+// 11. Test account name mask toggling (eye button)
+const maskBtn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".account-mask-toggle-btn"))');
+assert.equal(maskBtn, true, 'Account mask toggle button should exist');
+const initialAccounts = await evaluateInTarget(target.webSocketDebuggerUrl, '[...document.querySelectorAll(".quota-extension-account-tab")].map(t => t.innerText)');
+// Toggle mask ON
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".account-mask-toggle-btn").click()');
+await new Promise(r => setTimeout(r, 200));
+const maskedAccounts = await evaluateInTarget(target.webSocketDebuggerUrl, '[...document.querySelectorAll(".quota-extension-account-tab")].map(t => t.innerText)');
+console.log('  Masked accounts:', maskedAccounts);
+assert.ok(maskedAccounts.every(name => name.includes('*****')), 'All account tabs should contain ***** when masked');
+if (maskedAccounts.some(name => name.startsWith('wa'))) {
+  assert.ok(maskedAccounts.includes('wa*****scr'), 'walkingscr should be masked to wa*****scr');
+}
+if (maskedAccounts.some(name => name.startsWith('she'))) {
+  assert.ok(maskedAccounts.includes('she*****rong'), 'shekchoyrong should be masked to she*****rong');
+}
+// Toggle mask OFF (restore full names)
+await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".account-mask-toggle-btn").click()');
+await new Promise(r => setTimeout(r, 200));
+const restoredAccounts = await evaluateInTarget(target.webSocketDebuggerUrl, '[...document.querySelectorAll(".quota-extension-account-tab")].map(t => t.innerText)');
+assert.deepEqual(restoredAccounts, initialAccounts, 'Restored account names should match initial names');
+console.log('  Account name mask toggle verified successfully');
+
+// 12. Test voucher loading state on toggle
+// Turn off vouchers first
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (b?.classList.contains("is-active")) b.click(); })()');
+await new Promise(r => setTimeout(r, 150));
+// Turn on vouchers - should show loading state or valid vouchers
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (!b?.classList.contains("is-active")) b.click(); })()');
+await new Promise(r => setTimeout(r, 50));
+const hasVoucherSectionOrLoading = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".reset-voucher-section"))');
+assert.equal(hasVoucherSectionOrLoading, true, 'Voucher section should be displayed when enabled');
+console.log('  Voucher section display & loading contract verified');
+
 console.log('✓ All V3 Interactive and Layout tests passed perfectly!');

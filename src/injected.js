@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.10.2';
+  const RUNTIME_VERSION = '3.11.0';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -49,6 +49,7 @@
     enableGoogleAiPro: false,
     enableTokenUsage: false,
     enableResetCredits: false,
+    maskAccountNames: false,
   };
 
   function safeSettings() {
@@ -60,6 +61,7 @@
         enableGoogleAiPro: Boolean(saved.enableGoogleAiPro ?? defaultSettings.enableGoogleAiPro),
         enableTokenUsage: Boolean(saved.enableTokenUsage ?? defaultSettings.enableTokenUsage),
         enableResetCredits: Boolean(saved.enableResetCredits ?? defaultSettings.enableResetCredits),
+        maskAccountNames: Boolean(saved.maskAccountNames ?? defaultSettings.maskAccountNames),
       };
     } catch {
       return { ...defaultSettings };
@@ -77,9 +79,11 @@
     creditBalance: { value: null, displayValue: '—', unlimited: false },
     resetCredits: null,
     resetCreditDetails: [],
+    resetCreditDetailsLoaded: false,
     lastUpdated: null,
     error: null,
   };
+  let vouchersLoading = false;
   let extendedUsageState = {
     antigravity: {
       status: 'idle',
@@ -169,6 +173,8 @@
       toggleGoogle: 'Google AI Pro (开启/关闭)',
       toggleStats: 'Token使用量 (开启/关闭)',
       toggleVouchers: '额度重置券 (开启/关闭)',
+      toggleAccountMask: '显示/隐藏账号名称',
+      loadingVouchers: '正在加载重置券…',
       noGoogleAccounts: '未检测到本地 Google AI Pro 账号配置',
       noResetCoupons: '暂无可用重置券',
       today: '今天',
@@ -224,6 +230,8 @@
       toggleGoogle: 'Google AI Pro (Toggle on/off)',
       toggleStats: 'Token usage (Toggle on/off)',
       toggleVouchers: 'Reset credits (Toggle on/off)',
+      toggleAccountMask: 'Toggle account name mask',
+      loadingVouchers: 'Loading reset credits…',
       noGoogleAccounts: 'No local Google AI Pro accounts found',
       noResetCoupons: 'No available reset coupons',
       today: 'Today',
@@ -361,7 +369,8 @@
     const availableCount = typeof resetCredits === 'object'
       ? Number(resetCredits.availableCount ?? resetCredits.available_count)
       : Number(resetCredits ?? raw.rate_limit_reset_credits);
-    const details = typeof resetCredits === 'object' && Array.isArray(resetCredits.credits)
+    const hasDetailsArray = typeof resetCredits === 'object' && Array.isArray(resetCredits.credits);
+    const details = hasDetailsArray
       ? resetCredits.credits.map(item => ({
         id: item.id || null,
         status: item.status || null,
@@ -370,6 +379,7 @@
         expiresAt: Number(item.expiresAt || 0),
       }))
       : [];
+    if (hasDetailsArray) vouchersLoading = false;
     const unlimited = credits.unlimited === true || credits.unlimited === 'true';
     return {
       status: 'ready',
@@ -384,6 +394,7 @@
       },
       resetCredits: Number.isFinite(availableCount) ? availableCount : null,
       resetCreditDetails: details,
+      resetCreditDetailsLoaded: hasDetailsArray,
       lastUpdated: Number(metadata.fetchedAt) || Date.now(),
       error: null,
     };
@@ -602,11 +613,20 @@
       else if (path.find(node => node?.classList?.contains('voucher-toggle-btn'))) {
         settings.enableResetCredits = !settings.enableResetCredits;
         persistSettings();
+        if (settings.enableResetCredits && !usageState.resetCreditDetailsLoaded) {
+          vouchersLoading = true;
+        }
         emitCommand('settings', { enableResetCredits: settings.enableResetCredits });
         if (settings.enableResetCredits) {
           emitCommand('refresh', {}, false);
         }
         renderAll();
+        positionPopover();
+      }
+      else if (path.find(node => node?.classList?.contains('account-mask-toggle-btn'))) {
+        settings.maskAccountNames = !settings.maskAccountNames;
+        persistSettings();
+        renderPopover();
         positionPopover();
       }
       else if (path.find(node => node?.classList?.contains('stats-toggle-btn'))) {
@@ -778,6 +798,16 @@
       + '</div>';
   }
 
+  function maskAccountName(name) {
+    if (!name || typeof name !== 'string') return '';
+    const len = name.length;
+    if (len <= 5) return '*****';
+    const maskLen = 5;
+    const start = Math.floor((len - maskLen) / 2);
+    const end = start + maskLen;
+    return name.slice(0, start) + '*****' + name.slice(end);
+  }
+
   function renderExtendedUsage(dark) {
     const isZh = settings.locale === 'zh-CN';
     const anti = extendedUsageState.antigravity || {};
@@ -870,8 +900,10 @@
       accountTabsHtml = '<div class="quota-extension-account-tabs">'
         + accounts.map((acc, idx) => {
           const isActive = (acc.email === activeAccount.email);
-          const tabLabel = acc.label || (acc.email ? acc.email.split('@')[0] : '') || (isZh ? ('账号' + (idx + 1)) : ('Account ' + (idx + 1)));
-          return '<button type="button" class="quota-extension-account-tab ' + (isActive ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" title="' + esc(acc.email) + '">'
+          const rawLabel = acc.label || (acc.email ? acc.email.split('@')[0] : '') || (isZh ? ('账号' + (idx + 1)) : ('Account ' + (idx + 1)));
+          const tabLabel = settings.maskAccountNames ? maskAccountName(rawLabel) : rawLabel;
+          const tabTitle = settings.maskAccountNames ? maskAccountName(acc.email) : acc.email;
+          return '<button type="button" class="quota-extension-account-tab ' + (isActive ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" title="' + esc(tabTitle) + '">'
             + esc(tabLabel)
             + '</button>';
         }).join('')
@@ -909,11 +941,19 @@
 
     const sparkleSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#1A73E8"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg>';
 
+    const eyeOpenSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+    const eyeSlashSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
+
+    const maskButton = '<button type="button" class="account-mask-toggle-btn' + (settings.maskAccountNames ? ' is-active' : '') + '" aria-label="' + esc(t('toggleAccountMask')) + '" title="' + esc(t('toggleAccountMask')) + '">'
+      + (settings.maskAccountNames ? eyeSlashSvg : eyeOpenSvg)
+      + '</button>';
+
     geminiSection = '<div class="card-section quota-extension-section">'
       + '<div class="quota-extension-header' + (!googleCollapsed && activeRows?.length ? ' has-rows' : '') + '">'
       + '<div class="quota-extension-title-wrap">'
       + sparkleSvg
       + '<span class="quota-extension-title">' + esc(t('geminiTitle')) + '</span>'
+      + maskButton
       + '</div>'
       + '<div class="quota-extension-header-actions">'
       + accountTabsHtml
@@ -943,16 +983,22 @@
 
     const ticketEmptySvg = '<svg width="24" height="20" viewBox="0 0 24 20" fill="currentColor"><path d="M22 6C20.9 6 20 5.1 20 4V3C20 1.9 19.1 1 18 1H6C4.9 1 4 1.9 4 3V4C4 5.1 3.1 6 2 6C0.9 6 0 6.9 0 8V12C0 13.1 0.9 14 2 14C3.1 14 4 14.9 4 16V17C4 18.1 4.9 19 6 19H18C19.1 19 20 18.1 20 17V16C20 14.9 20.9 14 22 14C23.1 14 24 13.1 24 12V8C24 6.9 23.1 6 22 6ZM12 4.5a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1ZM12 11.5a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1Z"/></svg>';
 
-    const details = usageState.resetCreditDetails.length
-      ? usageState.resetCreditDetails.map(item => {
-        const expiry = item.expiresAt
-          ? settings.locale === 'zh-CN'
-            ? t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone') + ' ' + t('expiresSuffix')
-            : t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone')
-          : t('noResetDetails');
-        return '<div class="credit-detail"><strong>' + esc(t('fullReset')) + '</strong><span>' + esc(expiry) + '</span></div>';
-      }).join('')
-      : renderEmptyState(ticketEmptySvg, t('noResetCoupons'));
+    const isVoucherLoading = vouchersLoading || (settings.enableResetCredits && !usageState.resetCreditDetailsLoaded);
+    const details = isVoucherLoading
+      ? ('<div class="empty-state-box is-loading">'
+          + '<div class="voucher-loading-spinner"></div>'
+          + '<div class="empty-state-text">' + esc(t('loadingVouchers')) + '</div>'
+          + '</div>')
+      : (usageState.resetCreditDetails.length
+          ? usageState.resetCreditDetails.map(item => {
+            const expiry = item.expiresAt
+              ? settings.locale === 'zh-CN'
+                ? t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone') + ' ' + t('expiresSuffix')
+                : t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone')
+              : t('noResetDetails');
+            return '<div class="credit-detail"><strong>' + esc(t('fullReset')) + '</strong><span>' + esc(expiry) + '</span></div>';
+          }).join('')
+          : renderEmptyState(ticketEmptySvg, t('noResetCoupons')));
 
     const pPercent = (p?.remainingPercent ?? '—') + '%';
     const sPercent = (s?.remainingPercent ?? '—') + '%';
@@ -985,11 +1031,12 @@
 
     const ticketSvg = '<svg class="credit-icon" width="18" height="15" viewBox="0 0 24 20" fill="#3B82F6"><path d="M22 6C20.9 6 20 5.1 20 4V3C20 1.9 19.1 1 18 1H6C4.9 1 4 1.9 4 3V4C4 5.1 3.1 6 2 6C0.9 6 0 6.9 0 8V12C0 13.1 0.9 14 2 14C3.1 14 4 14.9 4 16V17C4 18.1 4.9 19 6 19H18C19.1 19 20 18.1 20 17V16C20 14.9 20.9 14 22 14C23.1 14 24 13.1 24 12V8C24 6.9 23.1 6 22 6Z"/><path d="M12 4V16" stroke="white" stroke-width="2" stroke-dasharray="2 2"/></svg>';
 
+    const resetCountText = isVoucherLoading && usageState.resetCredits === null ? t('syncing') : ((usageState.resetCredits ?? '—') + ' ' + t('available'));
     const voucherBanner = '<div class="meta-row">'
       + '<span class="meta-actions">'
       + '<span class="credits-copy">'
       + ticketSvg
-      + '<span class="credits-text">' + esc(t('resetCredits') + '：' + (usageState.resetCredits ?? '—') + ' ' + t('available')) + '</span>'
+      + '<span class="credits-text">' + esc(t('resetCredits') + '：' + resetCountText) + '</span>'
       + '</span>'
       + '<span class="balance">' + esc(t('balance') + '：' + usageState.creditBalance.displayValue) + '</span>'
       + '</span>'
@@ -1022,6 +1069,10 @@
       '.card-refresh,.google-toggle-btn,.stats-toggle-btn,.voucher-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
       '.google-toggle-btn:hover,.stats-toggle-btn:hover,.voucher-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
       '.google-toggle-btn.is-active,.stats-toggle-btn.is-active,.voucher-toggle-btn.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
+      '.account-mask-toggle-btn{width:20px;height:20px;padding:0;border:0;background:transparent;color:' + (dark ? '#8E8E93' : '#9CA3AF') + ';border-radius:5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s ease;margin-left:4px}',
+      '.account-mask-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.account-mask-toggle-btn.is-active{color:#007AFF}',
+      '.voucher-loading-spinner{width:18px;height:18px;border:2px solid ' + (dark ? 'rgba(255,255,255,.15)' : 'rgba(0,0,0,.10)') + ';border-top-color:#007AFF;border-radius:50%;animation:quota-refresh-spin .72s linear infinite}',
       '.card-refresh .icon,.card-refresh svg{width:15px;height:15px;display:block}',
       '.card-refresh.state-loading{color:#007AFF;border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';background:' + (dark ? 'rgba(10,132,255,.15)' : 'rgba(0,122,255,.08)') + '}',
       '.card-refresh.state-loading .icon,.card-refresh.state-loading svg{animation:quota-refresh-spin .72s linear infinite}',
