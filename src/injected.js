@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.10.0';
+  const RUNTIME_VERSION = '3.10.2';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -127,7 +127,7 @@
   const I18N = {
     'zh-CN': {
       title: '用量额度',
-      subtitle: '合理AI协作，人员更思考，AI负责执行',
+      subtitle: '合理AI协作，人员负责思考，AI负责执行',
       usageTitle: '使用额度',
       details: 'Codex 用量额度详情',
       fiveHours: '5小时',
@@ -289,13 +289,10 @@
       return h > 0 ? d + 'd ' + h + 'h' : d + 'd';
     }
     if (h > 0) {
-      if (settings.locale === 'zh-CN') {
-        return m > 0 ? h + '小时 ' + m + '分钟' : h + '小时';
-      }
-      return m > 0 ? h + 'h ' + m + 'm' : h + 'h';
+      return m > 0 ? (h + 'h' + m + 'min') : (h + 'h');
     }
     const displayMinutes = Math.max(1, m);
-    return settings.locale === 'zh-CN' ? displayMinutes + '分钟' : displayMinutes + 'm';
+    return displayMinutes + 'min';
   }
 
   function formatDate(timestamp, includeDate = false) {
