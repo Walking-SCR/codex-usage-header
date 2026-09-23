@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { getStatus, selectRendererTargets, selectUsageTargets } from '../src/launcher.mjs';
+import { getStatus, selectRendererTargets, selectUsageTargets, getDesktopAppProcessInfo, isDesktopAppRunning } from '../src/launcher.mjs';
 
 console.log('Testing: launcher target selection and offline status...');
 
@@ -22,5 +22,10 @@ const status = await getStatus(unusedPort);
 assert.equal(status.cdpAvailable, false);
 assert.equal(status.port, unusedPort);
 assert.equal(status.mountedCount, 0);
+
+const procInfo = getDesktopAppProcessInfo(9229);
+assert.equal(typeof procInfo.running, 'boolean');
+assert.equal(typeof procInfo.hasCdpFlag, 'boolean');
+assert.equal(isDesktopAppRunning(), procInfo.running);
 
 console.log('✓ Launcher target selection and offline status tests passed!');

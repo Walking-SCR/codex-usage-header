@@ -83,7 +83,12 @@ try {
 
   // 确保重置券区域可见，以便检查卡片布局
   await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".voucher-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
-  await new Promise(resolve => setTimeout(resolve, 150));
+  const voucherDeadline = Date.now() + 4000;
+  while (Date.now() < voucherDeadline) {
+    const hasDetails = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelectorAll(".credit-detail").length > 0');
+    if (hasDetails) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
 
   const cardLayout = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const card=document.querySelector(".codex-usage-popover-v24"); const bars=[...card.querySelectorAll(".row .track")].map(node=>node.getBoundingClientRect()); const firstRow=card.querySelector(".row"); const label=firstRow?.querySelector(".label")?.getBoundingClientRect(); const track=firstRow?.querySelector(".track")?.getBoundingClientRect(); const credits=card.querySelector(".credits-copy"); const balance=card.querySelector(".balance"); const meta=card.querySelector(".meta-actions"); const details=card.querySelector(".credit-details"); const resetRows=[...card.querySelectorAll(".credit-detail")]; return {barDelta:bars.length===2?Math.abs(bars[0].left-bars[1].left):null,rowGap:label&&track?Math.round(track.left-label.right):null,creditsIcon:Boolean(credits?.querySelector("img")),resetIcon:Boolean(card.querySelector(".credit-icon")),copyYDelta:credits&&balance?Math.abs(credits.getBoundingClientRect().top-balance.getBoundingClientRect().top):null,flexWrap:meta?getComputedStyle(meta).flexWrap:null,resetNoWrap:resetRows.length>0&&resetRows.every(row=>{const strong=row.querySelector("strong"),span=row.querySelector("span");return strong&&span&&getComputedStyle(strong).whiteSpace==="nowrap"&&getComputedStyle(span).whiteSpace==="nowrap"}),detailsTitle:Boolean(card.querySelector(".reset-details-title")),detailsBorderTop:details?getComputedStyle(details).borderTopWidth:null,creditGap:details?getComputedStyle(details).gap:null,autoControl:Boolean(card.querySelector(".refresh-interval")),modal:Boolean(document.getElementById("codex-usage-modal-v24"))}; })()');
   assert.equal(cardLayout.barDelta, 0);

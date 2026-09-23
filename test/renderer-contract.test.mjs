@@ -67,6 +67,7 @@ assert.match(source, /stats-toggle-btn/);
 assert.match(source, /account-mask-toggle-btn/);
 assert.match(source, /maskAccountNames/);
 assert.match(source, /function maskAccountName/);
+assert.match(source, /document\.documentElement\?\.lang/);
 assert.match(source, /voucher-loading-spinner/);
 assert.match(source, /loadingVouchers/);
 assert.match(source, /isVoucherLoading/);

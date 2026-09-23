@@ -49,24 +49,35 @@ export function locateExecutable() {
   return null;
 }
 
-export function isDesktopAppRunning() {
-  if (process.platform !== 'darwin') return false;
+export function getDesktopAppProcessInfo(port = DEFAULT_PORT) {
+  if (process.platform !== 'darwin') return { running: false, hasCdpFlag: false };
   const candidates = [
     '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT',
     `${process.env.HOME}/Applications/ChatGPT.app/Contents/MacOS/ChatGPT`,
   ];
   try {
-    // 这里不要使用 `pgrep -f`：匹配模式本身可能出现在启动检查的
-    // shell 命令行中。改为读取准确的进程命令，同时允许命令末尾存在
-    // 由本程序追加的 CDP 参数。
     const processes = execFileSync('/bin/ps', ['-ax', '-o', 'command='], { encoding: 'utf8' });
-    return processes.split('\n').some(line => {
-      const command = line.trim();
-      return candidates.some(candidate => command === candidate || command.startsWith(`${candidate} `));
-    });
+    const lines = processes.split('\n');
+    let running = false;
+    let hasCdpFlag = false;
+    for (const rawLine of lines) {
+      const command = rawLine.trim();
+      const isCandidate = candidates.some(candidate => command === candidate || command.startsWith(`${candidate} `));
+      if (isCandidate) {
+        running = true;
+        if (command.includes(`--remote-debugging-port=${port}`) || command.includes('--remote-debugging-port=')) {
+          hasCdpFlag = true;
+        }
+      }
+    }
+    return { running, hasCdpFlag };
   } catch {
-    return false;
+    return { running: false, hasCdpFlag: false };
   }
+}
+
+export function isDesktopAppRunning() {
+  return getDesktopAppProcessInfo().running;
 }
 
 export function fetchCdpTargets(port = DEFAULT_PORT) {
@@ -338,14 +349,26 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
   try {
     targets = await fetchCdpTargets(port);
   } catch {
-    if (isDesktopAppRunning()) {
-      throw new Error('app_running_without_cdp');
+    const procInfo = getDesktopAppProcessInfo(port);
+    if (procInfo.running) {
+      if (procInfo.hasCdpFlag) {
+        // 应用已开启 CDP 调试参数正在运行或冷启动中，等待其调试端口就绪，绝不误判
+        try {
+          targets = await waitForTargets(port, READY_TIMEOUT_MS);
+        } catch {
+          throw new Error('cdp_port_unreachable');
+        }
+      } else {
+        // 确实存在未带调试端口启动的旧进程
+        throw new Error('app_running_without_cdp');
+      }
+    } else {
+      if (!launchIfNeeded) throw new Error('cdp_unavailable');
+      const executable = locateExecutable();
+      console.log(`[Codex Quota Header] Launching desktop app on localhost CDP port ${port}...`);
+      launchDesktopApp(executable, port);
+      targets = await waitForTargets(port);
     }
-    if (!launchIfNeeded) throw new Error('cdp_unavailable');
-    const executable = locateExecutable();
-    console.log(`[Codex Quota Header] Launching desktop app on localhost CDP port ${port}...`);
-    launchDesktopApp(executable, port);
-    targets = await waitForTargets(port);
   }
 
   const renderers = selectUsageTargets(targets);

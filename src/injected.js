@@ -43,8 +43,10 @@
   }
   window.__codexUsageHeaderTeardown__?.();
   const ICONS = window.__codexUsageHeaderIcons__ || {};
+  const docLang = (typeof document !== "undefined" ? document.documentElement?.lang : "") || "";
+  const navLang = (typeof navigator !== "undefined" && navigator?.language) || "";
   const defaultSettings = {
-    locale: /^zh/i.test(document.documentElement.lang || navigator.language || '') ? 'zh-CN' : 'en-US',
+    locale: /^zh/i.test(docLang || navLang) ? "zh-CN" : "en-US",
     refreshIntervalSeconds: 30,
     enableGoogleAiPro: false,
     enableTokenUsage: false,

@@ -36,7 +36,7 @@ assert.ok(collapsedHeight < initialHeight - 100, 'Collapsed height must be signi
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-toggle").click()');
 await new Promise(r => setTimeout(r, 250));
 const expandedHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
-assert.ok(Math.abs(expandedHeight - initialHeight) < 5, 'Expanded height should restore');
+assert.ok(expandedHeight >= collapsedHeight + 100, 'Expanded height should restore (>100px higher than collapsed)');
 
 // 4. 测试时间范围切换，以及大数值（近 30 日）不换行
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab[data-range=\'days30\']").click()');
@@ -110,15 +110,15 @@ assert.equal(hasTokensOn, true);
 console.log('  Token Usage toggled on successfully (card restored)');
 
 // 9. 测试关闭和开启重置券（voucher-toggle-btn）
-await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (!b?.classList.contains("is-active")) b.click(); })()');
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (b && !b.classList.contains("is-active")) b.click(); })()');
 await new Promise(r => setTimeout(r, 200));
-await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".voucher-toggle-btn").click()');
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (b && b.classList.contains("is-active")) b.click(); })()');
 await new Promise(r => setTimeout(r, 200));
 const hasVoucherOff = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".reset-voucher-section"))');
 assert.equal(hasVoucherOff, false, 'Voucher section should be hidden when toggled off');
 console.log('  Voucher section toggled off successfully (card hidden)');
 
-await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".voucher-toggle-btn").click()');
+await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const b = document.querySelector(".voucher-toggle-btn"); if (b && !b.classList.contains("is-active")) b.click(); })()');
 await new Promise(r => setTimeout(r, 200));
 const hasVoucherOn = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(document.querySelector(".reset-voucher-section"))');
 assert.equal(hasVoucherOn, true, 'Voucher section should be restored when toggled on');

@@ -16,5 +16,10 @@
 	<string>2.0.0</string>
 	<key>CFBundleVersion</key>
 	<string>2.0.0</string>
+	<!-- 后台代理类型：脚本型 App 不进 Dock，避免图标无限弹跳 -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSBackgroundOnly</key>
+	<false/>
 </dict>
 </plist>

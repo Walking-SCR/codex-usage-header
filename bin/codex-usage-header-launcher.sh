@@ -5,6 +5,52 @@ LOG_DIR="$HOME/Library/Logs"
 LOG_FILE="$LOG_DIR/Codex Quota Header.log"
 /bin/mkdir -p "$LOG_DIR"
 
+# 脚本型 App 进程无法响应 Launch Services 的激活事件。如果在本进程内
+# 同步执行启动逻辑（可能耗时十几秒）或常驻等待监控器，再次点击图标时
+# macOS 就会报"应用程序没有响应"。因此这里改为立即派生后台 worker
+# 执行真正逻辑，App 进程本身秒退，之后每次点击都会启动全新实例。
+if [[ "${1:-}" != "--__worker" ]]; then
+  {
+    printf '\n[%s] Launch requested' "$(/bin/date '+%Y-%m-%d %H:%M:%S')"
+    printf ' %q' "$@"
+    printf '\n'
+  } >> "$LOG_FILE"
+  nohup /bin/bash "$0" --__worker "$@" >> "$LOG_FILE" 2>&1 &
+  disown || true
+  exit 0
+fi
+shift
+
+LOCK_DIR="${TMPDIR:-/tmp}/codex-quota-header-launcher.lock"
+
+acquire_lock() {
+  local count=0
+  while ! /bin/mkdir "$LOCK_DIR" 2>/dev/null; do
+    local lock_pid
+    lock_pid=$(/bin/cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [[ -n "$lock_pid" ]] && ! /bin/kill -0 "$lock_pid" 2>/dev/null; then
+      /bin/rm -rf "$LOCK_DIR" 2>/dev/null || true
+      continue
+    fi
+    count=$((count + 1))
+    if [[ "$count" -ge 24 ]]; then
+      /bin/rm -rf "$LOCK_DIR" 2>/dev/null || true
+      break
+    fi
+    /bin/sleep 0.5
+  done
+  /bin/mkdir -p "$LOCK_DIR"
+  echo "$$" > "$LOCK_DIR/pid"
+}
+
+release_lock() {
+  if [[ -f "$LOCK_DIR/pid" ]] && [[ "$(/bin/cat "$LOCK_DIR/pid" 2>/dev/null || true)" == "$$" ]]; then
+    /bin/rm -rf "$LOCK_DIR" 2>/dev/null || true
+  fi
+}
+trap release_lock EXIT
+acquire_lock
+
 desktop_pids() {
   /bin/ps -ax -o pid= -o command= | /usr/bin/awk '
     $2 == "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" ||
@@ -102,11 +148,4 @@ else
   fi
 fi
 exit_code=0
-
-# 实时监控器服务 Codex 窗口期间，保持常规 .app 进程运行，
-# 这样 macOS 才会保留可用于固定图标的正常 Dock 菜单。
-while pgrep -f 'codex-usage-header/src/monitor\.mjs' >/dev/null 2>&1; do
-  sleep 2
-done
-
 exit "$exit_code"
