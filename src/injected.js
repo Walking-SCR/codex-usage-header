@@ -6,7 +6,10 @@
 (() => {
   'use strict';
 
-  const RUNTIME_VERSION = '3.11.0';
+  const RUNTIME_VERSION = '3.13.2';
+  // 内容标识：launcher 在注入前把本占位符替换为注入脚本的 sha256。
+  // 任何代码改动都会改变哈希，从而触发 teardown + 重装，无需手动升版本。
+  const CONTENT_HASH = '__INJECTED_CONTENT_HASH__';
   const HOST_TAG = 'codex-usage-header-host';
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
@@ -37,7 +40,8 @@
       muted: '#8E8E93',
     },
   };
-  if (window.__codexUsageHeaderInstalled__ === RUNTIME_VERSION) {
+  if (window.__codexUsageHeaderInstalled__ === RUNTIME_VERSION
+      && window.__codexUsageHeaderContentHash__ === CONTENT_HASH) {
     window.__codexUsageHeaderRemount?.();
     return;
   }
@@ -54,9 +58,17 @@
     maskAccountNames: false,
   };
 
+  function readLocalSetting(key, fallback = null) {
+    try {
+      return window.localStorage.getItem(key) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
   function safeSettings() {
     try {
-      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+      const saved = JSON.parse(readLocalSetting(SETTINGS_KEY, '{}') || '{}');
       return {
         locale: saved.locale === 'zh-CN' || saved.locale === 'en-US' ? saved.locale : defaultSettings.locale,
         refreshIntervalSeconds: Number(saved.refreshIntervalSeconds) === 60 ? 60 : 30,
@@ -71,7 +83,7 @@
   }
 
   let settings = safeSettings();
-  let googleCollapsed = (typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.googleCollapsed') === 'true' : false);
+  let googleCollapsed = readLocalSetting('codexQuotaHeader.googleCollapsed', 'false') === 'true';
   let usageState = {
     status: 'loading',
     primary: null,
@@ -97,7 +109,8 @@
     },
     tokens: {
       status: 'idle',
-      selectedRange: (typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.selectedTokenRange') : null) || 'today',
+      selectedRange: readLocalSetting('codexQuotaHeader.selectedTokenRange') || 'today',
+      selectedModel: readLocalSetting('codexQuotaHeader.selectedTokenModel') || 'all',
       ranges: {
         today: null,
         days7: null,
@@ -108,6 +121,7 @@
     },
   };
   let lastManualRefresh = 0;
+  let tokenModelMenuOpen = false;
   let currentMode = 'full';
   let host = null;
   let popover = null;
@@ -124,6 +138,18 @@
   let mountTimer = null;
   let healthTimer = null;
   let layoutFrame = null;
+  let countdownTimer = null;
+  // document/window 级监听器注册表：teardown 时统一移除，防止重复注入叠加。
+  const trackedListeners = [];
+  function on(target, type, listener, options) {
+    target.addEventListener(type, listener, options);
+    trackedListeners.push([target, type, listener, options]);
+  }
+  function offAllTrackedListeners() {
+    for (const [target, type, listener, options] of trackedListeners.splice(0)) {
+      try { target.removeEventListener(type, listener, options); } catch { /* ignore */ }
+    }
+  }
   let commandCounter = 0;
   let hitAreaParent = null;
   let hitAreaParentStyle = null;
@@ -172,6 +198,15 @@
       settingsSaved: '刷新频率已保存',
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token使用量', // Token处理量
+      model: '模型',
+      allModels: '汇总',
+      familySubtotal: '小计',
+      shareOfTotal: '占总计',
+      shareOfFamily: '占分类',
+      otherModelsTotal: '其他模型合计',
+      modelFamilies: '类',
+      noModelUsage: '当前周期暂无型号用量',
+      unknownModel: '未知型号',
       toggleGoogle: 'Google AI Pro (开启/关闭)',
       toggleStats: 'Token使用量 (开启/关闭)',
       toggleVouchers: '额度重置券 (开启/关闭)',
@@ -229,6 +264,15 @@
       settingsSaved: 'Refresh interval saved',
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token usage',
+      model: 'Model',
+      allModels: 'Summary',
+      familySubtotal: 'Subtotal',
+      shareOfTotal: 'of total',
+      shareOfFamily: 'of family',
+      otherModelsTotal: 'Other models',
+      modelFamilies: 'families',
+      noModelUsage: 'No model usage in this period',
+      unknownModel: 'Unknown model',
       toggleGoogle: 'Google AI Pro (Toggle on/off)',
       toggleStats: 'Token usage (Toggle on/off)',
       toggleVouchers: 'Reset credits (Toggle on/off)',
@@ -254,6 +298,15 @@
 
   function persistSettings() {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* 尽力保存，失败时忽略 */ }
+  }
+
+  function persistTokenModel(model) {
+    extendedUsageState.tokens.selectedModel = model;
+    try { localStorage.setItem('codexQuotaHeader.selectedTokenModel', model); } catch { /* 忽略保存异常 */ }
+  }
+
+  function hasTokenModelUsage(rangeData, model) {
+    return Boolean(rangeData?.items?.some(item => item.key === model && item.tokens > 0));
   }
 
   function emitCommand(kind, payload = {}, manual = false) {
@@ -513,7 +566,16 @@
         requestUsage({ manual: false });
       }
     }
-    renderHost();
+    // P2：每秒只更新倒计时文本节点，避免全量重写胶囊 DOM。
+    // 胶囊上唯一随秒变化的是 full 模式的 .primary-countdown（"41% · 2h5min"），
+    // 7d 的 weeklyResetSuffix 显示的是绝对日期，不需要每秒刷新。
+    const countdownEl = host.shadowRoot?.querySelector('.primary-countdown');
+    if (countdownEl && usageState.primary) {
+      // 与 renderHost() 的 full 模式文案逐字一致，避免跳变
+      const p = usageState.primary;
+      countdownEl.textContent = p.remainingPercent + '%'
+        + (isWeeklyExhausted(usageState.secondary) ? '' : ' · ' + formatDuration(p.secondsRemaining, 5 * 3600));
+    }
     if (popover?.classList.contains('is-visible')) updatePopoverCountdowns();
   }
 
@@ -588,8 +650,15 @@
       const refresh = path.find(node => node?.classList?.contains('card-refresh'));
       const language = path.find(node => node?.classList?.contains('language-toggle'));
       const rangeTab = path.find(node => node?.classList?.contains('quota-extension-range-tab'));
+      const modelButton = path.find(node => node?.classList?.contains('quota-extension-model-button'));
+      const modelOption = path.find(node => node?.classList?.contains('quota-extension-model-option'));
       const accountTab = path.find(node => node?.classList?.contains('quota-extension-account-tab'));
       const googleToggle = path.find(node => node?.classList?.contains('quota-extension-toggle'));
+      if (tokenModelMenuOpen && !modelButton && !modelOption) {
+        tokenModelMenuOpen = false;
+        renderPopover();
+        positionPopover();
+      }
       if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
       else if (language) {
         const opt = path.find(node => node?.classList?.contains('lang-opt'));
@@ -651,8 +720,28 @@
         if (range && ['today', 'days7', 'days30'].includes(range)) {
           extendedUsageState.tokens.selectedRange = range;
           try { localStorage.setItem('codexQuotaHeader.selectedTokenRange', range); } catch { /* 忽略保存异常 */ }
+          const selectedModel = extendedUsageState.tokens.selectedModel || 'all';
+          if (selectedModel !== 'all'
+            && !hasTokenModelUsage(extendedUsageState.tokens.ranges?.[range], selectedModel)) {
+            persistTokenModel('all');
+          }
           renderPopover();
           positionPopover();
+        }
+      } else if (modelButton) {
+        tokenModelMenuOpen = !tokenModelMenuOpen;
+        renderPopover();
+        positionPopover();
+        if (tokenModelMenuOpen) popover?.querySelector('.quota-extension-model-option[aria-selected="true"]')?.focus();
+        else popover?.querySelector('.quota-extension-model-button')?.focus();
+      } else if (modelOption) {
+        const model = modelOption.dataset.model;
+        if (model) {
+          persistTokenModel(model);
+          tokenModelMenuOpen = false;
+          renderPopover();
+          positionPopover();
+          popover?.querySelector('.quota-extension-model-button')?.focus();
         }
       } else if (accountTab) {
         const account = accountTab.dataset.account;
@@ -717,6 +806,7 @@
     popoverShowTimer = null;
     popoverHideTimer = null;
     popoverState = 'closed';
+    tokenModelMenuOpen = false;
     popover?.classList.remove('is-visible');
     popover?.setAttribute('aria-hidden', 'true');
     updateExpanded(false);
@@ -810,6 +900,48 @@
     return name.slice(0, start) + '*****' + name.slice(end);
   }
 
+  function tokenFamilyLabel(item, isZh) {
+    if (!item) return t('allModels');
+    if (item.key === 'overflow') {
+      return isZh
+        ? t('otherModelsTotal') + '（' + item.modelCount + t('modelFamilies') + '）'
+        : t('otherModelsTotal') + ' (' + item.modelCount + ' ' + t('modelFamilies') + ')';
+    }
+    if (item.key === 'other') return t('other');
+    return item.label || item.key;
+  }
+
+  function tokenFamilyColor(key) {
+    return ({
+      gpt: '#007AFF',
+      gemini: '#8B5CF6',
+      glm: '#34A853',
+      deepseek: '#FF9500',
+      claude: '#D97757',
+      minimax: '#EC4899',
+      other: '#9CA3AF',
+      overflow: '#9CA3AF',
+    })[key] || '#9CA3AF';
+  }
+
+  function renderTokenFamilyRow(item, isZh) {
+    const label = tokenFamilyLabel(item, isZh);
+    return '<div class="token-model-row">'
+      + '<span class="token-model-label" title="' + esc(label) + '"><span class="token-model-dot" style="background:' + tokenFamilyColor(item.key) + '"></span>' + esc(label) + '</span>'
+      + '<span class="token-model-amount">' + esc(formatExtendedTokenCount(item.tokens, isZh)) + '</span>'
+      + '<span class="token-model-pct">' + esc(item.percent || '—') + '</span>'
+      + '</div>';
+  }
+
+  function renderTokenModelRow(model, familyKey, isZh) {
+    const modelName = model.id === 'unknown' ? t('unknownModel') : model.id;
+    return '<div class="token-model-row is-model-detail">'
+      + '<span class="token-model-label" title="' + esc(modelName) + '"><span class="token-model-dot" style="background:' + tokenFamilyColor(familyKey) + '"></span>' + esc(modelName) + '</span>'
+      + '<span class="token-model-amount">' + esc(formatExtendedTokenCount(model.tokens, isZh)) + '</span>'
+      + '<span class="token-model-pct">' + esc(model.percent || '—') + '</span>'
+      + '</div>';
+  }
+
   function renderExtendedUsage(dark) {
     const isZh = settings.locale === 'zh-CN';
     const anti = extendedUsageState.antigravity || {};
@@ -836,37 +968,53 @@
         } else {
           const totalFormatted = formatExtendedTokenCount(rangeData.total, isZh);
           const rawItems = rangeData.items || [];
-          const hasGpt = rawItems.some(i => i.key === 'gpt');
-          const hasGemini = rawItems.some(i => i.key === 'gemini');
-          const hasOther = rawItems.some(i => i.key === 'other');
+          const selectedModel = tok.selectedModel || 'all';
+          const selectedFamily = rawItems.find(item => item.key === selectedModel);
+          const selectedLabel = selectedModel === 'all' ? t('allModels') : tokenFamilyLabel(selectedFamily, isZh);
+          const modelOptions = rawItems.filter(item => item.key === 'gpt' || item.key === 'gemini' || item.tokens > 0);
+          const optionItems = [{ key: 'all', label: t('allModels'), tokens: rangeData.total }, ...modelOptions];
+          const modelMenu = tokenModelMenuOpen
+            ? '<div class="quota-extension-model-menu" role="listbox" aria-label="' + esc(t('model')) + '">'
+              + optionItems.map(item => {
+                const label = item.key === 'all' ? t('allModels') : tokenFamilyLabel(item, isZh);
+                const amount = item.key === 'all' ? '' : formatExtendedTokenCount(item.tokens, isZh);
+                const active = item.key === selectedModel;
+                return '<button type="button" role="option" aria-selected="' + active + '" class="quota-extension-model-option' + (active ? ' is-active' : '') + '" data-model="' + esc(item.key) + '">'
+                  + '<span>' + esc(label) + '</span>'
+                  + (amount ? '<span class="quota-extension-model-option-amount">' + esc(amount) + '</span>' : '')
+                  + '</button>';
+              }).join('')
+              + '</div>'
+            : '';
+          const modelSelector = '<div class="token-model-selector-row">'
+            + '<button type="button" class="quota-extension-model-button" aria-haspopup="listbox" aria-expanded="' + tokenModelMenuOpen + '">'
+            + esc(t('model')) + '：' + esc(selectedLabel)
+            + '<span class="quota-extension-model-chevron" aria-hidden="true">⌄</span>'
+            + '</button>' + modelMenu + '</div>';
 
-          const allItems = [...rawItems];
-          if (!hasGpt) allItems.unshift({ key: 'gpt', label: 'GPT', tokens: 0, percent: '0.0%' });
-          if (!hasGemini) {
-            const gptIdx = allItems.findIndex(i => i.key === 'gpt');
-            allItems.splice(gptIdx + 1, 0, { key: 'gemini', label: 'Gemini', tokens: 0, percent: '0.0%' });
+          let itemRows = '';
+          if (selectedModel === 'all') {
+            const summaryItems = rangeData.summaryItems || rawItems;
+            itemRows = '<div class="token-model-columns"><span>' + esc(t('model')) + '</span><span>Token</span><span>' + esc(t('shareOfTotal')) + '</span></div>'
+              + summaryItems.map(item => renderTokenFamilyRow(item, isZh)).join('');
+          } else if (selectedFamily?.models?.length) {
+            itemRows = '<div class="token-family-summary">'
+              + '<span><strong>' + esc(tokenFamilyLabel(selectedFamily, isZh)) + ' ' + esc(t('familySubtotal')) + '</strong> '
+              + esc(formatExtendedTokenCount(selectedFamily.tokens, isZh)) + ' Token</span>'
+              + '<span>' + esc(t('shareOfTotal')) + ' ' + esc(selectedFamily.percent) + '</span>'
+              + '</div>'
+              + '<div class="token-model-columns"><span>' + esc(isZh ? '型号' : 'Model ID') + '</span><span>Token</span><span>' + esc(t('shareOfFamily')) + '</span></div>'
+              + selectedFamily.models.map(model => renderTokenModelRow(model, selectedFamily.key, isZh)).join('');
+          } else {
+            itemRows = renderEmptyState(barChartEmptySvg, t('noModelUsage'));
           }
-          if (!hasOther) {
-            allItems.push({ key: 'other', label: isZh ? '其他' : 'Other', tokens: 0, percent: '0.0%' });
-          }
-
-          const itemRows = allItems.map(item => {
-            const label = item.key === 'other' ? t('other') : item.label;
-            const formatted = formatExtendedTokenCount(item.tokens, isZh);
-            const dotColor = item.key === 'gpt' ? '#007AFF' : item.key === 'gemini' ? '#8B5CF6' : '#9CA3AF';
-            return '<div class="token-model-row">'
-              + '<span class="token-model-label"><span class="token-model-dot" style="background:' + dotColor + '"></span>' + esc(label) + '</span>'
-              + '<span class="token-model-amount">' + esc(formatted) + '</span>'
-              + '<span class="token-model-pct">' + esc(item.percent) + '</span>'
-              + '</div>';
-          }).join('');
 
           tokenContent = '<div class="quota-extension-token-table">'
             + '<div class="token-summary-col">'
             + '<span class="token-summary-label">' + esc(t('total')) + '</span>'
             + '<div class="token-summary-val"><span class="token-summary-number">' + esc(totalFormatted) + '</span><span class="token-summary-unit"> Token</span></div>'
             + '</div>'
-            + '<div class="token-models-col">' + itemRows + '</div>'
+            + '<div class="token-models-col">' + modelSelector + itemRows + '</div>'
             + '</div>';
         }
       }
@@ -1151,11 +1299,25 @@
       '.token-summary-number{font-size:24px;font-weight:750;letter-spacing:-.4px;font-variant-numeric:tabular-nums;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';white-space:nowrap;word-break:keep-all}',
       '.token-summary-unit{font-size:12.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font-weight:450;white-space:nowrap;flex-shrink:0}',
       '.token-models-col{display:flex;flex-direction:column;gap:7px;border-left:1px solid ' + (dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.06)') + ';padding-left:18px}',
-      '.token-model-row{display:grid;grid-template-columns:72px minmax(80px,1fr) 48px;align-items:center;gap:10px;font-size:12.5px}',
-      '.token-model-label{display:flex;align-items:center;gap:6px;font-weight:500;color:' + (dark ? '#E5E5EA' : '#374151') + ';white-space:nowrap}',
+      '.token-model-row{display:grid;grid-template-columns:minmax(112px,1.3fr) minmax(70px,1fr) 48px;align-items:center;gap:10px;font-size:12.5px}',
+      '.token-model-label{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500;color:' + (dark ? '#E5E5EA' : '#374151') + ';white-space:nowrap}',
       '.token-model-dot{width:7.5px;height:7.5px;border-radius:50%;flex-shrink:0}',
       '.token-model-amount{text-align:right;font-weight:650;font-variant-numeric:tabular-nums;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';white-space:nowrap}',
       '.token-model-pct{text-align:right;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}',
+      '.token-model-selector-row{position:relative;display:flex;flex-direction:column;align-items:flex-end;gap:5px;margin:0 0 5px}',
+      '.quota-extension-model-button{display:inline-flex;align-items:center;gap:8px;min-height:28px;padding:3px 10px;border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)') + ';border-radius:8px;background:' + (dark ? 'rgba(255,255,255,.06)' : '#FFFFFF') + ';color:' + (dark ? '#E5E5EA' : '#374151') + ';font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}',
+      '.quota-extension-model-button:hover,.quota-extension-model-button[aria-expanded="true"]{border-color:rgba(0,122,255,.35);background:' + (dark ? 'rgba(10,132,255,.12)' : 'rgba(0,122,255,.05)') + '}',
+      '.quota-extension-model-chevron{font-size:13px;color:' + (dark ? '#A1A1A6' : '#6B7280') + '}',
+      '.quota-extension-model-menu{position:absolute;top:calc(100% + 6px);right:0;display:flex;flex-direction:column;gap:2px;width:min(100%,220px);max-height:180px;overflow-y:auto;padding:4px;border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)') + ';border-radius:10px;background:' + (dark ? '#2A2A2D' : '#FFFFFF') + ';box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:30}',
+      '.quota-extension-model-option{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:27px;padding:4px 8px;border:0;border-radius:6px;background:transparent;color:' + (dark ? '#E5E5EA' : '#374151') + ';font:inherit;font-size:11.5px;text-align:left;cursor:pointer}',
+      '.quota-extension-model-option:hover{background:' + (dark ? 'rgba(255,255,255,.08)' : '#F3F4F6') + '}',
+      '.quota-extension-model-option.is-active{background:' + (dark ? 'rgba(10,132,255,.18)' : 'rgba(0,122,255,.10)') + ';color:#007AFF;font-weight:650}',
+      '.quota-extension-model-option-amount{color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font-variant-numeric:tabular-nums}',
+      '.token-family-summary{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:2px 0 5px;font-size:12px;color:' + (dark ? '#A1A1A6' : '#6B7280') + '}',
+      '.token-family-summary strong{font-size:12.5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';font-weight:650}',
+      '.token-model-columns{display:grid;grid-template-columns:minmax(112px,1.3fr) minmax(70px,1fr) 48px;align-items:center;gap:10px;padding:0 0 3px;color:' + (dark ? '#8E8E93' : '#8A8A8E') + ';font-size:10.5px;text-align:right}',
+      '.token-model-columns span:first-child{text-align:left}',
+      '.token-model-row.is-model-detail .token-model-label{font-variant-numeric:tabular-nums}',
       '.quota-extension-note{font-size:12px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:6px 0}',
       '.unavailable{font-size:12.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:8px 0}',
     ].join('');
@@ -1206,11 +1368,6 @@
     return baseModeForWidth(width);
   }
 
-  function visibleRect(element) {
-    const rect = element?.getBoundingClientRect();
-    return rect && rect.width > 0 && rect.height > 0 ? rect : null;
-  }
-
   function measureTitleNeed(titleRegion) {
     const rect = visibleRect(titleRegion);
     if (!rect) return 160;
@@ -1222,6 +1379,17 @@
   function measureAvailableWidth(element) {
     const actionGroup = element?.parentElement;
     const newChat = element?.dataset?.placement === 'new-chat';
+    const chat = element?.dataset?.placement === 'chat';
+    if (chat) {
+      const referenceRect = visibleRect(element.nextElementSibling);
+      const toolbar = element.closest('header')?.querySelector('[data-app-shell-header-toolbar="true"]')
+        || document.querySelector('[data-app-shell-header-toolbar="true"]');
+      const toolbarRect = visibleRect(toolbar);
+      const titleRegion = toolbar?.firstElementChild;
+      const titleNeed = measureTitleNeed(titleRegion);
+      if (!referenceRect || !toolbarRect) return 0;
+      return Math.max(0, referenceRect.left - toolbarRect.left - titleNeed - 12);
+    }
     const toolbar = newChat ? element?.closest('header') : actionGroup?.parentElement;
     const toolbarRect = visibleRect(toolbar);
     if (!toolbarRect || !actionGroup) return 520;
@@ -1268,16 +1436,19 @@
     } else {
       content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining, 5 * 3600) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>';
     }
-    const style = '<style>*{box-sizing:border-box}:host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}.capsule{height:34px;min-width:0;padding:0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}.details-trigger{height:32px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.details-trigger:focus-visible{outline:2px solid ' + (dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)') + ';outline-offset:2px}.label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}.track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ' + CONFIG.colors.track + ' var(--remaining) 100%);transform:rotate(-90deg)}.value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}.primary-countdown{min-width:0}.divider{flex:none;width:1px;height:16px;margin:0;background:' + (dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)') + '}@keyframes quota-number-shimmer{0%{opacity:.35;filter:blur(0.4px)}50%{opacity:.85;filter:blur(0px)}100%{opacity:.35;filter:blur(0.4px)}}.capsule.is-refreshing .value{animation:quota-number-shimmer .75s ease-in-out infinite}</style><div class="capsule' + (refreshState === 'loading' ? ' is-refreshing' : '') + '"><button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button></div>';
+    const style = '<style>*{box-sizing:border-box}:host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}:host([data-space-hidden="true"]){display:none!important}.capsule{height:34px;min-width:0;padding:0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}.details-trigger{height:32px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.details-trigger:focus-visible{outline:2px solid ' + (dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)') + ';outline-offset:2px}.label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}.track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ' + CONFIG.colors.track + ' var(--remaining) 100%);transform:rotate(-90deg)}.value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}.primary-countdown{min-width:0}.divider{flex:none;width:1px;height:16px;margin:0;background:' + (dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)') + '}@keyframes quota-number-shimmer{0%{opacity:.35;filter:blur(0.4px)}50%{opacity:.85;filter:blur(0px)}100%{opacity:.35;filter:blur(0.4px)}}.capsule.is-refreshing .value{animation:quota-number-shimmer .75s ease-in-out infinite}</style><div class="capsule' + (refreshState === 'loading' ? ' is-refreshing' : '') + '"><button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button></div>';
     host.shadowRoot.innerHTML = style;
   }
   function updateMode() {
     if (!host) return;
     const available = measureAvailableWidth(host);
     const next = resolveMode(available);
+    const spaceHidden = host.dataset.placement === 'chat' && available < 64;
+    const spaceHiddenChanged = host.dataset.spaceHidden !== String(spaceHidden);
+    host.dataset.spaceHidden = String(spaceHidden);
     host.dataset.mode = currentMode;
     host.dataset.availableWidth = String(Math.round(available));
-    if (next !== currentMode) {
+    if (next !== currentMode || spaceHiddenChanged) {
       currentMode = next;
       host.dataset.mode = currentMode;
       renderHost();
@@ -1356,8 +1527,8 @@
       if (inside) showPopover();
       else if (!insidePopover && popoverState !== 'pinned') scheduleHidePopover();
     };
-    document.addEventListener('pointermove', handleDocumentPointerMove, true);
-    document.addEventListener('mousemove', handleDocumentPointerMove, true);
+    on(document, 'pointermove', handleDocumentPointerMove, true);
+    on(document, 'mousemove', handleDocumentPointerMove, true);
   }
 
   function bindResizeObserver() {
@@ -1372,33 +1543,108 @@
     if (header && header !== toolbar) resizeObserver.observe(header);
   }
 
+  // __MOUNT_POINT_LOGIC_BEGIN__
+  // 挂载点解析核心：只从有效顶栏中寻找锚点按钮。
+  // 候选按钮不合格（例如侧栏里的同名按钮）时继续查找下一个，
+  // 绝不因第一个同名按钮不合格而直接返回 null。
+  // 本块为连续代码，供 test/mount-point.test.mjs 提取做回归测试。
+  function visibleRect(element) {
+    const rect = element?.getBoundingClientRect();
+    return rect && rect.width > 0 && rect.height > 0 ? rect : null;
+  }
+
   function isVisible(element) {
     const rect = visibleRect(element);
     const style = element ? getComputedStyle(element) : null;
-    return Boolean(rect && style && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0 && rect.top < 80 && rect.right > 0 && rect.left < window.innerWidth);
+    return Boolean(rect && style && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0
+      && rect.top < 80 && rect.bottom > 0 && rect.right > 0 && rect.left < window.innerWidth);
   }
 
-  function resolveMountPoint() {
-    const buttons = [...document.querySelectorAll('button')].filter(isVisible);
-    const threadAction = buttons.find(button => /^聊天操作$|^chat actions?$|^more$/i.test(button.getAttribute('aria-label') || ''))
-      || buttons.find(button => /^分享$|^share$/i.test(button.getAttribute('aria-label') || button.textContent || ''));
-    const newChatAction = buttons.find(button => /^切换底部面板显示$|^toggle bottom panel visibility$|^toggle bottom panel$/i.test(button.getAttribute('aria-label') || ''))
-      || buttons.find(button => /^显示\/隐藏侧边面板$|^show\/hide side panel$|^toggle side panel$/i.test(button.getAttribute('aria-label') || ''));
-    const action = threadAction || newChatAction;
-    const placement = threadAction ? 'thread' : 'new-chat';
-    if (!action) return null;
-    const header = action.closest('header');
-    const newChat = !threadAction;
-    const nativeRegion = newChat ? [...(header?.children || [])].find(child => child.contains(action)) : null;
-    const reference = newChat ? nativeRegion : action;
-    const container = newChat ? header : action.parentElement;
-    const toolbar = newChat ? header : container?.parentElement;
+  const THREAD_ACTION_RE = /^聊天操作$|^chat actions?$|^more$/i;
+  const NEWCHAT_ACTION_RES = [
+    /^切换底部面板显示$|^toggle bottom panel visibility$|^toggle bottom panel$/i,
+    /^显示\/隐藏侧边面板$|^show\/hide side panel$|^toggle side panel$/i,
+  ];
+  const SHARE_ACTION_RE = /^分享$|^share$/i;
+
+  // 校验单个候选按钮是否位于有效顶栏：必须在 <header> 内，
+  // 顶栏高度不超过 80px，且工具栏有足够宽度。
+  // 返回挂载点描述；不合格返回 null，调用方继续尝试下一个候选。
+  function validateActionAnchor(button, isNewChat) {
+    const header = button.closest('header');
+    const nativeRegion = isNewChat ? [...(header?.children || [])].find(child => child.contains(button)) : null;
+    let reference = isNewChat ? nativeRegion : button;
+    if (!isNewChat && reference?.parentElement && reference.parentElement.tagName === 'SPAN' && reference.parentElement.parentElement !== header) {
+      reference = reference.parentElement;
+    }
+    const container = isNewChat ? header : reference?.parentElement;
+    const toolbar = isNewChat ? header : container?.parentElement;
     if (!header || !container || !toolbar || !header.contains(toolbar)) return null;
     const headerRect = visibleRect(header);
     const toolbarRect = visibleRect(toolbar);
-    if (!reference || !headerRect || !toolbarRect || headerRect.height > 80 || (!newChat && toolbarRect.width < 240)) return null;
-    return { header, toolbar, container, reference, placement };
+    const buttonRect = visibleRect(button);
+    if (!reference || !headerRect || !toolbarRect || !buttonRect || headerRect.height > 80 || headerRect.width < 400) return null;
+    if (!isNewChat && toolbarRect.width < 240 && buttonRect.left < (typeof window !== 'undefined' ? window.innerWidth * 0.35 : 300)) return null;
+    return { header, toolbar, container, reference, placement: isNewChat ? 'new-chat' : 'thread' };
   }
+
+  function resolveShellToolbarPoint(doc) {
+    const shellToolbars = [...doc.querySelectorAll('[data-app-shell-header-toolbar="true"]')];
+    const shellToolbar = shellToolbars.find(candidate => {
+      const rect = visibleRect(candidate);
+      return rect && rect.top < 80 && rect.height <= 80;
+    });
+    if (!shellToolbar) return null;
+    const header = shellToolbar.closest('header');
+    if (!header) return null;
+    const headerRect = visibleRect(header);
+    if (!headerRect || headerRect.top > 0 || headerRect.height > 80) return null;
+
+    const obstacles = [...header.querySelectorAll('[data-app-shell-header-obstacle="true"]')];
+    for (const obstacle of obstacles) {
+      const obstacleRect = visibleRect(obstacle);
+      if (!obstacleRect || obstacleRect.left < window.innerWidth * 0.35) continue;
+      const obstacleButtons = [...obstacle.querySelectorAll('button,[role="button"]')].filter(isVisible);
+      const shareButton = obstacleButtons.find(button => SHARE_ACTION_RE.test(button.getAttribute('aria-label') || button.textContent || ''));
+      const fallbackButton = obstacleButtons.find(button => /^(聊天操作|更多|更多选项|更多操作|chat actions?|more(?: options)?)$/i.test(button.getAttribute('aria-label') || button.textContent || ''));
+      const anchorButton = shareButton || fallbackButton;
+      if (!anchorButton) continue;
+      let reference = anchorButton;
+      while (reference.parentElement && reference.parentElement !== obstacle) reference = reference.parentElement;
+      if (reference.parentElement !== obstacle) continue;
+      return { header, toolbar: shellToolbar, container: obstacle, reference, placement: 'chat' };
+    }
+    return null;
+  }
+
+  function resolveMountPoint(doc = document) {
+    const buttons = [...doc.querySelectorAll('button')].filter(isVisible);
+    // Tier 1：对话页顶栏。遍历全部同名候选并逐个校验，
+    // 侧栏里的同名按钮（不在 <header> 内）会被跳过。
+    for (const button of buttons) {
+      if (!THREAD_ACTION_RE.test(button.getAttribute('aria-label') || '')) continue;
+      const point = validateActionAnchor(button, false);
+      if (point) return point;
+    }
+    // Tier 2：新对话页顶栏。
+    for (const button of buttons) {
+      const label = button.getAttribute('aria-label') || '';
+      if (!NEWCHAT_ACTION_RES.some(re => re.test(label))) continue;
+      const point = validateActionAnchor(button, true);
+      if (point) return point;
+    }
+    // Tier 3：App Shell 工具栏。
+    const shellPoint = resolveShellToolbarPoint(doc);
+    if (shellPoint) return shellPoint;
+    // Tier 4：分享按钮兜底（同样逐个校验）。
+    for (const button of buttons) {
+      if (!SHARE_ACTION_RE.test(button.getAttribute('aria-label') || button.textContent || '')) continue;
+      const point = validateActionAnchor(button, false);
+      if (point) return point;
+    }
+    return null;
+  }
+  // __MOUNT_POINT_LOGIC_END__
 
   function mountCapsule() {
     const point = resolveMountPoint();
@@ -1438,17 +1684,31 @@
 
   function ensureMounted() {
     if (mountTimer) clearTimeout(mountTimer);
-    if (mountCapsule()) { mountTimer = null; return; }
+    if (mountCapsule()) { mountTimer = null; ensureMounted.attempt = 0; return; }
     mountTimer = setTimeout(ensureMounted, Math.min(2000, 180 + (++ensureMounted.attempt || 1) * 80));
   }
 
   function initObserver() {
     ensureMounted();
     mountObserver?.disconnect();
-    mountObserver = new MutationObserver(() => {
+    const headerSelectors = 'header,[data-app-shell-header-toolbar="true"],[data-app-shell-header-obstacle="true"]';
+    const isHeaderMutation = record => {
+      const target = record.target?.nodeType === 1 ? record.target : record.target?.parentElement;
+      if (target?.closest?.(headerSelectors)) return true;
+      const containsHeader = [...(record.addedNodes || []), ...(record.removedNodes || [])].some(node => {
+        if (node.nodeType !== 1) return false;
+        return node.matches?.(headerSelectors) || Boolean(node.querySelector?.(headerSelectors));
+      });
+      if (containsHeader) return true;
+      if (target?.closest?.('main')) return false;
+      return false;
+    };
+    mountObserver = new MutationObserver(records => {
+      if (!records.some(isHeaderMutation)) return;
       suppressLegacyInstances();
       const point = resolveMountPoint();
-      if (!host?.isConnected || (point && host.parentElement !== point.container)) ensureMounted();
+      if (!host?.isConnected || (point && (host.parentElement !== point.container
+        || host.nextElementSibling !== point.reference || host.dataset.placement !== point.placement))) ensureMounted();
     });
     mountObserver.observe(document.documentElement, { childList: true, subtree: true });
     if (healthTimer) clearInterval(healthTimer);
@@ -1469,13 +1729,21 @@
     }
     if (payload.tokens && typeof payload.tokens === 'object') {
       const savedRange = extendedUsageState.tokens.selectedRange ||
-        (typeof localStorage !== 'undefined' ? localStorage.getItem('codexQuotaHeader.selectedTokenRange') : null) ||
+        readLocalSetting('codexQuotaHeader.selectedTokenRange') ||
         'today';
+      const savedModel = extendedUsageState.tokens.selectedModel ||
+        readLocalSetting('codexQuotaHeader.selectedTokenModel') || 'all';
       extendedUsageState.tokens = {
         ...extendedUsageState.tokens,
         ...payload.tokens,
         selectedRange: savedRange,
+        selectedModel: savedModel,
       };
+      const rangeData = extendedUsageState.tokens.ranges?.[savedRange];
+      if (savedModel !== 'all' && rangeData && !hasTokenModelUsage(rangeData, savedModel)) {
+        persistTokenModel('all');
+        tokenModelMenuOpen = false;
+      }
     }
     if (popover && popover.classList.contains('is-visible')) {
       renderPopover();
@@ -1484,54 +1752,98 @@
   }
 
   window.__codexUsageHeaderSetExtendedUsage__ = applyExtendedUsagePayload;
+  // 完整 teardown：清理全部定时器、document/window 监听器与 DOM，
+  // 再由新版本判断内容哈希决定是否重装。重复注入不得叠加组件。
   window.__codexUsageHeaderTeardown__ = () => {
     if (mountTimer) clearTimeout(mountTimer);
+    mountTimer = null;
     if (healthTimer) clearInterval(healthTimer);
+    healthTimer = null;
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = null;
     if (layoutFrame) cancelAnimationFrame(layoutFrame);
+    layoutFrame = null;
     clearRefreshTimers();
+    offAllTrackedListeners();
     mountObserver?.disconnect();
+    mountObserver = null;
     resizeObserver?.disconnect();
+    resizeObserver = null;
     document.querySelector(HOST_TAG)?.remove();
     document.querySelectorAll('.' + POPOVER_CLASS).forEach(item => item.remove());
     document.getElementById('codex-usage-popover-style-v24')?.remove();
+    // 旧版本遗留节点：仅隐藏不够，彻底移除
+    LEGACY_COMPONENTS.forEach(tag => document.querySelectorAll(tag).forEach(el => el.remove()));
+    document.querySelectorAll('[data-quota-capsule]').forEach(el => el.remove());
     if (hitAreaParent) {
       if (hitAreaParentStyle === null) hitAreaParent.removeAttribute('style');
       else hitAreaParent.setAttribute('style', hitAreaParentStyle);
     }
     hitAreaParent = null;
     hitAreaParentStyle = null;
+    host = null;
+    popover = null;
+    window.__codexUsageHeaderInstalled__ = null;
+    window.__codexUsageHeaderContentHash__ = null;
   };
   window.__codexUsageHeaderDebug__ = {
     getState: () => ({ ...usageState, refreshState, refreshRequestId, settings: { ...settings } }),
     getMode: () => currentMode,
     getAvailableWidth: () => measureAvailableWidth(host),
+    getMountPoint: () => {
+      const point = resolveMountPoint();
+      if (!point) return null;
+      const rect = visibleRect(point.reference);
+      return { placement: point.placement, referenceX: rect ? Math.round(rect.left) : null };
+    },
     showPopover: () => showPopover({ immediate: true }),
     hidePopover: () => hidePopover(true),
     getExtendedState: () => ({ ...extendedUsageState }),
   };
 
-  document.addEventListener('pointerdown', event => {
+  on(document, 'pointerdown', event => {
     const insideHost = host?.contains(event.target) || host?.shadowRoot?.contains(event.target);
     const insidePopover = popover?.contains(event.target);
     if (!insideHost && !insidePopover) hidePopover(true);
   }, true);
-  document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {
+  on(document, 'keydown', event => {
+    const modelButton = popover?.querySelector('.quota-extension-model-button');
+    const modelOptions = [...(popover?.querySelectorAll('.quota-extension-model-option') || [])];
+    if (tokenModelMenuOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      const currentIndex = modelOptions.indexOf(document.activeElement);
+      if (document.activeElement === modelButton || currentIndex >= 0) {
+        event.preventDefault();
+        const nextIndex = currentIndex < 0
+          ? (event.key === 'ArrowDown' ? 0 : modelOptions.length - 1)
+          : (currentIndex + (event.key === 'ArrowDown' ? 1 : -1) + modelOptions.length) % modelOptions.length;
+        modelOptions[nextIndex]?.focus();
+        return;
+      }
+    }
+    if (event.key === 'Escape' && tokenModelMenuOpen) {
+      tokenModelMenuOpen = false;
+      renderPopover();
+      positionPopover();
+      popover?.querySelector('.quota-extension-model-button')?.focus();
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.key === 'Escape') {
       hidePopover(true);
     }
   }, true);
-  window.addEventListener('resize', () => { updateMode(); positionPopover(); });
-  window.addEventListener('scroll', positionPopover, true);
-  window.addEventListener('focus', () => { if (!window.__codexUsageHeaderCommand__) requestUsage(); });
-  window.addEventListener('storage', event => { if (event.key === SETTINGS_KEY) { settings = safeSettings(); renderAll(); } });
+  on(window, 'resize', () => { updateMode(); positionPopover(); });
+  on(window, 'scroll', positionPopover, true);
+  on(window, 'focus', () => { if (!window.__codexUsageHeaderCommand__) requestUsage(); });
+  on(window, 'storage', event => { if (event.key === SETTINGS_KEY) { settings = safeSettings(); renderAll(); } });
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => { initObserver(); requestUsage(); });
+    on(document, 'DOMContentLoaded', () => { initObserver(); requestUsage(); });
   } else {
     initObserver();
     requestUsage();
   }
-  setInterval(updateCountdowns, 1000);
+  countdownTimer = setInterval(updateCountdowns, 1000);
 
   window.__codexUsageHeaderInstalled__ = RUNTIME_VERSION;
+  window.__codexUsageHeaderContentHash__ = CONTENT_HASH;
 })();

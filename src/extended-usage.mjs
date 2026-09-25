@@ -26,6 +26,7 @@ export const SCHEMA_VERSION = 1;
 export const TIMEZONE = 'Asia/Shanghai';
 export const MAX_DAYS_RETENTION = 32;
 export const ROLLING_SAVE_INTERVAL_MS = 60000;
+const TOKEN_FAMILY_ORDER = ['GPT', 'Gemini', 'GLM', 'DeepSeek', 'Claude', 'MiniMax', 'Other'];
 export const DEFAULT_CLI_PROXY_URL = 'http://127.0.0.1:8317';
 export const GOOGLE_QUOTA_ENDPOINT = 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
 export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
@@ -96,6 +97,10 @@ export function classifyModel(model) {
   const m = String(model || '').toLowerCase();
   if (/^(?:gpt-|codex-|o[134](?:-|$))/i.test(m)) return 'GPT';
   if (/^gemini-/i.test(m)) return 'Gemini';
+  if (/^glm[-_]/i.test(m)) return 'GLM';
+  if (/^deepseek[-_]/i.test(m)) return 'DeepSeek';
+  if (/^claude[-_]/i.test(m)) return 'Claude';
+  if (/^(?:minimax|abab)[-_]/i.test(m)) return 'MiniMax';
   return 'Other';
 }
 
@@ -678,7 +683,7 @@ export class TokenRollupEngine {
             const delta = total - fileRecord.lastTotal;
             if (delta > 0) {
               const date = event.timestamp ? toShanghaiDate(event.timestamp) : dateFallback;
-              const model = fileRecord.currentModel || 'gpt-5.6-sol';
+              const model = fileRecord.currentModel || 'unknown';
               if (!this.data.days[date]) this.data.days[date] = {};
               this.data.days[date][model] = (this.data.days[date][model] || 0) + delta;
               fileRecord.lastTotal = total;
@@ -707,7 +712,7 @@ export class TokenRollupEngine {
         inode: stat.ino,
         offset: 0,
         lastTotal: undefined,
-        currentModel: 'gpt-5.6-sol',
+        currentModel: 'unknown',
       };
       this.data.files[filePath] = record;
     }
@@ -744,12 +749,22 @@ export class TokenRollupEngine {
   }
 
   collectSessionFiles(recentOnly = false) {
-    const results = [];
-    if (!existsSync(this.sessionsDir)) return results;
+    const results = new Set();
+    if (!existsSync(this.sessionsDir)) return [];
+
+    // 1. 所有已追踪的活跃会话文件必须优先纳入检查（避免长会话跨天时被漏掉）
+    if (this.data.files) {
+      for (const filePath of Object.keys(this.data.files)) {
+        if (existsSync(filePath)) {
+          results.add(filePath);
+        }
+      }
+    }
 
     if (recentOnly) {
+      // 2. 检查最近 7 天的日期子目录，发现新创建的会话
       const targetDays = new Set();
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 7; i++) {
         const dateStr = toShanghaiDate(Date.now() - (i * 86400000));
         targetDays.add(dateStr.replace(/-/g, '/'));
       }
@@ -761,7 +776,7 @@ export class TokenRollupEngine {
           const entries = readdirSync(dir, { withFileTypes: true });
           for (const entry of entries) {
             if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
-              results.push(join(dir, entry.name));
+              results.add(join(dir, entry.name));
             }
           }
         } catch {}
@@ -771,12 +786,12 @@ export class TokenRollupEngine {
         const rootEntries = readdirSync(this.sessionsDir, { withFileTypes: true });
         for (const entry of rootEntries) {
           if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
-            results.push(join(this.sessionsDir, entry.name));
+            results.add(join(this.sessionsDir, entry.name));
           }
         }
       } catch {}
 
-      return results;
+      return [...results];
     }
 
     const queue = [this.sessionsDir];
@@ -789,12 +804,12 @@ export class TokenRollupEngine {
           if (entry.isDirectory()) {
             queue.push(full);
           } else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
-            results.push(full);
+            results.add(full);
           }
         }
       } catch { /* 忽略权限错误 */ }
     }
-    return results;
+    return [...results];
   }
 
   async runBackfillWorker() {
@@ -855,11 +870,7 @@ export class TokenRollupEngine {
     const dates7 = getDates(7);
     const dates30 = getDates(30);
 
-    const aggregates = {
-      today: { gpt: 0, gemini: 0, other: 0 },
-      days7: { gpt: 0, gemini: 0, other: 0 },
-      days30: { gpt: 0, gemini: 0, other: 0 },
-    };
+    const aggregates = { today: {}, days7: {}, days30: {} };
 
     for (const [date, models] of Object.entries(this.data.days)) {
       const inToday = date === todayDate;
@@ -869,50 +880,69 @@ export class TokenRollupEngine {
       if (!inToday && !in7 && !in30) continue;
 
       for (const [model, tokens] of Object.entries(models)) {
-        const cat = classifyModel(model);
         const count = Number(tokens) || 0;
-        if (inToday) {
-          if (cat === 'GPT') aggregates.today.gpt += count;
-          else if (cat === 'Gemini') aggregates.today.gemini += count;
-          else aggregates.today.other += count;
-        }
-        if (in7) {
-          if (cat === 'GPT') aggregates.days7.gpt += count;
-          else if (cat === 'Gemini') aggregates.days7.gemini += count;
-          else aggregates.days7.other += count;
-        }
-        if (in30) {
-          if (cat === 'GPT') aggregates.days30.gpt += count;
-          else if (cat === 'Gemini') aggregates.days30.gemini += count;
-          else aggregates.days30.other += count;
-        }
+        if (count <= 0) continue;
+        if (inToday) aggregates.today[model] = (aggregates.today[model] || 0) + count;
+        if (in7) aggregates.days7[model] = (aggregates.days7[model] || 0) + count;
+        if (in30) aggregates.days30[model] = (aggregates.days30[model] || 0) + count;
       }
     }
 
     const formatRange = (agg) => {
-      const total = agg.gpt + agg.gemini + agg.other;
-      const totalFormatted = formatTokenCount(total);
-      const calcPct = (val) => total > 0 ? ((val / total) * 100).toFixed(1) + '%' : '—';
-
-      const items = [
-        { key: 'gpt', label: 'GPT', tokens: agg.gpt, formatted: formatTokenCount(agg.gpt), percent: calcPct(agg.gpt) },
-        { key: 'gemini', label: 'Gemini', tokens: agg.gemini, formatted: formatTokenCount(agg.gemini), percent: calcPct(agg.gemini) },
-      ];
-
-      if (agg.other > 0) {
-        items.push({
-          key: 'other',
-          label: 'Other',
-          tokens: agg.other,
-          formatted: formatTokenCount(agg.other),
-          percent: calcPct(agg.other),
-        });
+      const familyTotals = new Map();
+      for (const [model, tokens] of Object.entries(agg)) {
+        const family = classifyModel(model);
+        const familyEntry = familyTotals.get(family) || { tokens: 0, models: [] };
+        familyEntry.tokens += tokens;
+        familyEntry.models.push({ id: model, tokens, formatted: formatTokenCount(tokens) });
+        familyTotals.set(family, familyEntry);
       }
+
+      const total = [...familyTotals.values()].reduce((sum, family) => sum + family.tokens, 0);
+      const totalFormatted = formatTokenCount(total);
+      const calcPct = (value, denominator) => denominator > 0 ? ((value / denominator) * 100).toFixed(1) + '%' : '—';
+      const primaryFamilies = ['GPT', 'Gemini'];
+      const additionalFamilies = TOKEN_FAMILY_ORDER
+        .filter(family => !primaryFamilies.includes(family) && (familyTotals.get(family)?.tokens || 0) > 0)
+        .sort((a, b) => familyTotals.get(b).tokens - familyTotals.get(a).tokens
+          || TOKEN_FAMILY_ORDER.indexOf(a) - TOKEN_FAMILY_ORDER.indexOf(b));
+      const orderedFamilies = [...primaryFamilies, ...additionalFamilies];
+      const items = orderedFamilies.map(family => {
+        const familyEntry = familyTotals.get(family) || { tokens: 0, models: [] };
+        const key = family === 'Other' ? 'other' : family.toLowerCase();
+        const models = familyEntry.models.sort((a, b) => b.tokens - a.tokens || a.id.localeCompare(b.id));
+        return {
+          key,
+          label: family,
+          tokens: familyEntry.tokens,
+          formatted: formatTokenCount(familyEntry.tokens),
+          percent: calcPct(familyEntry.tokens, total),
+          models: models.map(model => ({ ...model, percent: calcPct(model.tokens, familyEntry.tokens) })),
+        };
+      });
+      const summaryItems = items.length > 4
+        ? [
+          ...items.slice(0, 3),
+          (() => {
+            const overflowItems = items.slice(3);
+            const tokens = overflowItems.reduce((sum, item) => sum + item.tokens, 0);
+            return {
+              key: 'overflow',
+              label: 'Other models',
+              modelCount: overflowItems.length,
+              tokens,
+              formatted: formatTokenCount(tokens),
+              percent: calcPct(tokens, total),
+            };
+          })(),
+        ]
+        : items;
 
       return {
         total,
         totalFormatted,
         items,
+        summaryItems,
       };
     };
 

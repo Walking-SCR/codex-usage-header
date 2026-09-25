@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { getStatus, selectRendererTargets, selectUsageTargets, getDesktopAppProcessInfo, isDesktopAppRunning } from '../src/launcher.mjs';
+import { getStatus, selectRendererTargets, selectUsageTargets, getDesktopAppProcessInfo, isDesktopAppRunning, classifyMountProbe, statusExitCode } from '../src/launcher.mjs';
 
 console.log('Testing: launcher target selection and offline status...');
 
@@ -27,5 +27,17 @@ const procInfo = getDesktopAppProcessInfo(9229);
 assert.equal(typeof procInfo.running, 'boolean');
 assert.equal(typeof procInfo.hasCdpFlag, 'boolean');
 assert.equal(isDesktopAppRunning(), procInfo.running);
+
+// P0-2：挂载四态分类——绝不把「未挂载」包装成成功
+assert.equal(classifyMountProbe(null), 'not-installed');
+assert.equal(classifyMountProbe({ installed: false }), 'not-installed');
+assert.equal(classifyMountProbe({ installed: true, mounted: true, mountable: 'thread' }), 'mounted');
+assert.equal(classifyMountProbe({ installed: true, mounted: false, mountable: null }), 'waiting');
+assert.equal(classifyMountProbe({ installed: true, mounted: false, mountable: 'chat' }), 'failed');
+// waiting 绝不能被当成 mounted
+assert.notEqual(classifyMountProbe({ installed: true, mounted: false, mountable: null }), 'mounted');
+assert.equal(statusExitCode({ installedCount: 1, mountedCount: 0, waitingCount: 0, failedCount: 1 }), 2,
+  '已注入但挂载失败必须以失败状态退出');
+assert.equal(statusExitCode({ installedCount: 1, mountedCount: 0, waitingCount: 1, failedCount: 0 }), 0);
 
 console.log('✓ Launcher target selection and offline status tests passed!');

@@ -15,10 +15,16 @@
   'launcher.test.mjs',
   'installer.test.mjs',
   'renderer-contract.test.mjs',
+  'storage-safety.test.mjs',
   'refresh-contract.test.mjs',
   'extended-tokens.test.mjs',
   'extended-gemini.test.mjs',
   'account-switch.test.mjs',
+  'mount-point.test.mjs',
+  'monitor-lock.test.mjs',
+  'monitor-startup.test.mjs',
+  'reinject.test.mjs',
+  'longrun.test.mjs',
 ];
 
 console.log('========================================================');

@@ -25,18 +25,23 @@ await new Promise(r => setTimeout(r, 250));
 
 const initialHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
 assert.ok(initialHeight > 500, 'Initial height should be > 500');
+const initialGoogleRows = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelectorAll(".quota-extension-row").length');
 
-// 2. 收起 Google AI Pro
-await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-toggle").click()');
-await new Promise(r => setTimeout(r, 250));
-const collapsedHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
-assert.ok(collapsedHeight < initialHeight - 100, 'Collapsed height must be significantly lower (>100px reduction)');
+if (initialGoogleRows > 0) {
+  // 2. 收起 Google AI Pro
+  await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-toggle").click()');
+  await new Promise(r => setTimeout(r, 250));
+  const collapsedGoogleRows = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelectorAll(".quota-extension-row").length');
+  assert.equal(collapsedGoogleRows, 0, 'Collapsing Google AI Pro should hide its quota rows even when the card has a scroll-height cap');
 
-// 3. 再次展开 Google AI Pro
-await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-toggle").click()');
-await new Promise(r => setTimeout(r, 250));
-const expandedHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
-assert.ok(expandedHeight >= collapsedHeight + 100, 'Expanded height should restore (>100px higher than collapsed)');
+  // 3. 再次展开 Google AI Pro
+  await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-toggle").click()');
+  await new Promise(r => setTimeout(r, 250));
+  const expandedGoogleRows = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelectorAll(".quota-extension-row").length');
+  assert.equal(expandedGoogleRows, initialGoogleRows, 'Expanding Google AI Pro should restore all quota rows');
+} else {
+  console.log('  Google AI Pro has no quota rows in the current account state; collapse sizing check skipped');
+}
 
 // 4. 测试时间范围切换，以及大数值（近 30 日）不换行
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab[data-range=\'days30\']").click()');

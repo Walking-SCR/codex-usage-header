@@ -2,36 +2,35 @@
  * 单实例用量调度器。渲染器目标只提交命令，
  * 并通过本机 CDP Runtime.evaluate 接收脱敏快照。
  */
-import { openSync, closeSync, readFileSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AppServerClient } from './account-client.mjs';
 import { ExtendedUsageCoordinator } from './extended-usage.mjs';
 import { evaluateInTarget, fetchCdpTargets, launchAndInject, selectUsageTargets } from './launcher.mjs';
+import { acquireMonitorLock, releaseMonitorLock, monitorCodeHash, MONITOR_LOCK_PATH } from './monitor-lock.mjs';
 
 const DEFAULT_CDP_PORT = 9229;
 const POLL_MS = 750;
 const IDLE_REFRESH_MS = 180000;
-const LOCK_PATH = join(tmpdir(), 'codex-usage-header-monitor.lock');
+const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SETTINGS_PATH = join(process.env.HOME || tmpdir(), 'Library/Application Support/Codex Quota Header/settings.json');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// 单实例锁：已有活锁时直接退出，绝不删除活进程持有的锁；
+// 过期锁（持有者已死）由 monitor-lock.mjs 安全替换。
 function acquireLock() {
-  try {
-    const fd = openSync(LOCK_PATH, 'wx');
-    writeFileSync(fd, String(process.pid));
-    closeSync(fd);
-    return true;
-  } catch {
-    try { process.kill(Number(readFileSync(LOCK_PATH, 'utf8')), 0); return false; } catch {
-      try { unlinkSync(LOCK_PATH); } catch { /* 忽略过期锁清理异常 */ }
-      return acquireLock();
-    }
+  const result = acquireMonitorLock({ installDir: PLUGIN_ROOT, lockPath: MONITOR_LOCK_PATH, codeHash: monitorCodeHash(PLUGIN_ROOT) });
+  if (!result.acquired) {
+    console.error(`[Codex Quota Header] monitor already running (pid ${result.pid}); this instance exits.`);
+    return false;
   }
+  return true;
 }
 
-function releaseLock() { try { unlinkSync(LOCK_PATH); } catch { /* 锁已经释放时忽略异常 */ } }
+function releaseLock() { releaseMonitorLock(MONITOR_LOCK_PATH); }
 
 function readSettings() {
   try {
@@ -117,6 +116,18 @@ async function run(cdpPort) {
     let inFlight = null;
     const deliveredRevision = new Map();
     const seenCommands = new Set();
+    // P2：命令去重缓存上限 2000，超限时淘汰最早的 500 条，防止长期运行无界增长
+    const rememberCommand = id => {
+      seenCommands.add(id);
+      if (seenCommands.size > 2000) {
+        const iterator = seenCommands.values();
+        for (let i = 0; i < 500; i++) {
+          const oldest = iterator.next();
+          if (oldest.done) break;
+          seenCommands.delete(oldest.value);
+        }
+      }
+    };
     // 保持单个所有者运行，并由 CDP 目标列表驱动可用性判断。
     // 这里执行同步进程扫描可能阻塞事件循环，使渲染器命令得不到处理，
     // 从而导致手动刷新看起来没有响应。
@@ -164,11 +175,11 @@ async function run(cdpPort) {
           }
         }
         persistSettings(settings);
-        seenCommands.add(command.id);
+        rememberCommand(command.id);
         nextRefreshAt = 0;
       }
       const refreshCommands = commands.filter(command => command.kind === 'refresh' && command.id && !seenCommands.has(command.id));
-      for (const command of refreshCommands) seenCommands.add(command.id);
+      for (const command of refreshCommands) rememberCommand(command.id);
       const manualRequests = refreshCommands.filter(command => command.manual);
       const anyVisible = valid.some(item => !item.state.hidden);
       const tokensIntervalMs = anyVisible ? 30000 : 180000;
@@ -264,4 +275,7 @@ async function run(cdpPort) {
 
 const portIndex = process.argv.indexOf('--port');
 const cdpPort = Number(portIndex >= 0 ? process.argv[portIndex + 1] : DEFAULT_CDP_PORT);
-run(cdpPort).catch(() => { releaseLock(); process.exitCode = 1; });
+// 仅作为脚本直接运行时启动；被 import 时无副作用（便于测试/复用）。
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  run(cdpPort).catch(() => { releaseLock(); process.exitCode = 1; });
+}

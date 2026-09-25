@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -18,9 +18,11 @@ assert.equal(classifyModel('o1-preview'), 'GPT');
 assert.equal(classifyModel('o3-mini'), 'GPT');
 assert.equal(classifyModel('gemini-3.8-flash-high'), 'Gemini');
 assert.equal(classifyModel('gemini-2.5-pro'), 'Gemini');
-assert.equal(classifyModel('deepseek-v4-flash'), 'Other');
-assert.equal(classifyModel('claude-sonnet-4-6'), 'Other');
-assert.equal(classifyModel('minimax-m3'), 'Other');
+assert.equal(classifyModel('glm-5.2'), 'GLM');
+assert.equal(classifyModel('deepseek-v4-flash'), 'DeepSeek');
+assert.equal(classifyModel('claude-sonnet-4-6'), 'Claude');
+assert.equal(classifyModel('minimax-m3'), 'MiniMax');
+assert.equal(classifyModel('unmapped-model-x'), 'Other');
 
 // 2. 数字格式化
 assert.equal(formatTokenCount(0), '0');
@@ -161,7 +163,43 @@ try {
   assert.equal(reloaded.data.days[todayDate]['gpt-5.6-sol'], 1400);
   assert.equal(reloaded.data.days[todayDate]['gemini-3.8-flash-high'], 600);
 
-  console.log('✓ Token rollup engine tests passed!');
+  const missingModelRecord = { inode: 202, offset: 0, lastTotal: 1000, currentModel: 'unknown' };
+  engine.processLine(JSON.stringify({
+    type: 'event_msg',
+    timestamp: new Date().toISOString(),
+    payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 1300 } } },
+  }), missingModelRecord, todayDate);
+  assert.equal(engine.data.days[todayDate].unknown, 300);
+  assert.equal(classifyModel('unknown'), 'Other', 'missing model metadata must not be attributed to GPT');
+
+  const manyFamilies = new TokenRollupEngine({ baseDir: testDir });
+  manyFamilies.data.days[todayDate] = {
+    'gpt-6-astra': 120,
+    'gemini-3.8-flash-high': 90,
+    'deepseek-v4-flash': 80,
+    'glm-5.2': 70,
+    'claude-sonnet-4-6': 60,
+    'minimax-m3': 50,
+  };
+  const manyFamiliesRange = manyFamilies.calculateRollup().today;
+  assert.equal(manyFamiliesRange.total, 470);
+  assert.deepEqual(manyFamiliesRange.items.map(item => item.key), ['gpt', 'gemini', 'deepseek', 'glm', 'claude', 'minimax']);
+  assert.deepEqual(manyFamiliesRange.summaryItems.map(item => item.key), ['gpt', 'gemini', 'deepseek', 'overflow']);
+  assert.equal(manyFamiliesRange.summaryItems[3].modelCount, 3);
+  assert.equal(manyFamiliesRange.summaryItems[3].tokens, 180);
+  assert.equal(manyFamiliesRange.summaryItems.reduce((sum, item) => sum + item.tokens, 0), manyFamiliesRange.total);
+  assert.equal(manyFamiliesRange.items.find(item => item.key === 'deepseek').models[0].id, 'deepseek-v4-flash');
+
+    // 测试老旧日期目录（例如跨天长会话）里的活跃文件增量收集
+  const oldDayDir = join(sessionsDir, "2026/01/01");
+  mkdirSync(oldDayDir, { recursive: true });
+  const oldSessionFile = join(oldDayDir, "rollout-test-old.jsonl");
+  writeFileSync(oldSessionFile, "{\"type\":\"session_meta\"}\n");
+  engine.data.files[oldSessionFile] = { inode: 999, offset: 0 };
+  const recentFiles = engine.collectSessionFiles(true);
+  assert.ok(recentFiles.includes(oldSessionFile), "跨天老会话文件必须被 recentOnly 收集增量扫描");
+
+  console.log("✓ Token rollup engine tests passed!");
 } finally {
   rmSync(testDir, { recursive: true, force: true });
 }

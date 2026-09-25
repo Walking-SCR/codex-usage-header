@@ -32,10 +32,11 @@ acquire_lock() {
       /bin/rm -rf "$LOCK_DIR" 2>/dev/null || true
       continue
     fi
+    # 持有者仍存活：绝不删除活锁，只等待（最多 60 秒），超时则放弃启动
     count=$((count + 1))
-    if [[ "$count" -ge 24 ]]; then
-      /bin/rm -rf "$LOCK_DIR" 2>/dev/null || true
-      break
+    if [[ "$count" -ge 120 ]]; then
+      echo "launcher lock held by live process ${lock_pid:-unknown}; giving up" >&2
+      return 1
     fi
     /bin/sleep 0.5
   done
@@ -49,7 +50,7 @@ release_lock() {
   fi
 }
 trap release_lock EXIT
-acquire_lock
+acquire_lock || exit 1
 
 desktop_pids() {
   /bin/ps -ax -o pid= -o command= | /usr/bin/awk '

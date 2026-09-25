@@ -6,6 +6,7 @@ import { evaluateInTarget, fetchCdpTargets, selectUsageTargets } from '../src/la
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const evidenceDir = join(rootDir, 'audit', '2026-09-18-quota-header');
+let shouldRestoreTokenUsageOff = false;
 
 function cdpCommand(wsUrl, method, params = {}, timeoutMs = 6000) {
   return new Promise((resolve, reject) => {
@@ -44,16 +45,57 @@ try {
   }
   assert.equal(ready, true, 'usage payload should arrive before card interaction checks');
 
+  await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.showPopover()');
+  await new Promise(resolve => setTimeout(resolve, 120));
+  const tokenUsageWasEnabled = await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState?.()?.settings?.enableTokenUsage');
+  shouldRestoreTokenUsageOff = tokenUsageWasEnabled === false;
+  if (shouldRestoreTokenUsageOff) {
+    await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".stats-toggle-btn")?.click()');
+    const tokenReadyDeadline = Date.now() + 8000;
+    let tokenReady = false;
+    while (Date.now() < tokenReadyDeadline && !tokenReady) {
+      tokenReady = await evaluateInTarget(target.webSocketDebuggerUrl, 'Boolean(window.__codexUsageHeaderDebug__?.getState?.()?.settings?.enableTokenUsage && document.querySelector(".quota-extension-model-button"))');
+      if (!tokenReady) await new Promise(resolve => setTimeout(resolve, 160));
+    }
+    assert.equal(tokenReady, true, 'Token statistics should load after temporarily enabling the module');
+  }
+  const originalTokenView = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const tokenState=window.__codexUsageHeaderDebug__?.getExtendedState?.()?.tokens||{}; return {range:tokenState.selectedRange||"today",model:tokenState.selectedModel||"all"}; })()');
+  await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab[data-range=days7]")?.click()');
+  await new Promise(resolve => setTimeout(resolve, 80));
+  const rangeForModelTest = await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getExtendedState?.()?.tokens?.ranges?.days7');
+  assert.ok(rangeForModelTest, 'seven-day token range should be available');
+  assert.ok(['today', 'days7', 'days30'].includes(originalTokenView.range), 'selected token range should be valid');
+  const expectedModelOptions = ['all', ...rangeForModelTest.items
+    .filter(item => item.key === 'gpt' || item.key === 'gemini' || item.tokens > 0)
+    .map(item => item.key)];
+  await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-model-button")?.click()');
+  const modelOptions = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => ({open:document.querySelector(".quota-extension-model-button")?.getAttribute("aria-expanded"),keys:[...document.querySelectorAll(".quota-extension-model-option")].map(option=>option.dataset.model)}))()');
+  assert.equal(modelOptions.open, 'true');
+  assert.deepEqual(modelOptions.keys, expectedModelOptions);
+  const totalBeforeModelFilter = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".token-summary-number")?.textContent');
+  await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-model-option[data-model=gpt]")?.click()');
+  const gptDetail = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const state=window.__codexUsageHeaderDebug__?.getExtendedState?.()?.tokens; const range=state?.ranges?.[state.selectedRange]; const gpt=range?.items?.find(item=>item.key==="gpt"); return {selector:document.querySelector(".quota-extension-model-button")?.textContent,globalTotal:document.querySelector(".token-summary-number")?.textContent,subRows:document.querySelectorAll(".token-model-row.is-model-detail").length,expectedRows:gpt?.models?.length,subtotal:document.querySelector(".token-family-summary")?.textContent}; })()');
+  assert.match(gptDetail.selector, /模型：GPT/);
+  assert.equal(gptDetail.globalTotal, totalBeforeModelFilter, 'changing model filter must not change the global total');
+  assert.equal(gptDetail.subRows, gptDetail.expectedRows);
+  assert.match(gptDetail.subtotal, /占总计/);
+  await evaluateInTarget(target.webSocketDebuggerUrl, `document.querySelector('.quota-extension-range-tab[data-range="${originalTokenView.range}"]')?.click()`);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-model-button")?.click()');
+  const restoreOptions = await evaluateInTarget(target.webSocketDebuggerUrl, '[...document.querySelectorAll(".quota-extension-model-option")].map(option=>option.dataset.model)');
+  const restoreModel = restoreOptions.includes(originalTokenView.model) ? originalTokenView.model : 'all';
+  await evaluateInTarget(target.webSocketDebuggerUrl, `document.querySelector('.quota-extension-model-option[data-model="${restoreModel}"]')?.click()`);
+
   for (const width of widths) {
     await cdpCommand(target.webSocketDebuggerUrl, 'Emulation.setDeviceMetricsOverride', { width, height: 820, deviceScaleFactor: 1, mobile: false });
     await new Promise(resolve => setTimeout(resolve, 320));
-    const snapshot = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const element=document.querySelector("codex-usage-header-host"); const trigger=element?.shadowRoot?.querySelector(".details-trigger"); const visible=button=>{const r=button.getBoundingClientRect();const s=getComputedStyle(button);return s.display!=="none"&&s.visibility!=="hidden"&&Number(s.opacity)>0&&r.width>0&&r.height>0&&r.left<innerWidth&&r.right>0}; const more=[...(element?.parentElement?.querySelectorAll("button")||[])].find(button=>button.getAttribute("aria-label")==="聊天操作"&&visible(button)) || [...document.querySelectorAll("button")].find(button=>button.getAttribute("aria-label")==="聊天操作"&&visible(button)&&button.getBoundingClientRect().left>(element?.getBoundingClientRect()?.left||0)); const newChat=[...document.querySelectorAll("button")].find(button=>["切换底部面板显示","显示/隐藏侧边面板"].includes(button.getAttribute("aria-label")||"")&&visible(button)); const native=element?.dataset?.placement==="thread"?more:newChat; const r=element?.getBoundingClientRect(); const nr=native?.getBoundingClientRect(); return {placement:element?.dataset?.placement,mode:element?.dataset?.mode,hostHeight:r?.height,gap:r&&nr?nr.left-r.right:null,overlaps:r&&nr?r.right>nr.left:false,hostRegion:element?getComputedStyle(element).getPropertyValue("-webkit-app-region"):null,triggerRegion:trigger?getComputedStyle(trigger).getPropertyValue("-webkit-app-region"):null,gapStyle:element?.shadowRoot?.querySelector(".capsule")?getComputedStyle(element.shadowRoot.querySelector(".capsule")).gap:null,track:element?.shadowRoot?.querySelector(".track")?getComputedStyle(element.shadowRoot.querySelector(".track")).height:null,topRefresh:element?.shadowRoot?.querySelectorAll(".refresh-btn").length||0,text:trigger?.innerText}; })()');
+    const snapshot = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const element=document.querySelector("codex-usage-header-host"); const trigger=element?.shadowRoot?.querySelector(".details-trigger"); const visible=button=>{const r=button.getBoundingClientRect();const s=getComputedStyle(button);return s.display!=="none"&&s.visibility!=="hidden"&&Number(s.opacity)>0&&r.width>0&&r.height>0&&r.left<innerWidth&&r.right>0}; const more=[...(element?.parentElement?.querySelectorAll("button")||[])].find(button=>button.getAttribute("aria-label")==="聊天操作"&&visible(button)) || [...document.querySelectorAll("button")].find(button=>button.getAttribute("aria-label")==="聊天操作"&&visible(button)&&button.getBoundingClientRect().left>(element?.getBoundingClientRect()?.left||0)); const newChat=[...document.querySelectorAll("button")].find(button=>["切换底部面板显示","显示/隐藏侧边面板"].includes(button.getAttribute("aria-label")||"")&&visible(button)); const chatShare=element?.dataset?.placement==="chat"?element.nextElementSibling?.querySelector("button[aria-label=分享],button[aria-label=Share]"):null; const native=element?.dataset?.placement==="thread"?more:element?.dataset?.placement==="chat"?chatShare:newChat; const r=element?.getBoundingClientRect(); const nr=native?.getBoundingClientRect(); return {placement:element?.dataset?.placement,mode:element?.dataset?.mode,hostHeight:r?.height,gap:r&&nr?nr.left-r.right:null,overlaps:r&&nr?r.right>nr.left:false,hostRegion:element?getComputedStyle(element).getPropertyValue("-webkit-app-region"):null,triggerRegion:trigger?getComputedStyle(trigger).getPropertyValue("-webkit-app-region"):null,gapStyle:element?.shadowRoot?.querySelector(".capsule")?getComputedStyle(element.shadowRoot.querySelector(".capsule")).gap:null,track:element?.shadowRoot?.querySelector(".track")?getComputedStyle(element.shadowRoot.querySelector(".track")).height:null,topRefresh:element?.shadowRoot?.querySelectorAll(".refresh-btn").length||0,text:trigger?.innerText}; })()');
     snapshots.push(snapshot);
     if (snapshot.gap !== null) {
       assert.equal(snapshot.overlaps, false);
       assert.ok(snapshot.gap >= 4);
     }
-    assert.ok(['thread', 'new-chat'].includes(snapshot.placement));
+    assert.ok(['thread', 'new-chat', 'chat'].includes(snapshot.placement));
     assert.equal(snapshot.hostHeight, 34);
     assert.equal(snapshot.hostRegion, 'no-drag');
     assert.equal(snapshot.triggerRegion, 'no-drag');
@@ -184,5 +226,9 @@ try {
   console.log(JSON.stringify({ snapshots, hover, finalState, screenshotPath: screenshotCaptured ? screenshotPath : null }, null, 2));
   console.log('✓ Live renderer responsive, popover, and card-refresh checks passed!');
 } finally {
+  if (shouldRestoreTokenUsageOff) {
+    await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { if (window.__codexUsageHeaderDebug__?.getState?.()?.settings?.enableTokenUsage) document.querySelector(".stats-toggle-btn")?.click(); })()').catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, 800));
+  }
   await cdpCommand(target.webSocketDebuggerUrl, 'Emulation.clearDeviceMetricsOverride').catch(() => {});
 }

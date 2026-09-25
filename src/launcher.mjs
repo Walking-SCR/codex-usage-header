@@ -3,12 +3,17 @@
  *
  * 桌面应用必须使用仅限本机回环的 Chromium 调试端口启动。
  * 启动器会在需要时启动应用、注入组件、验证 DOM 挂载，然后退出。
+ *
+ * 安全提示：CDP 调试端口（默认 9229）仅绑定 127.0.0.1，但本机任意进程
+ * 连接后都可操控渲染目标。这是 CDP 机制本身的特性，详见 SECURITY.md。
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
+import { createHash } from 'node:crypto';
+import { getMonitorStatus, isMonitorProcess, isPidAlive, monitorCodeHash } from './monitor-lock.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INJECTED_SCRIPT_PATH = join(__dirname, 'injected.js');
@@ -245,28 +250,60 @@ export async function evaluateInTarget(wsUrl, expression, timeoutMs = 6000) {
   });
 }
 
+// 挂载状态探针：区分「已注入/等待顶栏/已挂载/挂载失败」四态。
+// mountable 为顶栏中可用的锚点 placement（字符串）或 null（顶栏尚未出现）。
+const MOUNT_PROBE_SNIPPET = `(() => {
+  const debug = window.__codexUsageHeaderDebug__;
+  const element = document.querySelector('codex-usage-header-host');
+  let mountable = null;
+  try { mountable = debug?.getMountPoint?.()?.placement || null; } catch { mountable = null; }
+  return {
+    installed: Boolean(window.__codexUsageHeaderInstalled__),
+    version: window.__codexUsageHeaderInstalled__ || null,
+    contentHash: window.__codexUsageHeaderContentHash__ || null,
+    mounted: Boolean(element && element.isConnected),
+    placement: element?.dataset?.placement || null,
+    mountable,
+    url: location.href,
+    title: document.title,
+  };
+})()`;
+
+export async function probeMountState(wsUrl) {
+  return evaluateInTarget(wsUrl, MOUNT_PROBE_SNIPPET);
+}
+
+// 挂载状态分类（纯函数）：installed+mounted=已挂载；installed+无锚点=等待顶栏；
+// installed+有锚点却未挂载=挂载失败；无 installed=注入失败。
+export function classifyMountProbe(probe) {
+  if (!probe?.installed) return 'not-installed';
+  if (probe.mounted) return 'mounted';
+  return probe.mountable ? 'failed' : 'waiting';
+}
+
+// 注入后按四态返回，绝不把「未挂载」包装成成功：
+//   mounted —— 组件已挂载；waiting —— 已注入、顶栏尚未出现（页面观察器会继续尝试）；
+//   failed  —— 已注入、顶栏存在锚点却挂载不上（明确错误）。
+// 只有安装标记都没立起来时才抛错（注入本身失败）。
 export async function injectScriptIntoTarget(wsUrl, scriptCode) {
   await evaluateInTarget(wsUrl, scriptCode);
   const deadline = Date.now() + 4000;
-  let verification;
+  let probe;
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 150));
-    verification = await evaluateInTarget(wsUrl, `(() => {
-      const element = document.querySelector('codex-usage-header-host');
-      return {
-        installed: Boolean(window.__codexUsageHeaderInstalled__),
-        mounted: Boolean(element && element.isConnected),
-        placement: element?.dataset?.placement || null,
-        url: location.href,
-        title: document.title,
-      };
-    })()`);
-    if (verification?.mounted) return verification;
-    if (verification?.installed && verification?.url === 'app://-/index.html') {
-      return { ...verification, placement: 'deferred-safe-anchor' };
-    }
+    probe = await probeMountState(wsUrl);
+    if (probe?.mounted) return { ...probe, status: 'mounted' };
+    if (!probe?.installed) break;
   }
-  throw new Error(`component_not_mounted: ${JSON.stringify(verification)}`);
+  probe = probe ?? await probeMountState(wsUrl).catch(() => null);
+  const status = classifyMountProbe(probe);
+  if (status === 'not-installed') {
+    throw new Error(`component_not_installed: ${JSON.stringify(probe)}`);
+  }
+  if (status === 'failed') {
+    return { ...probe, status, error: 'mount_point_available_but_not_mounted' };
+  }
+  return { ...probe, status };
 }
 
 async function waitForTargets(port, timeoutMs = READY_TIMEOUT_MS) {
@@ -298,7 +335,23 @@ function launchDesktopApp(executable, port) {
   child.unref();
 }
 
+// 解析注入脚本的运行时版本（RUNTIME_VERSION 常量）
+export function readScriptVersion() {
+  const source = readFileSync(INJECTED_SCRIPT_PATH, 'utf8');
+  const match = source.match(/const RUNTIME_VERSION = '([^']+)'/);
+  return match ? match[1] : null;
+}
+
 export async function getStatus(port = DEFAULT_PORT) {
+  const installDir = join(__dirname, '..');
+  let scriptVersion = null;
+  let scriptContentHash = null;
+  try {
+    scriptVersion = readScriptVersion();
+    scriptContentHash = buildInjectableScript().contentHash;
+  } catch { /* 忽略版本读取异常 */ }
+  const monitor = getMonitorStatus();
+  const runtimeSource = { installDir, scriptVersion, scriptContentHash, monitor };
   try {
     const targets = await fetchCdpTargets(port);
     const renderers = selectUsageTargets(targets);
@@ -309,41 +362,77 @@ export async function getStatus(port = DEFAULT_PORT) {
           const element = document.querySelector('codex-usage-header-host');
           return {
             installed: Boolean(window.__codexUsageHeaderInstalled__),
+            sourceDir: window.__codexUsageHeaderSource__ || null,
+            contentHash: window.__codexUsageHeaderContentHash__ || null,
             mounted: Boolean(element && element.isConnected),
             placement: element?.dataset?.placement || null,
             title: document.title,
             url: location.href,
           };
         })()`);
+        if (result && result.installed && !result.mounted) {
+          // 已注入但未挂载：顶栏尚未出现算 waiting，顶栏存在却挂不上算 failed
+          try {
+            const point = await evaluateInTarget(target.webSocketDebuggerUrl,
+              '(() => { try { return window.__codexUsageHeaderDebug__?.getMountPoint?.()?.placement || null; } catch { return null; } })()');
+            result.status = point ? 'failed' : 'waiting';
+          } catch {
+            result.status = 'unknown';
+          }
+        } else {
+          result.status = result?.mounted ? 'mounted' : (result?.installed ? 'waiting' : 'absent');
+        }
         mounted.push(result);
       } catch {
         // 单个不可访问的渲染器不应隐藏正常的目标页面。
       }
     }
     return {
+      ...runtimeSource,
       appRunning: isDesktopAppRunning(),
       cdpAvailable: true,
       port,
       rendererCount: renderers.length,
       installedCount: mounted.filter(item => item?.installed).length,
       mountedCount: mounted.filter(item => item?.mounted).length,
+      waitingCount: mounted.filter(item => item?.status === 'waiting').length,
+      failedCount: mounted.filter(item => item?.status === 'failed').length,
       targets: mounted,
     };
   } catch {
     return {
+      ...runtimeSource,
       appRunning: isDesktopAppRunning(),
       cdpAvailable: false,
       port,
       rendererCount: 0,
       installedCount: 0,
       mountedCount: 0,
+      waitingCount: 0,
+      failedCount: 0,
       targets: [],
     };
   }
 }
 
+export function statusExitCode(status) {
+  if (status.failedCount > 0) return 2;
+  return status.mountedCount > 0 || status.waitingCount > 0 ? 0 : 2;
+}
+
+// 计算注入脚本的内容哈希并填入占位符：任何代码改动都会改变哈希，
+// 渲染器内的版本守卫据此判断是否需要 teardown + 重装（无需手动升版本）。
+export function buildInjectableScript() {
+  const scriptSource = readFileSync(INJECTED_SCRIPT_PATH, 'utf8');
+  const contentHash = createHash('sha256').update(scriptSource).digest('hex');
+  const scriptCode = scriptSource.includes('__INJECTED_CONTENT_HASH__')
+    ? scriptSource.replace('__INJECTED_CONTENT_HASH__', contentHash)
+    : scriptSource;
+  return { scriptCode, contentHash };
+}
+
 export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = true } = {}) {
-  const scriptCode = readFileSync(INJECTED_SCRIPT_PATH, 'utf8');
+  const { scriptCode, contentHash } = buildInjectableScript();
   let targets;
 
   try {
@@ -380,32 +469,82 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
     clock: readIconDataUrl('clock'),
     resetCredit: readImageDataUrl('reset-credit', 'png', 'image/png'),
   };
-  const bootstrap = `window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)};`;
+  const bootstrap = `window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))};`;
 
-  const successes = [];
-  const failures = [];
+  const results = [];
   for (const target of renderers) {
     try {
       const verification = await injectScriptIntoTarget(target.webSocketDebuggerUrl, `${bootstrap}\n${scriptCode}`);
-      successes.push({ target: target.title || target.url, ...verification });
+      results.push({ target: target.title || target.url, ...verification });
     } catch (error) {
-      failures.push({ target: target.title || target.url, error: error.message });
+      results.push({ target: target.title || target.url, status: 'failed', error: error.message });
     }
   }
+  const mountedCount = results.filter(item => item.status === 'mounted').length;
+  const waitingCount = results.filter(item => item.status === 'waiting').length;
+  const failedCount = results.filter(item => item.status === 'failed').length;
 
-  if (successes.length === 0) {
-    throw new Error(`injection_failed: ${JSON.stringify(failures)}`);
+  // 允许「已注入、等待顶栏」的中间态，但绝不把 mountedCount=0 宣称为成功。
+  if (mountedCount === 0 && waitingCount === 0) {
+    throw new Error(`injection_failed: ${JSON.stringify(results.filter(item => item.status === 'failed'))}`);
   }
-  return { port, successes, failures };
+  return { port, results, mountedCount, waitingCount, failedCount, contentHash };
 }
 
-export function startUsageMonitor(port = DEFAULT_PORT) {
+// 启动用量监控：区分「新监控已启动」与「现有监控继续运行」，消除虚假成功日志。
+// 若现有监控来自另一个安装目录，则受控交接：先停止旧进程，再启动新进程。
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+export async function stopUsageMonitor(pluginRoot = join(__dirname, '..')) {
+  const existing = getMonitorStatus();
+  if (!existing.running) return { stopped: false, reason: 'not-running' };
+  if (!isMonitorProcess(existing.pid, pluginRoot)) {
+    return { stopped: false, reason: 'monitor-identity-mismatch', pid: existing.pid };
+  }
+  try { process.kill(existing.pid, 'SIGTERM'); }
+  catch (error) {
+    if (error?.code === 'ESRCH') return { stopped: true, pid: existing.pid };
+    throw error;
+  }
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (!isPidAlive(existing.pid)) return { stopped: true, pid: existing.pid };
+    await sleep(50);
+  }
+  return { stopped: false, reason: 'monitor-did-not-exit', pid: existing.pid };
+}
+
+export async function startUsageMonitor(port = DEFAULT_PORT) {
+  const pluginRoot = join(__dirname, '..');
+  const codeHash = monitorCodeHash(pluginRoot);
+  const existing = getMonitorStatus();
+  if (existing.running) {
+    const sameSource = existing.installDir === pluginRoot;
+    if (sameSource && existing.codeHash === codeHash && isMonitorProcess(existing.pid, pluginRoot)) {
+      return { started: false, pid: existing.pid, reason: 'already-running' };
+    }
+    const source = existing.installDir || (isMonitorProcess(existing.pid, pluginRoot) ? pluginRoot : null);
+    if (!source) throw new Error(`monitor_source_unknown: ${existing.pid}`);
+    console.log(`[Codex Quota Header] Handing over monitor ${existing.pid} from ${source} to ${pluginRoot}.`);
+    const stopped = await stopUsageMonitor(source);
+    if (!stopped.stopped) throw new Error(`monitor_handoff_failed: ${stopped.reason}`);
+  }
   const child = spawn(process.execPath, [MONITOR_PATH, '--port', String(port)], {
     detached: true,
     stdio: 'ignore',
   });
   child.unref();
-  return child.pid;
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const status = getMonitorStatus();
+    if (status.running && status.pid === child.pid && status.installDir === pluginRoot && status.codeHash === codeHash) {
+      return { started: true, pid: child.pid, reason: 'started' };
+    }
+    if (status.running && status.pid !== child.pid && isMonitorProcess(status.pid, status.installDir)) {
+      return { started: false, pid: status.pid, reason: 'already-running' };
+    }
+    if (!isPidAlive(child.pid)) break;
+    await sleep(50);
+  }
+  throw new Error(`monitor_start_failed: ${child.pid || 'no-pid'}`);
 }
 
 function parseCliArgs(argv) {
@@ -414,6 +553,7 @@ function parseCliArgs(argv) {
     const arg = argv[index];
     if (arg === '--status') options.mode = 'status';
     else if (arg === '--inject-only') options.mode = 'inject-only';
+    else if (arg === '--teardown') options.mode = 'teardown';
     else if (arg === '--help' || arg === '-h') options.mode = 'help';
     else if (arg === '--port') {
       const value = Number(argv[index + 1]);
@@ -435,6 +575,7 @@ function printHelp() {
 Options:
   --status          Report desktop/CDP/component status without changing state
   --inject-only     Inject only when the desktop app already exposes CDP
+  --teardown        Remove the component from running renderers (used by uninstall)
   --port <number>   CDP port (default: ${DEFAULT_PORT})
   -h, --help        Show this help
 
@@ -447,21 +588,63 @@ async function main() {
     printHelp();
     return;
   }
+  if (options.mode === 'teardown') {
+    const pluginRoot = join(__dirname, '..');
+    const monitor = getMonitorStatus();
+    const monitorOwned = monitor.running && isMonitorProcess(monitor.pid, pluginRoot);
+    if (monitor.running && monitor.installDir && monitor.installDir !== pluginRoot) {
+      throw new Error(`teardown_refused_other_install: ${monitor.installDir}`);
+    }
+    if (monitor.running && !monitorOwned) throw new Error(`teardown_refused_unknown_monitor: ${monitor.pid}`);
+    if (monitorOwned) {
+      const stopped = await stopUsageMonitor(pluginRoot);
+      if (!stopped.stopped) throw new Error(`teardown_monitor_failed: ${stopped.reason}`);
+    }
+    const targets = selectUsageTargets(await fetchCdpTargets(options.port).catch(() => []));
+    let removed = 0;
+    for (const target of targets) {
+      try {
+        const result = await evaluateInTarget(target.webSocketDebuggerUrl,
+          `(() => { const source = window.__codexUsageHeaderSource__; if (source && source !== ${JSON.stringify(pluginRoot)}) return false; if (!source && ${!monitorOwned}) return false; window.__codexUsageHeaderTeardown__?.(); window.__codexUsageHeaderSource__ = null; return true; })()`);
+        if (result) removed += 1;
+      } catch { /* 单个目标失败不影响其他 */ }
+    }
+    console.log(`[Codex Quota Header] teardown complete: ${removed} renderer(s), monitor ${monitorOwned ? `stopped (pid ${monitor.pid})` : 'not running'}.`);
+    return;
+  }
   if (options.mode === 'status') {
     const status = await getStatus(options.port);
     console.log(JSON.stringify(status, null, 2));
-    process.exitCode = status.installedCount > 0 || status.mountedCount > 0 ? 0 : 2;
+    process.exitCode = statusExitCode(status);
     return;
   }
 
   const result = await launchAndInject(options.port, {
     launchIfNeeded: options.mode !== 'inject-only',
   });
-  const monitorPid = startUsageMonitor(options.port);
-  console.log(`[Codex Quota Header] Mounted in ${result.successes.length} renderer(s).`);
-  console.log(`[Codex Quota Header] Live usage monitor started (pid ${monitorPid}).`);
-  for (const success of result.successes) {
-    console.log(`  ✓ ${success.title || success.target} (${success.placement})`);
+  const monitor = await startUsageMonitor(options.port);
+  if (monitor.started) {
+    console.log(`[Codex Quota Header] Live usage monitor started (pid ${monitor.pid}).`);
+  } else {
+    console.log(`[Codex Quota Header] Monitor already running (pid ${monitor.pid}); keeping the existing instance.`);
+  }
+  const parts = [`已挂载 ${result.mountedCount}`];
+  if (result.waitingCount > 0) parts.push(`等待顶栏 ${result.waitingCount}`);
+  if (result.failedCount > 0) parts.push(`失败 ${result.failedCount}`);
+  console.log(`[Codex Quota Header] 注入完成：${parts.join('，')}。`);
+  for (const item of result.results) {
+    const mark = item.status === 'mounted' ? '✓' : item.status === 'waiting' ? '…' : '✗';
+    const extra = item.status === 'waiting'
+      ? '（顶栏尚未出现，页面观察器会继续尝试挂载）'
+      : item.status === 'failed'
+        ? `（${item.error || '挂载失败'}）`
+        : '';
+    console.log(`  ${mark} [${item.status}] ${item.title || item.target}${item.placement ? ` (${item.placement})` : ''}${extra}`);
+  }
+  if (result.failedCount > 0) process.exitCode = 2;
+  else if (result.mountedCount === 0 && result.waitingCount > 0) {
+    console.log('[Codex Quota Header] 顶栏尚未出现，已进入等待挂载状态；打开任意对话页后组件会自动出现。');
+    process.exitCode = 3;
   }
 }
 
