@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+<defs>
+  <linearGradient id="g1" x1="7" y1="8" x2="55" y2="56" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#68C7FF"/><stop offset=".48" stop-color="#1688FF"/><stop offset="1" stop-color="#7058F7"/>
+  </linearGradient>
+  <linearGradient id="g2" x1="15" y1="8" x2="50" y2="36" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#B7E4FF"/><stop offset=".45" stop-color="#63B5FF"/><stop offset="1" stop-color="#2A78FF"/>
+  </linearGradient>
+</defs>
+<rect x="4" y="4" width="56" height="56" rx="17" fill="#F3F8FF"/>
+<ellipse cx="32" cy="17" rx="20" ry="8" fill="url(#g2)"/>
+<path d="M12 17v10c0 4.5 8.95 8 20 8s20-3.5 20-8V17c0 4.5-8.95 8-20 8s-20-3.5-20-8Z" fill="url(#g1)" opacity=".88"/>
+<path d="M12 28v9.5c0 4.4 8.95 8 20 8s20-3.6 20-8V28c0 4.5-8.95 8-20 8s-20-3.5-20-8Z" fill="url(#g1)" opacity=".94"/>
+<path d="M12 39v8c0 4.5 8.95 8 20 8s20-3.5 20-8v-8c0 4.5-8.95 8-20 8s-20-3.5-20-8Z" fill="url(#g1)"/>
+<ellipse cx="32" cy="17" rx="19" ry="7" stroke="#C8ECFF" stroke-width="1.2" opacity=".8"/>
+</svg>

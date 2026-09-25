@@ -19,6 +19,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const INJECTED_SCRIPT_PATH = join(__dirname, 'injected.js');
 const MONITOR_PATH = join(__dirname, 'monitor.mjs');
 const ASSET_DIR = join(__dirname, '..', 'assets');
+const DESIGN_DIR = join(ASSET_DIR, 'ui-quota');
+const DESIGN_ICONS = {
+  logo: 'icons/common/app-logo.svg',
+  settings: 'icons/header/settings.svg',
+  export: 'icons/header/export.svg',
+  stats: 'icons/header/stats.svg',
+  refresh: 'icons/header/refresh.svg',
+  clock: 'icons/quota/clock.svg',
+  calendar: 'icons/quota/calendar.svg',
+  coupon: 'icons/coupon/coupon.svg',
+  lightning: 'icons/coupon/lightning.svg',
+  info: 'icons/coupon/info.svg',
+  sparkle: 'icons/google-ai-pro/sparkle.svg',
+  eye: 'icons/common/eye.svg',
+  chevronDown: 'icons/common/chevron-down.svg',
+  tokenChart: 'icons/token/token-chart.svg',
+  couponWave: 'backgrounds/coupon-wave.svg',
+};
 const DEFAULT_PORT = 9229;
 const READY_TIMEOUT_MS = 12000;
 
@@ -424,7 +442,10 @@ export function statusExitCode(status) {
 // 渲染器内的版本守卫据此判断是否需要 teardown + 重装（无需手动升版本）。
 export function buildInjectableScript() {
   const scriptSource = readFileSync(INJECTED_SCRIPT_PATH, 'utf8');
-  const contentHash = createHash('sha256').update(scriptSource).digest('hex');
+  const hash = createHash('sha256').update(scriptSource);
+  hash.update(readFileSync(join(DESIGN_DIR, 'design.css')));
+  for (const path of Object.values(DESIGN_ICONS)) hash.update(readFileSync(join(DESIGN_DIR, path)));
+  const contentHash = hash.digest('hex');
   const scriptCode = scriptSource.includes('__INJECTED_CONTENT_HASH__')
     ? scriptSource.replace('__INJECTED_CONTENT_HASH__', contentHash)
     : scriptSource;
@@ -469,7 +490,12 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
     clock: readIconDataUrl('clock'),
     resetCredit: readImageDataUrl('reset-credit', 'png', 'image/png'),
   };
-  const bootstrap = `window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))};`;
+  const designIcons = Object.fromEntries(Object.entries(DESIGN_ICONS).map(([key, path]) => {
+    const data = readFileSync(join(DESIGN_DIR, path));
+    return [key, `data:image/svg+xml;base64,${data.toString('base64')}`];
+  }));
+  const designCss = readFileSync(join(DESIGN_DIR, 'design.css'), 'utf8');
+  const bootstrap = `window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderDesignIcons__ = ${JSON.stringify(designIcons)}; window.__codexUsageHeaderDesignCSS__ = ${JSON.stringify(designCss)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))};`;
 
   const results = [];
   for (const target of renderers) {

@@ -33,7 +33,7 @@
     modeHysteresis: 20,
     breakpoints: { full: 520, compact: 330, minimal: 190, nano: 140 },
     colors: {
-      green: '#34C759',
+      green: '#32C76A',
       yellow: '#FF9500',
       red: '#FF3B30',
       track: 'rgba(120,120,128,.16)',
@@ -47,6 +47,10 @@
   }
   window.__codexUsageHeaderTeardown__?.();
   const ICONS = window.__codexUsageHeaderIcons__ || {};
+  const DESIGN_ICONS = window.__codexUsageHeaderDesignIcons__ || {};
+  const designIcon = (name, className = '') => DESIGN_ICONS[name]
+    ? '<img class="' + className + '" src="' + DESIGN_ICONS[name] + '" alt="" aria-hidden="true">'
+    : '';
   const docLang = (typeof document !== "undefined" ? document.documentElement?.lang : "") || "";
   const navLang = (typeof navigator !== "undefined" && navigator?.language) || "";
   const defaultSettings = {
@@ -122,6 +126,7 @@
   };
   let lastManualRefresh = 0;
   let tokenModelMenuOpen = false;
+  let settingsMenuOpen = false;
   let currentMode = 'full';
   let host = null;
   let popover = null;
@@ -195,6 +200,9 @@
       timezone: 'GMT+8',
       expiresSuffix: '到期',
       locale: '切换语言',
+      settings: '显示设置',
+      export: '导出用量快照',
+      statsAction: '查看 Token 统计',
       settingsSaved: '刷新频率已保存',
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token使用量', // Token处理量
@@ -261,6 +269,9 @@
       timezone: 'GMT+8',
       expiresSuffix: '',
       locale: 'Switch language',
+      settings: 'Show settings',
+      export: 'Export usage snapshot',
+      statsAction: 'View Token statistics',
       settingsSaved: 'Refresh interval saved',
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token usage',
@@ -535,6 +546,30 @@
     renderAll();
   }
 
+  function exportUsageSnapshot() {
+    // 只导出显示用量，不包含账号邮箱、OAuth 凭据或管理密钥。
+    const data = {
+      exportedAt: new Date().toISOString(),
+      codex: { planType: usageState.planType, primary: usageState.primary, secondary: usageState.secondary,
+        resetCredits: usageState.resetCredits, resetCreditDetails: usageState.resetCreditDetails,
+        creditBalance: usageState.creditBalance },
+      googleAiPro: {
+        accounts: (extendedUsageState.antigravity.accounts || []).map((account, index) => ({
+          label: 'Account ' + (index + 1),
+          rows: (account.rows || []).map(row => ({ label: row.label, remainingPercent: row.remainingPercent,
+            resetTime: row.resetTime, unavailable: row.unavailable })),
+        })),
+      },
+      tokens: extendedUsageState.tokens.ranges,
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'codex-usage-' + new Date().toISOString().slice(0, 10) + '.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function renderAll() {
     renderHost();
     if (popover?.classList.contains('is-visible')) {
@@ -654,12 +689,30 @@
       const modelOption = path.find(node => node?.classList?.contains('quota-extension-model-option'));
       const accountTab = path.find(node => node?.classList?.contains('quota-extension-account-tab'));
       const googleToggle = path.find(node => node?.classList?.contains('quota-extension-toggle'));
+      const settingsButton = path.find(node => node?.classList?.contains('header-settings-btn'));
+      const exportButton = path.find(node => node?.classList?.contains('header-export-btn'));
+      const statsButton = path.find(node => node?.classList?.contains('header-stats-btn'));
       if (tokenModelMenuOpen && !modelButton && !modelOption) {
         tokenModelMenuOpen = false;
         renderPopover();
         positionPopover();
       }
-      if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
+      if (settingsButton) {
+        settingsMenuOpen = !settingsMenuOpen;
+        renderPopover();
+        positionPopover();
+      } else if (exportButton) {
+        exportUsageSnapshot();
+      } else if (statsButton) {
+        if (!settings.enableTokenUsage) {
+          settings.enableTokenUsage = true;
+          persistSettings();
+          emitCommand('settings', { enableTokenUsage: true });
+          emitCommand('refresh', {}, false);
+          renderPopover();
+        }
+        popover?.querySelector('.quota-extension-section[data-section="tokens"]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      } else if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
       else if (language) {
         const opt = path.find(node => node?.classList?.contains('lang-opt'));
         const targetLang = opt?.dataset?.lang;
@@ -762,7 +815,8 @@
     const trigger = host.shadowRoot?.querySelector('.details-trigger');
     const rect = trigger?.getBoundingClientRect();
     if (!rect) return;
-    const width = Math.min(600, Math.max(360, window.innerWidth - CONFIG.viewportInset * 2));
+    // 下拉层沿用旧版 590px 宽度，参考图只用于内容比例与视觉语言。
+    const width = Math.min(590, Math.max(280, window.innerWidth - CONFIG.viewportInset * 2));
     popover.style.width = width + 'px';
     popover.style.maxWidth = 'calc(100vw - ' + (CONFIG.viewportInset * 2) + 'px)';
     const height = popover.getBoundingClientRect().height || 260;
@@ -807,6 +861,7 @@
     popoverHideTimer = null;
     popoverState = 'closed';
     tokenModelMenuOpen = false;
+    settingsMenuOpen = false;
     popover?.classList.remove('is-visible');
     popover?.setAttribute('aria-hidden', 'true');
     updateExpanded(false);
@@ -913,21 +968,40 @@
 
   function tokenFamilyColor(key) {
     return ({
-      gpt: '#007AFF',
-      gemini: '#8B5CF6',
-      glm: '#34A853',
-      deepseek: '#FF9500',
-      claude: '#D97757',
-      minimax: '#EC4899',
-      other: '#9CA3AF',
-      overflow: '#9CA3AF',
-    })[key] || '#9CA3AF';
+      gpt: '#1688FF', gemini: '#7A5AF8', claude: '#4AA9FF', glm: '#2979D2',
+      deepseek: '#8D73F7', minimax: '#5C9FED', other: '#9EACC0', overflow: '#9EACC0',
+    })[key] || '#9EACC0';
+  }
+
+  function percentWidth(value) {
+    const number = Number.parseFloat(value);
+    return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0;
+  }
+
+  function tokenDonutStops(rangeData) {
+    const active = (rangeData?.items || []).filter(item => Number(item.tokens) > 0)
+      .sort((a, b) => b.tokens - a.tokens);
+    const top = active.slice(0, 5);
+    const other = active.slice(5).reduce((sum, item) => sum + Number(item.tokens), 0);
+    if (other > 0) top.push({ key: 'overflow', tokens: other });
+    const total = Math.max(Number(rangeData?.total) || 0, active.reduce((sum, item) => sum + Number(item.tokens), 0));
+    if (!total) return '#E5E9F0';
+    let from = 0;
+    const stops = top.map(item => {
+      const to = Math.min(100, from + Number(item.tokens) / total * 100);
+      const segment = tokenFamilyColor(item.key) + ' ' + from.toFixed(2) + '% ' + to.toFixed(2) + '%';
+      from = to;
+      return segment;
+    });
+    if (from < 100) stops.push('#E5E9F0 ' + from.toFixed(2) + '% 100%');
+    return 'conic-gradient(' + stops.join(',') + ')';
   }
 
   function renderTokenFamilyRow(item, isZh) {
     const label = tokenFamilyLabel(item, isZh);
     return '<div class="token-model-row">'
       + '<span class="token-model-label" title="' + esc(label) + '"><span class="token-model-dot" style="background:' + tokenFamilyColor(item.key) + '"></span>' + esc(label) + '</span>'
+      + '<span class="token-model-bar"><span class="token-model-bar-fill" style="width:' + percentWidth(item.percent) + '%;background:' + tokenFamilyColor(item.key) + '"></span></span>'
       + '<span class="token-model-amount">' + esc(formatExtendedTokenCount(item.tokens, isZh)) + '</span>'
       + '<span class="token-model-pct">' + esc(item.percent || '—') + '</span>'
       + '</div>';
@@ -937,6 +1011,7 @@
     const modelName = model.id === 'unknown' ? t('unknownModel') : model.id;
     return '<div class="token-model-row is-model-detail">'
       + '<span class="token-model-label" title="' + esc(modelName) + '"><span class="token-model-dot" style="background:' + tokenFamilyColor(familyKey) + '"></span>' + esc(modelName) + '</span>'
+      + '<span class="token-model-bar"><span class="token-model-bar-fill" style="width:' + percentWidth(model.percent) + '%;background:' + tokenFamilyColor(familyKey) + '"></span></span>'
       + '<span class="token-model-amount">' + esc(formatExtendedTokenCount(model.tokens, isZh)) + '</span>'
       + '<span class="token-model-pct">' + esc(model.percent || '—') + '</span>'
       + '</div>';
@@ -956,7 +1031,7 @@
         + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'days30' ? 'is-active' : '') + '" data-range="days30">' + esc(t('days30')) + '</button>'
         + '</div>';
 
-      const barChartEmptySvg = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="13" width="3.5" height="8" rx="1.2"></rect><rect x="10.25" y="8" width="3.5" height="13" rx="1.2"></rect><rect x="16.5" y="3" width="3.5" height="18" rx="1.2"></rect></svg>';
+      const barChartEmptySvg = designIcon('tokenChart', 'section-icon');
 
       let tokenContent = '';
       if (tok.status === 'building') {
@@ -988,22 +1063,21 @@
             : '';
           const modelSelector = '<div class="token-model-selector-row">'
             + '<button type="button" class="quota-extension-model-button" aria-haspopup="listbox" aria-expanded="' + tokenModelMenuOpen + '">'
-            + esc(t('model')) + '：' + esc(selectedLabel)
+            + esc(selectedLabel)
             + '<span class="quota-extension-model-chevron" aria-hidden="true">⌄</span>'
             + '</button>' + modelMenu + '</div>';
 
           let itemRows = '';
           if (selectedModel === 'all') {
-            const summaryItems = rangeData.summaryItems || rawItems;
-            itemRows = '<div class="token-model-columns"><span>' + esc(t('model')) + '</span><span>Token</span><span>' + esc(t('shareOfTotal')) + '</span></div>'
-              + summaryItems.map(item => renderTokenFamilyRow(item, isZh)).join('');
+            itemRows = '<div class="token-model-columns"><span>' + esc(t('model')) + '</span><span>' + esc(isZh ? '占比' : 'Share') + '</span><span>Token</span><span>' + esc(t('shareOfTotal')) + '</span></div>'
+              + rawItems.map(item => renderTokenFamilyRow(item, isZh)).join('');
           } else if (selectedFamily?.models?.length) {
             itemRows = '<div class="token-family-summary">'
               + '<span><strong>' + esc(tokenFamilyLabel(selectedFamily, isZh)) + ' ' + esc(t('familySubtotal')) + '</strong> '
               + esc(formatExtendedTokenCount(selectedFamily.tokens, isZh)) + ' Token</span>'
               + '<span>' + esc(t('shareOfTotal')) + ' ' + esc(selectedFamily.percent) + '</span>'
               + '</div>'
-              + '<div class="token-model-columns"><span>' + esc(isZh ? '型号' : 'Model ID') + '</span><span>Token</span><span>' + esc(t('shareOfFamily')) + '</span></div>'
+              + '<div class="token-model-columns"><span>' + esc(isZh ? '型号' : 'Model ID') + '</span><span>' + esc(isZh ? '占比' : 'Share') + '</span><span>Token</span><span>' + esc(t('shareOfFamily')) + '</span></div>'
               + selectedFamily.models.map(model => renderTokenModelRow(model, selectedFamily.key, isZh)).join('');
           } else {
             itemRows = renderEmptyState(barChartEmptySvg, t('noModelUsage'));
@@ -1011,17 +1085,18 @@
 
           tokenContent = '<div class="quota-extension-token-table">'
             + '<div class="token-summary-col">'
-            + '<span class="token-summary-label">' + esc(t('total')) + '</span>'
-            + '<div class="token-summary-val"><span class="token-summary-number">' + esc(totalFormatted) + '</span><span class="token-summary-unit"> Token</span></div>'
+            + '<div class="token-donut" style="--donut-stops:' + tokenDonutStops(rangeData) + '">'
+            + '<div class="token-donut-center"><span class="token-summary-number">' + esc(totalFormatted) + '</span><span class="token-summary-unit">Token</span></div>'
+            + '</div>'
             + '</div>'
             + '<div class="token-models-col">' + modelSelector + itemRows + '</div>'
             + '</div>';
         }
       }
 
-      const chartSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#007AFF"><rect x="3" y="11" width="3.8" height="10" rx="1.2"></rect><rect x="10.1" y="6" width="3.8" height="15" rx="1.2"></rect><rect x="17.2" y="2" width="3.8" height="19" rx="1.2"></rect></svg>';
+      const chartSvg = designIcon('tokenChart', 'section-icon');
 
-      tokenSection = '<div class="card-section quota-extension-section">'
+      tokenSection = '<div class="card-section quota-extension-section" data-section="tokens">'
         + '<div class="quota-extension-header has-rows">'
         + '<div class="quota-extension-title-wrap">'
         + chartSvg
@@ -1060,9 +1135,7 @@
         + '</div>';
     }
 
-    const chevronSvg = '<svg class="chevron-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">'
-      + (googleCollapsed ? '<polyline points="6 9 12 15 18 9"></polyline>' : '<polyline points="18 15 12 9 6 15"></polyline>')
-      + '</svg>';
+    const chevronSvg = designIcon('chevronDown', 'chevron-icon' + (googleCollapsed ? '' : ' is-expanded'));
 
     const docEmptySvg = '<svg width="22" height="24" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M5 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5zm3 5a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1zm0 4a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1zm0 4a1 1 0 0 1 1-1h4a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1z"/></svg>';
 
@@ -1089,13 +1162,10 @@
           + '</div>';
     }
 
-    const sparkleSvg = '<svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="#1A73E8"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg>';
-
-    const eyeOpenSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
-    const eyeSlashSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
+    const sparkleSvg = designIcon('sparkle', 'section-icon');
 
     const maskButton = '<button type="button" class="account-mask-toggle-btn' + (settings.maskAccountNames ? ' is-active' : '') + '" aria-label="' + esc(t('toggleAccountMask')) + '" title="' + esc(t('toggleAccountMask')) + '">'
-      + (settings.maskAccountNames ? eyeSlashSvg : eyeOpenSvg)
+      + designIcon('eye')
       + '</button>';
 
     geminiSection = '<div class="card-section quota-extension-section">'
@@ -1146,7 +1216,10 @@
                 ? t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone') + ' ' + t('expiresSuffix')
                 : t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone')
               : t('noResetDetails');
-            return '<div class="credit-detail"><strong>' + esc(t('fullReset')) + '</strong><span>' + esc(expiry) + '</span></div>';
+            return '<div class="credit-detail">'
+              + designIcon('lightning', 'coupon-lightning')
+              + '<div class="coupon-copy"><strong>' + esc(t('fullReset')) + '</strong><span>' + esc(expiry) + '</span></div>'
+              + designIcon('couponWave', 'coupon-wave') + '</div>';
           }).join('')
           : renderEmptyState(ticketEmptySvg, t('noResetCoupons')));
 
@@ -1159,14 +1232,16 @@
 
     const primaryRow = showFiveHours
       ? '<div class="row">'
-        + '<span class="label">' + esc(t('fiveHours')) + '</span>'
+        + '<span class="usage-icon">' + designIcon('clock') + '</span>'
+        + '<span class="usage-label"><span class="label">' + esc(t('fiveHours')) + '</span><small>' + esc(isZh ? '5小时额度' : '5-hour limit') + '</small></span>'
         + '<span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span>'
         + '<span class="percent">' + esc(pPercent) + '</span>'
         + '<span class="value popover-primary-value"><span class="info-time">' + esc(pInfoTime) + '</span><span class="info-remain">' + esc(pInfoRemain) + '</span></span>'
         + '</div>'
       : '';
     const secondaryRow = '<div class="row">'
-      + '<span class="label">' + esc(t('sevenDays')) + '</span>'
+      + '<span class="usage-icon">' + designIcon('calendar') + '</span>'
+      + '<span class="usage-label"><span class="label">' + esc(t('sevenDays')) + '</span><small>' + esc(isZh ? '每周额度' : 'Weekly limit') + '</small></span>'
       + '<span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span>'
       + '<span class="percent">' + esc(sPercent) + '</span>'
       + '<span class="value popover-secondary-value"><span class="info-time">' + esc(sInfoTime) + '</span><span class="info-remain">' + esc(sInfoRemain) + '</span></span>'
@@ -1179,16 +1254,17 @@
         + '</div>'
       : '<div class="card-section usage-section"><div class="unavailable">' + esc(message) + '</div></div>';
 
-    const ticketSvg = '<svg class="credit-icon" width="18" height="15" viewBox="0 0 24 20" fill="#3B82F6"><path d="M22 6C20.9 6 20 5.1 20 4V3C20 1.9 19.1 1 18 1H6C4.9 1 4 1.9 4 3V4C4 5.1 3.1 6 2 6C0.9 6 0 6.9 0 8V12C0 13.1 0.9 14 2 14C3.1 14 4 14.9 4 16V17C4 18.1 4.9 19 6 19H18C19.1 19 20 18.1 20 17V16C20 14.9 20.9 14 22 14C23.1 14 24 13.1 24 12V8C24 6.9 23.1 6 22 6Z"/><path d="M12 4V16" stroke="white" stroke-width="2" stroke-dasharray="2 2"/></svg>';
+    const ticketSvg = designIcon('coupon', 'credit-icon');
 
-    const resetCountText = isVoucherLoading && usageState.resetCredits === null ? t('syncing') : ((usageState.resetCredits ?? '—') + ' ' + t('available'));
+    const resetCountText = isVoucherLoading && usageState.resetCredits === null
+      ? esc(t('syncing')) : '<strong class="credits-count">' + esc(usageState.resetCredits ?? '—') + '</strong> ' + esc(t('available'));
     const voucherBanner = '<div class="meta-row">'
       + '<span class="meta-actions">'
       + '<span class="credits-copy">'
       + ticketSvg
-      + '<span class="credits-text">' + esc(t('resetCredits') + '：' + resetCountText) + '</span>'
+      + '<span class="credits-text">' + esc(t('resetCredits')) + ' ' + resetCountText + '</span>'
       + '</span>'
-      + '<span class="balance">' + esc(t('balance') + '：' + usageState.creditBalance.displayValue) + '</span>'
+      + '<span class="balance">' + esc(t('balance') + '：' + usageState.creditBalance.displayValue) + ' ' + designIcon('info') + '</span>'
       + '</span>'
       + '</div>';
 
@@ -1322,13 +1398,20 @@
       '.unavailable{font-size:12.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:8px 0}',
     ].join('');
 
-    return '<style>' + css + '</style>'
-      + '<div class="popover-shell' + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
+    const settingsMenu = '<div class="quota-settings-menu' + (settingsMenuOpen ? ' is-open' : '') + '" role="group" aria-label="' + esc(t('settings')) + '">'
+      + '<button type="button" class="voucher-toggle-btn' + (settings.enableResetCredits ? ' is-active' : '') + '" aria-label="' + esc(t('toggleVouchers')) + '">' + esc(t('toggleVouchers')) + '</button>'
+      + '<button type="button" class="google-toggle-btn' + (settings.enableGoogleAiPro ? ' is-active' : '') + '" aria-label="' + esc(t('toggleGoogle')) + '">' + esc(t('toggleGoogle')) + '</button>'
+      + '<button type="button" class="stats-toggle-btn' + (settings.enableTokenUsage ? ' is-active' : '') + '" aria-label="' + esc(t('toggleStats')) + '">' + esc(t('toggleStats')) + '</button>'
+      + '</div>';
+    return '<style>' + css + (window.__codexUsageHeaderDesignCSS__ || '') + '</style>'
+      + '<div class="popover-shell quota-dashboard' + (dark ? ' is-dark' : '') + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
       + '<div class="popover-header">'
+      + '<div class="popover-brand">' + designIcon('logo', 'brand-logo')
       + '<div class="popover-title-group">'
       + '<div class="popover-title">' + esc(t('title')) + '</div>'
       + '<div class="popover-subtitle">' + esc(t('subtitle')) + '</div>'
       + errorNote
+      + '</div>'
       + '</div>'
       + '<div class="popover-actions">'
       + '<button class="language-toggle" aria-label="' + esc(t('locale')) + '">'
@@ -1336,20 +1419,26 @@
       + '<span class="lang-sep">/</span>'
       + '<span class="lang-opt' + (!isZh ? ' is-active' : '') + '" data-lang="en-US">EN</span>'
       + '</button> <!-- 中 / EN -->'
-      + '<button type="button" class="voucher-toggle-btn' + (settings.enableResetCredits ? ' is-active' : '') + '" aria-label="' + esc(t('toggleVouchers')) + '" title="' + esc(t('toggleVouchers')) + '"><svg width="14" height="14" viewBox="0 0 24 20" fill="currentColor"><path d="M22 6C20.9 6 20 5.1 20 4V3C20 1.9 19.1 1 18 1H6C4.9 1 4 1.9 4 3V4C4 5.1 3.1 6 2 6C0.9 6 0 6.9 0 8V12C0 13.1 0.9 14 2 14C3.1 14 4 14.9 4 16V17C4 18.1 4.9 19 6 19H18C19.1 19 20 18.1 20 17V16C20 14.9 20.9 14 22 14C23.1 14 24 13.1 24 12V8C24 6.9 23.1 6 22 6Z"/><path d="M12 4V16" stroke="white" stroke-width="2" stroke-dasharray="2 2"/></svg></button>'
-      + '<button type="button" class="google-toggle-btn' + (settings.enableGoogleAiPro ? ' is-active' : '') + '" aria-label="' + esc(t('toggleGoogle')) + '" title="' + esc(t('toggleGoogle')) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C12 2 12.5 8.5 15.5 11.5C18.5 14.5 22 15 22 15C22 15 18.5 15.5 15.5 18.5C12.5 21.5 12 22 12 22C12 22 11.5 21.5 8.5 18.5C5.5 15.5 2 15 2 15C2 15 5.5 14.5 8.5 11.5C11.5 8.5 12 2 12 2Z"/></svg></button>'
-      + '<button type="button" class="stats-toggle-btn' + (settings.enableTokenUsage ? ' is-active' : '') + '" aria-label="' + esc(t('toggleStats')) + '" title="' + esc(t('toggleStats')) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="11" width="3.8" height="10" rx="1.2"></rect><rect x="10.1" y="6" width="3.8" height="15" rx="1.2"></rect><rect x="17.2" y="2" width="3.8" height="19" rx="1.2"></rect></svg></button>'
-      + '<button class="card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + iconMarkup('refresh') + '</button>'
+      + '<button type="button" class="quota-icon-btn header-settings-btn" aria-label="' + esc(t('settings')) + '" aria-expanded="' + settingsMenuOpen + '">' + designIcon('settings') + '</button>'
+      + '<button type="button" class="quota-icon-btn header-export-btn" aria-label="' + esc(t('export')) + '">' + designIcon('export') + '</button>'
+      + '<button type="button" class="quota-icon-btn header-stats-btn" aria-label="' + esc(t('statsAction')) + '">' + designIcon('stats') + '</button>'
+      + '<button type="button" class="quota-icon-btn card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + designIcon('refresh') + '</button>'
+      + settingsMenu
       + '</div>'
       + '</div>'
       + usageContent
       + (settings.enableResetCredits ? voucherSection : '')
       + extensionMarkup
       + '</div>';
-  }  function renderPopover() {
+  }
+
+  function renderPopover() {
     const target = ensurePopover();
+    const previousScroll = target.querySelector('.popover-shell')?.scrollTop || 0;
     const dark = document.documentElement.classList.contains('dark') || window.matchMedia('(prefers-color-scheme: dark)').matches;
     target.innerHTML = popoverMarkup(dark);
+    const shell = target.querySelector('.popover-shell');
+    if (shell) shell.scrollTop = previousScroll;
   }
 
   function baseModeForWidth(width) {
@@ -1377,27 +1466,65 @@
   }
 
   function measureAvailableWidth(element) {
-    const actionGroup = element?.parentElement;
-    const newChat = element?.dataset?.placement === 'new-chat';
-    const chat = element?.dataset?.placement === 'chat';
+    if (!element) return 520;
+    const header = element.closest('header') || document.querySelector('header');
+    const headerRect = visibleRect(header);
+    const actionGroup = element.parentElement;
+    const newChat = element.dataset?.placement === 'new-chat';
+    const chat = element.dataset?.placement === 'chat';
+
     if (chat) {
       const referenceRect = visibleRect(element.nextElementSibling);
-      const toolbar = element.closest('header')?.querySelector('[data-app-shell-header-toolbar="true"]')
+      const toolbar = header?.querySelector('[data-app-shell-header-toolbar="true"]')
         || document.querySelector('[data-app-shell-header-toolbar="true"]');
       const toolbarRect = visibleRect(toolbar);
       const titleRegion = toolbar?.firstElementChild;
       const titleNeed = measureTitleNeed(titleRegion);
-      if (!referenceRect || !toolbarRect) return 0;
+      if (!referenceRect || !toolbarRect) return 520;
       return Math.max(0, referenceRect.left - toolbarRect.left - titleNeed - 12);
     }
-    const toolbar = newChat ? element?.closest('header') : actionGroup?.parentElement;
-    const toolbarRect = visibleRect(toolbar);
+
+    let toolbar = newChat ? header : actionGroup?.parentElement;
+    let toolbarRect = visibleRect(toolbar);
+
+    const hasCodexShellToolbar = Boolean(header?.querySelector('[data-app-shell-header-toolbar="true"]')
+      || document.querySelector('[data-app-shell-header-toolbar="true"]'));
+
+    // 核心修复：纯对话页面中（无 Codex 主工具栏），右侧按钮容器非常紧凑（仅约 160px）。
+    // 此时应回退到 header 容器进行真实可用空间计算，防止误判为 nano 模式。
+    if (!hasCodexShellToolbar && headerRect && headerRect.width >= 400) {
+      toolbar = header;
+      toolbarRect = headerRect;
+    }
+
     if (!toolbarRect || !actionGroup) return 520;
-    const titleRegion = newChat ? null : [...toolbar.children].find(child => child !== actionGroup) || null;
-    const titleNeed = newChat ? 160 : measureTitleNeed(titleRegion);
+
+    const isTopHeader = (toolbar === header);
+    let titleNeed = 160;
+    if (!newChat) {
+      if (isTopHeader && headerRect) {
+        let maxLeftRight = headerRect.left + 160;
+        const hostRect = visibleRect(element);
+        const hostLeft = hostRect ? hostRect.left : headerRect.right - 200;
+        const leftCandidates = [...header.querySelectorAll('button,a,[role="button"],h1,h2,.title')].filter(isVisible);
+        for (const el of leftCandidates) {
+          if (element.contains(el)) continue;
+          const r = visibleRect(el);
+          if (r && r.right < hostLeft && r.width < headerRect.width * 0.6) {
+            if (r.right > maxLeftRight) maxLeftRight = r.right;
+          }
+        }
+        titleNeed = Math.max(160, maxLeftRight - headerRect.left + 16);
+      } else {
+        const titleRegion = [...toolbar.children].find(child => child !== actionGroup) || null;
+        titleNeed = measureTitleNeed(titleRegion);
+      }
+    }
+
     const native = newChat
       ? (visibleRect(element.nextElementSibling)?.width || 70)
       : [...actionGroup.children].filter(child => child !== element).map(visibleRect).filter(Boolean).reduce((sum, rect) => sum + rect.width, 0);
+
     return Math.max(0, toolbarRect.width - titleNeed - native - 32);
   }
 
@@ -1825,6 +1952,12 @@
       renderPopover();
       positionPopover();
       popover?.querySelector('.quota-extension-model-button')?.focus();
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.key === 'Escape' && settingsMenuOpen) {
+      settingsMenuOpen = false;
+      renderPopover();
+      popover?.querySelector('.header-settings-btn')?.focus();
       event.preventDefault();
       event.stopPropagation();
     } else if (event.key === 'Escape') {

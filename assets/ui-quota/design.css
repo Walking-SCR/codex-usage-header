@@ -1,0 +1,262 @@
+/* 资源包面板设计：所有选择器限定在插件容器内，不影响 Codex 原生页面。 */
+.quota-dashboard{
+  --quota-blue:#1688FF;--quota-blue-soft:#F0F7FF;--quota-line:#D9E3EF;
+  --quota-text:#111827;--quota-muted:#626C80;--quota-track:#E5E9F0;
+  width:100%;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);
+  padding:16px 15px 28px;overflow:auto;overscroll-behavior:contain;
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+  color:var(--quota-text);background:linear-gradient(145deg,#DCEEFF 0%,#F7FBFF 48%,#EAF5FF 100%);
+  border:0;border-radius:24px;box-shadow:0 18px 56px rgba(32,85,141,.18);
+}
+.quota-dashboard.is-dark{
+  --quota-text:#F5F7FB;--quota-muted:#BBC6D7;--quota-line:#43546B;--quota-track:#394657;
+  --quota-blue-soft:#23364F;background:linear-gradient(145deg,#18283C,#1B2533 60%,#202F42);
+}
+.quota-dashboard .popover-header,.quota-dashboard .card-section{
+  background:rgba(255,255,255,.94);border:1px solid rgba(255,255,255,.72);
+  border-radius:24px;box-shadow:0 8px 24px rgba(70,126,180,.10);
+}
+.quota-dashboard.is-dark .popover-header,.quota-dashboard.is-dark .card-section{
+  background:#263446;border-color:#3A4B61;box-shadow:0 8px 24px rgba(0,0,0,.14);
+}
+.quota-dashboard .popover-header{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:0 0 16px;padding:20px 28px;min-height:124px}
+.quota-dashboard .popover-brand{display:flex;align-items:center;gap:22px;min-width:0}
+.quota-dashboard .brand-logo{width:64px;height:64px;flex:none;object-fit:contain}
+.quota-dashboard .popover-title-group{gap:6px;min-width:0}
+.quota-dashboard .popover-title{font-size:34px;font-weight:700;line-height:1.2;letter-spacing:.04em;color:var(--quota-text)}
+.quota-dashboard .popover-subtitle{font-size:19px;font-weight:450;line-height:1.35;color:var(--quota-muted);white-space:normal}
+.quota-dashboard .popover-actions{display:flex;align-items:center;gap:12px;flex:none;position:relative}
+.quota-dashboard .language-toggle,.quota-dashboard .quota-icon-btn{
+  display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;
+  background:rgba(255,255,255,.72);border:1px solid #D5E4F4;border-radius:14px;
+  color:var(--quota-blue);transition:background .15s ease,border-color .15s ease,transform .15s ease;
+}
+.quota-dashboard .language-toggle{width:auto;min-width:108px;padding:0 12px;gap:2px;font-size:18px}
+.quota-dashboard .quota-icon-btn:hover,.quota-dashboard .language-toggle:hover{background:#F1F8FF;border-color:#B9D7F7}
+.quota-dashboard .quota-icon-btn:active{transform:scale(.96)}
+.quota-dashboard .quota-icon-btn:focus-visible,.quota-dashboard button:focus-visible{outline:2px solid var(--quota-blue);outline-offset:2px}
+.quota-dashboard .quota-icon-btn img{width:24px;height:24px;display:block}
+.quota-dashboard .lang-opt{font-size:18px;padding:2px 3px;color:var(--quota-muted)}
+.quota-dashboard .lang-opt.is-active{color:var(--quota-blue)}
+.quota-dashboard .lang-sep{font-size:16px;color:#9EACC0}
+.quota-dashboard .quota-settings-menu{position:absolute;top:calc(100% + 8px);right:0;z-index:4;display:grid;gap:4px;min-width:228px;padding:10px;border:1px solid var(--quota-line);border-radius:14px;background:#fff;box-shadow:0 12px 30px rgba(37,70,107,.16)}
+.quota-dashboard.is-dark .quota-settings-menu{background:#263446}
+.quota-dashboard .quota-settings-menu:not(.is-open){display:none}
+.quota-dashboard .quota-settings-menu button{width:100%;min-height:36px;display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border:0;border-radius:8px;background:transparent;color:var(--quota-text);font-size:13px;text-align:left;cursor:pointer}
+.quota-dashboard .quota-settings-menu button:hover{background:var(--quota-blue-soft)}
+.quota-dashboard .quota-settings-menu button.is-active::after{content:'✓';color:var(--quota-blue);font-weight:700}
+.quota-dashboard .card-section{margin:0 0 16px;padding:20px 28px}
+.quota-dashboard .card-section-header{margin-bottom:16px}
+.quota-dashboard .card-section-title,.quota-dashboard .quota-extension-title{font-size:26px;font-weight:700;line-height:1.3;letter-spacing:0;color:var(--quota-text)}
+.quota-dashboard .usage-section .rows{gap:10px}
+.quota-dashboard .usage-section .row{display:grid;grid-template-columns:62px 100px minmax(100px,1fr) 68px 230px;gap:14px;align-items:center;min-height:90px;padding:12px 16px;border:0;border-radius:16px;background:rgba(247,250,253,.92)}
+.quota-dashboard.is-dark .usage-section .row,.quota-dashboard.is-dark .quota-extension-row{background:#2C3C50}
+.quota-dashboard .usage-icon{width:58px;height:58px;display:grid;place-items:center;background:#E0EFFF;border-radius:14px}
+.quota-dashboard .usage-icon img{width:31px;height:31px}
+.quota-dashboard .row .label{width:auto;font-size:22px;font-weight:700;color:var(--quota-text);text-align:left}
+.quota-dashboard .usage-label{display:flex;flex-direction:column;gap:3px;white-space:nowrap}
+.quota-dashboard .usage-label small{font-size:14px;font-weight:450;color:var(--quota-muted)}
+.quota-dashboard .row .track,.quota-dashboard .quota-extension-track{min-width:0;width:100%;height:16px;border-radius:999px;background:var(--quota-track)}
+.quota-dashboard .row .fill,.quota-dashboard .quota-extension-fill{height:100%;border-radius:999px}
+.quota-dashboard .row .percent{font-size:28px;font-weight:700;color:var(--quota-text);text-align:center}
+.quota-dashboard .row .value{display:flex;flex-direction:column;justify-content:center;min-width:0;min-height:74px;padding:10px 14px;border-radius:16px;background:var(--quota-blue-soft);font-size:17px;font-weight:600;text-align:left;color:var(--quota-text);white-space:normal}
+.quota-dashboard .row .info-remain{font-size:15px;font-weight:400;color:var(--quota-muted);margin-top:3px}
+.quota-dashboard .reset-voucher-section .meta-row{min-height:44px;margin-bottom:12px}
+.quota-dashboard .meta-actions{gap:12px;flex-wrap:wrap;white-space:normal}
+.quota-dashboard .credits-copy{display:flex;align-items:center;gap:12px;white-space:normal}
+.quota-dashboard .credit-icon{width:32px;height:32px}
+.quota-dashboard .credits-text{font-size:24px;font-weight:700;color:var(--quota-text)}
+.quota-dashboard .credits-count{color:var(--quota-blue)}
+.quota-dashboard .balance{font-size:16px;color:var(--quota-muted)}
+.quota-dashboard .balance img{width:18px;height:18px;vertical-align:-3px;margin-left:5px}
+.quota-dashboard .credit-details{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;overflow:visible}
+.quota-dashboard .credit-detail{position:relative;display:grid;grid-template-columns:36px minmax(0,1fr);align-items:center;gap:12px;min-height:132px;padding:18px;overflow:hidden;border:1px solid #CFE4FB;border-radius:17px;background:#F9FCFF}
+.quota-dashboard .credit-detail .coupon-lightning{width:36px;height:36px;position:relative;z-index:1;padding:7px;border-radius:9px;background:#E6F3FF}
+.quota-dashboard .credit-detail .coupon-copy{position:relative;z-index:1;min-width:0}
+.quota-dashboard .credit-detail strong{display:block;font-size:17px;color:var(--quota-text);white-space:nowrap}
+.quota-dashboard .credit-detail span{display:block;font-size:14px;margin-top:5px;color:var(--quota-muted);white-space:nowrap}
+.quota-dashboard .credit-detail .coupon-wave{position:absolute;inset:auto 0 0;width:100%;height:42%;opacity:.48;object-fit:cover;pointer-events:none}
+.quota-dashboard .quota-extension{display:flex;flex-direction:column;gap:16px}
+.quota-dashboard .quota-extension-section{margin:0;padding:20px 28px}
+.quota-dashboard .quota-extension-header{gap:16px;flex-wrap:wrap;margin-bottom:14px}
+.quota-dashboard .quota-extension-title-wrap{gap:12px}
+.quota-dashboard .quota-extension-title{font-size:24px}
+.quota-dashboard .section-icon{width:32px;height:32px;object-fit:contain;flex:none}
+.quota-dashboard .quota-extension-header-actions{min-width:0;gap:10px}
+.quota-dashboard .quota-extension-account-tabs{background:#F0F6FE;max-width:100%;overflow:auto;gap:3px;padding:4px}
+.quota-dashboard .quota-extension-account-tab{padding:7px 16px;font-size:14px;color:var(--quota-muted)}
+.quota-dashboard .quota-extension-account-tab.is-active,.quota-dashboard .quota-extension-range-tab.is-active{background:var(--quota-blue);color:white;box-shadow:0 4px 10px rgba(16,136,255,.20)}
+.quota-dashboard .quota-extension-rows{gap:4px}
+.quota-dashboard .quota-extension-row{grid-template-columns:minmax(160px,220px) minmax(80px,1fr) 80px minmax(130px,210px);gap:14px;min-height:58px;padding:8px 16px;background:rgba(247,250,253,.92);border:0;border-radius:15px}
+.quota-dashboard .quota-extension-label{font-size:17px;color:var(--quota-text)}
+.quota-dashboard .quota-extension-percent{font-size:19px;font-weight:700;color:var(--quota-text)}
+.quota-dashboard .quota-extension-value{font-size:16px;color:var(--quota-muted)}
+.quota-dashboard .quota-extension-toggle{width:32px;height:32px;flex:none;border:1px solid var(--quota-line);border-radius:50%;background:white;color:var(--quota-blue)}
+.quota-dashboard .chevron-icon{width:18px;height:18px;transition:transform .15s ease}
+.quota-dashboard .chevron-icon.is-expanded{transform:rotate(180deg)}
+.quota-dashboard .account-mask-toggle-btn{width:26px;height:26px;color:var(--quota-blue)}
+.quota-dashboard .account-mask-toggle-btn img{width:18px;height:18px}
+.quota-dashboard .quota-extension-range-tabs{background:#F0F6FE;padding:4px}
+.quota-dashboard .quota-extension-range-tab{font-size:15px;padding:7px 14px}
+.quota-dashboard .quota-extension-token-table{display:grid;grid-template-columns:minmax(220px,34%) minmax(0,1fr);gap:24px;align-items:center;margin-top:4px}
+.quota-dashboard .token-summary-col{min-width:0;padding:0;align-items:center}
+.quota-dashboard .token-donut{width:min(100%,280px);aspect-ratio:1;display:grid;place-items:center;padding:38px;border-radius:50%;background:var(--donut-stops,var(--quota-track));box-shadow:0 6px 20px rgba(16,136,255,.13)}
+.quota-dashboard .token-donut-center{width:100%;height:100%;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:white;text-align:center}
+.quota-dashboard.is-dark .token-donut-center{background:#263446}
+.quota-dashboard .token-summary-number{font-size:30px;color:var(--quota-text)}
+.quota-dashboard .token-summary-unit{font-size:15px;color:var(--quota-muted)}
+.quota-dashboard .token-models-col{min-width:0;max-height:386px;overflow-y:auto;gap:4px;padding-left:24px;border-left:1px solid #CFE4FB}
+.quota-dashboard .token-model-selector-row{position:relative;z-index:2;margin:0 0 6px}
+.quota-dashboard .quota-extension-model-button{font-size:15px;color:var(--quota-text);border-color:#CCE2F8;border-radius:12px;padding:6px 12px}
+.quota-dashboard .quota-extension-model-menu{width:210px}
+.quota-dashboard .token-model-columns,.quota-dashboard .token-model-row{grid-template-columns:minmax(80px,110px) minmax(80px,1fr) minmax(72px,110px) 58px;gap:10px;min-height:42px;align-items:center;font-size:14px}
+.quota-dashboard .token-model-label{font-size:15px;color:var(--quota-text)}
+.quota-dashboard .token-model-bar{height:17px;border-radius:999px;background:var(--quota-track);overflow:hidden}
+.quota-dashboard .token-model-bar-fill{height:100%;display:block;border-radius:999px}
+.quota-dashboard .token-model-amount{font-size:14px;color:var(--quota-text)}
+.quota-dashboard .token-model-pct{font-size:13px}
+.quota-dashboard .empty-state-box{border-color:var(--quota-line);background:rgba(247,250,253,.7)}
+.quota-dashboard.is-refreshing .row,.quota-dashboard.is-refreshing .credit-detail,.quota-dashboard.is-refreshing .quota-extension-row,.quota-dashboard.is-refreshing .token-donut{position:relative;overflow:hidden}
+.quota-dashboard.is-refreshing .row::after,.quota-dashboard.is-refreshing .credit-detail::after,.quota-dashboard.is-refreshing .quota-extension-row::after,.quota-dashboard.is-refreshing .token-donut::after{content:'';position:absolute;inset:0;background:linear-gradient(100deg,transparent 25%,rgba(140,188,235,.12) 48%,transparent 72%);animation:quota-skeleton 1.3s linear infinite;pointer-events:none}
+@keyframes quota-skeleton{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.quota-dashboard .quota-icon-btn.state-loading img{animation:quota-refresh-spin .72s linear infinite}
+@media(max-width:959px){
+  .quota-dashboard .popover-title{font-size:28px}
+  .quota-dashboard .popover-subtitle{font-size:15px}
+  .quota-dashboard .usage-section .row{grid-template-columns:46px 88px minmax(70px,1fr) 56px 165px;gap:10px}
+  .quota-dashboard .usage-icon{width:44px;height:44px}.quota-dashboard .usage-icon img{width:24px;height:24px}
+  .quota-dashboard .row .label{font-size:18px}.quota-dashboard .row .percent{font-size:22px}
+  .quota-dashboard .row .value{font-size:14px}.quota-dashboard .credit-details{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(260px,1fr);grid-template-columns:none;overflow-x:auto;padding-bottom:6px}
+  .quota-dashboard .quota-extension-row{grid-template-columns:minmax(120px,160px) minmax(70px,1fr) 52px 135px;gap:9px}
+  .quota-dashboard .quota-extension-label,.quota-dashboard .quota-extension-value{font-size:13px}
+}
+@media(max-width:719px){
+  .quota-dashboard{border-radius:17px;padding:10px;max-height:calc(100vh - 12px)}
+  .quota-dashboard .popover-header{display:flex;align-items:flex-start;flex-direction:column;padding:15px;gap:14px;min-height:0}
+  .quota-dashboard .brand-logo{width:44px;height:44px}.quota-dashboard .popover-brand{gap:12px}
+  .quota-dashboard .popover-title{font-size:24px}.quota-dashboard .popover-subtitle{font-size:12px}
+  .quota-dashboard .popover-actions{align-self:stretch;justify-content:flex-end;gap:7px}
+  .quota-dashboard .language-toggle,.quota-dashboard .quota-icon-btn{height:40px;min-width:40px;width:40px;border-radius:11px}
+  .quota-dashboard .language-toggle{width:auto;min-width:75px;font-size:13px;padding:0 7px}.quota-dashboard .lang-opt{font-size:13px}
+  .quota-dashboard .quota-icon-btn img{width:20px;height:20px}
+  .quota-dashboard .card-section{padding:15px;margin-bottom:10px;border-radius:17px}
+  .quota-dashboard .card-section-title,.quota-dashboard .quota-extension-title{font-size:20px}
+  .quota-dashboard .usage-section .row{display:grid;grid-template-columns:38px 1fr 56px;gap:7px;padding:11px;min-height:0}
+  .quota-dashboard .usage-icon{width:36px;height:36px}.quota-dashboard .usage-icon img{width:21px;height:21px}
+  .quota-dashboard .row .label{font-size:16px}.quota-dashboard .usage-label small{font-size:12px}
+  .quota-dashboard .row .percent{grid-column:3;grid-row:1;font-size:18px}
+  .quota-dashboard .row .track{grid-column:1/-1;grid-row:2;height:12px}
+  .quota-dashboard .row .value{grid-column:1/-1;grid-row:3;min-height:0;padding:7px 10px;font-size:13px}
+  .quota-dashboard .row .info-remain{font-size:12px}
+  .quota-dashboard .credits-text{font-size:17px}.quota-dashboard .balance{font-size:13px}
+  .quota-dashboard .credit-details{grid-auto-columns:minmax(250px,85%)}
+  .quota-dashboard .credit-detail strong{font-size:14px}.quota-dashboard .credit-detail span{font-size:12px}
+  .quota-dashboard .quota-extension{gap:10px}
+  .quota-dashboard .quota-extension-header{align-items:flex-start;gap:9px}
+  .quota-dashboard .quota-extension-header-actions,.quota-dashboard .quota-extension-account-tabs{width:100%}
+  .quota-dashboard .quota-extension-row{grid-template-columns:minmax(90px,1fr) 48px;gap:7px;padding:9px 10px}
+  .quota-dashboard .quota-extension-track{grid-column:1/-1;grid-row:2;height:12px}
+  .quota-dashboard .quota-extension-value{grid-column:1/-1;grid-row:3;text-align:left}
+  .quota-dashboard .quota-extension-percent{grid-column:2;grid-row:1;font-size:15px}
+  .quota-dashboard .quota-extension-token-table{grid-template-columns:1fr;gap:12px}
+  .quota-dashboard .token-donut{width:210px;padding:30px}
+  .quota-dashboard .token-models-col{padding-left:0;border-left:0;border-top:1px solid var(--quota-line);padding-top:12px}
+  .quota-dashboard .token-model-columns,.quota-dashboard .token-model-row{grid-template-columns:minmax(72px,110px) minmax(40px,1fr) 72px 46px;gap:5px;font-size:11px}
+  .quota-dashboard .token-model-label{font-size:12px}.quota-dashboard .token-model-amount{font-size:11px}.quota-dashboard .token-model-pct{font-size:11px}
+}
+@media(prefers-reduced-motion:reduce){.quota-dashboard *{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* 顶栏下拉层不是 1085px 仪表盘：沿用上一版 590px / 视口限高的实际使用尺寸。 */
+.popover-shell.quota-dashboard{
+  width:590px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);
+  padding:12px 14px 16px;border-radius:18px;
+}
+.quota-dashboard .popover-header{min-height:0;flex-direction:row;align-items:center;gap:8px;padding:12px 14px;margin-bottom:10px;border-radius:14px}
+.quota-dashboard .popover-brand{gap:10px}
+.quota-dashboard .brand-logo{width:36px;height:36px}
+.quota-dashboard .popover-title{font-size:18px;letter-spacing:0}
+.quota-dashboard .popover-subtitle{font-size:11px;line-height:1.3;white-space:normal}
+.quota-dashboard .popover-actions{align-self:center;gap:5px}
+.quota-dashboard .language-toggle,.quota-dashboard .quota-icon-btn{height:30px;min-width:30px;width:30px;padding:0;border-radius:8px}
+.quota-dashboard .language-toggle{width:auto;min-width:65px;padding:0 5px}
+.quota-dashboard .lang-opt{font-size:11px;padding:1px}.quota-dashboard .lang-sep{font-size:10px}
+.quota-dashboard .quota-icon-btn img{width:16px;height:16px}
+.quota-dashboard .card-section,.quota-dashboard .quota-extension-section{padding:12px 14px;margin:0 0 10px;border-radius:14px}
+.quota-dashboard .card-section-header{margin-bottom:8px}
+.quota-dashboard .card-section-title,.quota-dashboard .quota-extension-title{font-size:15px}
+.quota-dashboard .usage-section .rows{gap:6px}
+.quota-dashboard .usage-section .row{
+  display:grid;grid-template-columns:30px 55px minmax(72px,1fr) 42px minmax(125px,auto);
+  min-height:51px;padding:7px 9px;gap:7px;border-radius:10px;
+}
+.quota-dashboard .usage-icon{width:28px;height:28px;border-radius:8px}
+.quota-dashboard .usage-icon img{width:18px;height:18px}
+.quota-dashboard .row .label{font-size:12px}
+.quota-dashboard .usage-label small{font-size:9px}
+.quota-dashboard .row .track{height:11px}
+.quota-dashboard .row .percent{font-size:15px}
+.quota-dashboard .row .value{grid-column:auto;grid-row:auto;min-height:0;padding:5px 7px;font-size:11px;border-radius:9px;text-align:left}
+.quota-dashboard .row .info-remain{font-size:10px;margin-top:1px}
+.quota-dashboard .reset-voucher-section .meta-row{min-height:0;margin:0 0 9px}
+.quota-dashboard .credits-copy{gap:6px}.quota-dashboard .credit-icon{width:18px;height:18px}
+.quota-dashboard .credits-text{font-size:14px}.quota-dashboard .balance{font-size:11px}
+.quota-dashboard .balance img{width:13px;height:13px;vertical-align:-2px}
+.quota-dashboard .credit-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-flow:row;gap:6px;overflow:visible;padding:0}
+.quota-dashboard .credit-detail{min-height:70px;grid-template-columns:24px minmax(0,1fr);gap:7px;padding:9px;border-radius:10px}
+.quota-dashboard .credit-detail .coupon-lightning{width:24px;height:24px;padding:4px;border-radius:6px}
+.quota-dashboard .credit-detail strong{font-size:11px}
+.quota-dashboard .credit-detail span{font-size:10px;margin-top:3px}
+.quota-dashboard .quota-extension{gap:0}
+.quota-dashboard .quota-extension-header{gap:8px;margin-bottom:7px}
+.quota-dashboard .quota-extension-title-wrap{gap:6px}
+.quota-dashboard .section-icon{width:18px;height:18px}
+.quota-dashboard .quota-extension-account-tabs{width:auto;gap:2px;padding:2px}
+.quota-dashboard .quota-extension-account-tab{font-size:10px;padding:4px 8px}
+.quota-dashboard .quota-extension-toggle{width:22px;height:22px}
+.quota-dashboard .chevron-icon{width:13px;height:13px}
+.quota-dashboard .account-mask-toggle-btn{width:19px;height:19px}
+.quota-dashboard .account-mask-toggle-btn img{width:15px;height:15px}
+.quota-dashboard .quota-extension-rows{gap:3px}
+.quota-dashboard .quota-extension-row{
+  display:grid;grid-template-columns:minmax(105px,120px) minmax(65px,1fr) 40px minmax(78px,92px);
+  min-height:31px;gap:6px;padding:4px 8px;border-radius:8px;
+}
+.quota-dashboard .quota-extension-label{font-size:11px}
+.quota-dashboard .quota-extension-track{grid-column:auto;grid-row:auto;height:10px}
+.quota-dashboard .quota-extension-percent{grid-column:auto;grid-row:auto;font-size:11px}
+.quota-dashboard .quota-extension-value{grid-column:auto;grid-row:auto;font-size:10px;text-align:right}
+.quota-dashboard .quota-extension-range-tabs{width:auto;padding:2px}
+.quota-dashboard .quota-extension-range-tab{font-size:10px;padding:4px 8px}
+.quota-dashboard .quota-extension-token-table{grid-template-columns:135px minmax(0,1fr);gap:10px;margin-top:6px}
+.quota-dashboard .token-donut{width:124px;padding:18px}
+.quota-dashboard .token-summary-number{font-size:18px}
+.quota-dashboard .token-summary-unit{font-size:10px}
+.quota-dashboard .token-models-col{max-height:215px;padding:0 0 0 10px;border-top:0;border-left:1px solid var(--quota-line);gap:2px}
+.quota-dashboard .token-model-selector-row{margin:0 0 3px}
+.quota-dashboard .quota-extension-model-button{min-height:24px;font-size:11px;padding:3px 7px;border-radius:7px}
+.quota-dashboard .token-model-columns,.quota-dashboard .token-model-row{
+  grid-template-columns:minmax(54px,80px) minmax(22px,1fr) 58px 37px;
+  gap:4px;min-height:28px;font-size:10px;
+}
+.quota-dashboard .token-model-label{font-size:10px}
+.quota-dashboard .token-model-bar{height:9px}
+.quota-dashboard .token-model-amount,.quota-dashboard .token-model-pct{font-size:10px}
+@media(max-width:520px){
+  .popover-shell.quota-dashboard{padding:9px;max-height:calc(100vh - 40px)}
+  .quota-dashboard .popover-header{flex-wrap:wrap;gap:8px;padding:10px}
+  .quota-dashboard .popover-actions{width:100%;justify-content:flex-end}
+  .quota-dashboard .usage-section .row{grid-template-columns:28px 1fr 42px;gap:5px}
+  .quota-dashboard .row .percent{grid-column:3;grid-row:1}
+  .quota-dashboard .row .track{grid-column:1/-1;grid-row:2}
+  .quota-dashboard .row .value{grid-column:1/-1;grid-row:3}
+  .quota-dashboard .credit-details{grid-template-columns:1fr}
+  .quota-dashboard .quota-extension-header-actions{width:100%;min-width:0}
+  .quota-dashboard .quota-extension-account-tabs{max-width:calc(100% - 30px)}
+  .quota-dashboard .quota-extension-row{grid-template-columns:minmax(84px,1fr) 44px;gap:4px}
+  .quota-dashboard .quota-extension-percent{grid-column:2;grid-row:1}
+  .quota-dashboard .quota-extension-track{grid-column:1/-1;grid-row:2}
+  .quota-dashboard .quota-extension-value{grid-column:1/-1;grid-row:3;text-align:left}
+  .quota-dashboard .quota-extension-token-table{grid-template-columns:1fr;gap:9px}
+  .quota-dashboard .token-donut{width:118px}
+  .quota-dashboard .token-models-col{padding:8px 0 0;border-left:0;border-top:1px solid var(--quota-line)}
+}

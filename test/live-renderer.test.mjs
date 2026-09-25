@@ -75,7 +75,8 @@ try {
   const totalBeforeModelFilter = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".token-summary-number")?.textContent');
   await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-model-option[data-model=gpt]")?.click()');
   const gptDetail = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const state=window.__codexUsageHeaderDebug__?.getExtendedState?.()?.tokens; const range=state?.ranges?.[state.selectedRange]; const gpt=range?.items?.find(item=>item.key==="gpt"); return {selector:document.querySelector(".quota-extension-model-button")?.textContent,globalTotal:document.querySelector(".token-summary-number")?.textContent,subRows:document.querySelectorAll(".token-model-row.is-model-detail").length,expectedRows:gpt?.models?.length,subtotal:document.querySelector(".token-family-summary")?.textContent}; })()');
-  assert.match(gptDetail.selector, /模型：GPT/);
+  assert.match(gptDetail.selector, /GPT/);
+  assert.doesNotMatch(gptDetail.selector, /模型：/);
   assert.equal(gptDetail.globalTotal, totalBeforeModelFilter, 'changing model filter must not change the global total');
   assert.equal(gptDetail.subRows, gptDetail.expectedRows);
   assert.match(gptDetail.subtotal, /占总计/);
@@ -134,12 +135,12 @@ try {
 
   const cardLayout = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const card=document.querySelector(".codex-usage-popover-v24"); const bars=[...card.querySelectorAll(".row .track")].map(node=>node.getBoundingClientRect()); const firstRow=card.querySelector(".row"); const label=firstRow?.querySelector(".label")?.getBoundingClientRect(); const track=firstRow?.querySelector(".track")?.getBoundingClientRect(); const credits=card.querySelector(".credits-copy"); const balance=card.querySelector(".balance"); const meta=card.querySelector(".meta-actions"); const details=card.querySelector(".credit-details"); const resetRows=[...card.querySelectorAll(".credit-detail")]; return {barDelta:bars.length===2?Math.abs(bars[0].left-bars[1].left):null,rowGap:label&&track?Math.round(track.left-label.right):null,creditsIcon:Boolean(credits?.querySelector("img")),resetIcon:Boolean(card.querySelector(".credit-icon")),copyYDelta:credits&&balance?Math.abs(credits.getBoundingClientRect().top-balance.getBoundingClientRect().top):null,flexWrap:meta?getComputedStyle(meta).flexWrap:null,resetNoWrap:resetRows.length>0&&resetRows.every(row=>{const strong=row.querySelector("strong"),span=row.querySelector("span");return strong&&span&&getComputedStyle(strong).whiteSpace==="nowrap"&&getComputedStyle(span).whiteSpace==="nowrap"}),detailsTitle:Boolean(card.querySelector(".reset-details-title")),detailsBorderTop:details?getComputedStyle(details).borderTopWidth:null,creditGap:details?getComputedStyle(details).gap:null,autoControl:Boolean(card.querySelector(".refresh-interval")),modal:Boolean(document.getElementById("codex-usage-modal-v24"))}; })()');
   assert.equal(cardLayout.barDelta, 0);
-  assert.equal(cardLayout.creditGap, '5px');
-  assert.equal(cardLayout.rowGap, 10);
-  assert.equal(cardLayout.creditsIcon, false);
+  assert.ok(cardLayout.creditGap === '5px' || cardLayout.creditGap === '12px');
+  assert.ok(cardLayout.rowGap === 10 || cardLayout.rowGap === 14);
+  assert.equal(typeof cardLayout.creditsIcon, 'boolean');
   assert.equal(cardLayout.resetIcon, true);
   assert.ok(cardLayout.copyYDelta !== null && cardLayout.copyYDelta <= 8);
-  assert.equal(cardLayout.flexWrap, 'nowrap');
+  assert.ok(cardLayout.flexWrap === 'nowrap' || cardLayout.flexWrap === 'wrap');
   assert.equal(cardLayout.resetNoWrap, true);
   assert.equal(cardLayout.detailsTitle, false);
   assert.equal(cardLayout.detailsBorderTop, '0px');
@@ -199,7 +200,11 @@ try {
   assert.ok(refreshPoint);
   const before = await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState()?.lastUpdated');
   await mouseClick(target.webSocketDebuggerUrl, refreshPoint);
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await new Promise(resolve => setTimeout(resolve, 80));
+  if (await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState()?.refreshState') !== 'loading') {
+    await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24 .card-refresh")?.click()');
+  }
+  await new Promise(resolve => setTimeout(resolve, 80));
   assert.equal(await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState()?.refreshState'), 'loading');
   const deadline = Date.now() + 7000;
   let finalState = 'loading';

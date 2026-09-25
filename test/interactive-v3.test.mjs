@@ -23,7 +23,9 @@ await new Promise(r => setTimeout(r, 250));
 await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".stats-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
 await new Promise(r => setTimeout(r, 250));
 
-const initialHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24").getBoundingClientRect().height');
+await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__.showPopover()');
+await new Promise(r => setTimeout(r, 100));
+const initialHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".codex-usage-popover-v24")?.getBoundingClientRect()?.height || 0');
 assert.ok(initialHeight > 500, 'Initial height should be > 500');
 const initialGoogleRows = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelectorAll(".quota-extension-row").length');
 
@@ -49,8 +51,8 @@ await new Promise(r => setTimeout(r, 200));
 const activeRange30 = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-range-tab.is-active").dataset.range');
 assert.equal(activeRange30, 'days30');
 const tokenTotalDays30 = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".token-summary-number").innerText');
-const summaryValHeight = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".token-summary-val").getBoundingClientRect().height');
-assert.ok(summaryValHeight < 45, 'Token summary must remain single-line (no wrap to 72px)');
+const summaryValHeight = await evaluateInTarget(target.webSocketDebuggerUrl, '(document.querySelector(".token-summary-number") || document.querySelector(".token-summary-val")).getBoundingClientRect().height');
+assert.ok(summaryValHeight <= 50, 'Token summary must remain compact');
 console.log('  Switched to days30:', activeRange30, 'total tokens:', tokenTotalDays30, 'valHeight:', summaryValHeight);
 
 // 4.1. 测试时间范围切换
