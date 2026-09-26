@@ -21,6 +21,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { exportQuotaSnapshot, readPoolStatus } from './dynamic-priority-adapter.mjs';
 
 export const SCHEMA_VERSION = 1;
 export const TIMEZONE = 'Asia/Shanghai';
@@ -168,6 +169,7 @@ export class GeminiQuotaManager {
     this.clientSecret = options.clientSecret || creds.clientSecret;
     this.accountCaches = new Map();
     this.selectedAccount = null;
+    this.enableDynamicPriority = Boolean(options.enableDynamicPriority);
     this.cache = {
       status: 'idle',
       plan: 'Gemini AI Pro',
@@ -499,6 +501,12 @@ export class GeminiQuotaManager {
 
         accountResults.sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
+        if (this.enableDynamicPriority) {
+          try {
+            exportQuotaSnapshot(accountResults, { authDir: this.authDir });
+          } catch { /* 忽略导出快照异常 */ }
+        }
+
         for (const acc of accountResults) {
           this.accountCaches.set(acc.email, acc);
         }
@@ -575,6 +583,8 @@ export class GeminiQuotaManager {
     const isManualValid = manualAccount && isAccountAvailable(manualAccount);
     const active = (isManualValid ? manualAccount : accounts.find(isAccountAvailable)) || accounts[0];
 
+    const poolStatus = this.enableDynamicPriority ? readPoolStatus({ authDir: this.authDir }) : null;
+
     return {
       status: this.cache.status,
       plan: this.cache.plan,
@@ -584,6 +594,8 @@ export class GeminiQuotaManager {
       fetchedAt: this.cache.fetchedAt,
       stale: active?.stale || this.cache.stale,
       error: active?.error || this.cache.error,
+      enableDynamicPriority: this.enableDynamicPriority,
+      poolStatus,
     };
   }
 }
@@ -599,6 +611,8 @@ export class TokenRollupEngine {
       files: {},
       days: {},
       coverageStartedAt: null,
+      earliestRecordedDate: null,
+      historicalTotals: {},
     };
     this.status = 'idle';
     this.dirty = false;
@@ -628,6 +642,8 @@ export class TokenRollupEngine {
           files: raw.files || {},
           days: raw.days || {},
           coverageStartedAt: raw.coverageStartedAt || null,
+          earliestRecordedDate: raw.earliestRecordedDate || null,
+          historicalTotals: raw.historicalTotals || {},
         };
       }
     } catch {
@@ -652,12 +668,31 @@ export class TokenRollupEngine {
     } catch { /* 忽略磁盘写入错误 */ }
   }
 
+  getEarliestDate() {
+    if (this.data.earliestRecordedDate) return this.data.earliestRecordedDate;
+    const sortedDays = Object.keys(this.data.days || {}).sort();
+    if (sortedDays.length > 0) {
+      this.data.earliestRecordedDate = sortedDays[0];
+      this.dirty = true;
+      return sortedDays[0];
+    }
+    return null;
+  }
+
   pruneOldDays() {
+    this.getEarliestDate();
+    if (!this.data.historicalTotals) {
+      this.data.historicalTotals = {};
+    }
+
     const minTimestamp = Date.now() - (MAX_DAYS_RETENTION * 86400000);
     const minDate = toShanghaiDate(minTimestamp);
 
     for (const date of Object.keys(this.data.days)) {
       if (date < minDate) {
+        for (const [model, tokens] of Object.entries(this.data.days[date] || {})) {
+          this.data.historicalTotals[model] = (this.data.historicalTotals[model] || 0) + (Number(tokens) || 0);
+        }
         delete this.data.days[date];
         this.dirty = true;
       }
@@ -870,14 +905,18 @@ export class TokenRollupEngine {
     const dates7 = getDates(7);
     const dates30 = getDates(30);
 
-    const aggregates = { today: {}, days7: {}, days30: {} };
+    this.getEarliestDate();
+    const aggregates = {
+      today: {},
+      days7: {},
+      days30: {},
+      allTime: { ...(this.data.historicalTotals || {}) },
+    };
 
     for (const [date, models] of Object.entries(this.data.days)) {
       const inToday = date === todayDate;
       const in7 = dates7.has(date);
       const in30 = dates30.has(date);
-
-      if (!inToday && !in7 && !in30) continue;
 
       for (const [model, tokens] of Object.entries(models)) {
         const count = Number(tokens) || 0;
@@ -885,6 +924,7 @@ export class TokenRollupEngine {
         if (inToday) aggregates.today[model] = (aggregates.today[model] || 0) + count;
         if (in7) aggregates.days7[model] = (aggregates.days7[model] || 0) + count;
         if (in30) aggregates.days30[model] = (aggregates.days30[model] || 0) + count;
+        aggregates.allTime[model] = (aggregates.allTime[model] || 0) + count;
       }
     }
 
@@ -950,6 +990,7 @@ export class TokenRollupEngine {
       today: formatRange(aggregates.today),
       days7: formatRange(aggregates.days7),
       days30: formatRange(aggregates.days30),
+      allTime: formatRange(aggregates.allTime),
     };
   }
 
@@ -960,6 +1001,7 @@ export class TokenRollupEngine {
       selectedRange: 'today',
       ranges,
       coverageStartedAt: this.data.coverageStartedAt,
+      earliestRecordedDate: this.getEarliestDate(),
       error: null,
     };
   }
@@ -967,8 +1009,19 @@ export class TokenRollupEngine {
 
 export class ExtendedUsageCoordinator {
   constructor(options = {}) {
-    this.geminiManager = new GeminiQuotaManager(options.gemini || {});
+    this.settings = options.settings || {};
+    this.geminiManager = new GeminiQuotaManager({
+      ...(options.gemini || {}),
+      enableDynamicPriority: Boolean(this.settings.enableDynamicPriority),
+    });
     this.tokenEngine = new TokenRollupEngine(options.tokens || {});
+  }
+
+  updateSettings(settings = {}) {
+    this.settings = settings;
+    if (this.geminiManager) {
+      this.geminiManager.enableDynamicPriority = Boolean(settings.enableDynamicPriority);
+    }
   }
 
   init() {

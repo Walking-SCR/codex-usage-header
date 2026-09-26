@@ -50,7 +50,7 @@ try {
   const tokenUsageWasEnabled = await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState?.()?.settings?.enableTokenUsage');
   shouldRestoreTokenUsageOff = tokenUsageWasEnabled === false;
   if (shouldRestoreTokenUsageOff) {
-    await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".stats-toggle-btn")?.click()');
+    await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".header-module-toggle[data-module=tokens]")?.click()');
     const tokenReadyDeadline = Date.now() + 8000;
     let tokenReady = false;
     while (Date.now() < tokenReadyDeadline && !tokenReady) {
@@ -125,7 +125,7 @@ try {
   assert.match(hover.text, /用量额度|Usage quota/);
 
   // 确保重置券区域可见，以便检查卡片布局
-  await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".voucher-toggle-btn"); if (btn && !btn.classList.contains("is-active")) btn.click(); })()');
+  await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const btn = document.querySelector(".header-module-toggle[data-module=reset]"); if (btn && btn.getAttribute("aria-pressed") !== "true") btn.click(); })()');
   const voucherDeadline = Date.now() + 4000;
   while (Date.now() < voucherDeadline) {
     const hasDetails = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelectorAll(".credit-detail").length > 0');
@@ -232,7 +232,7 @@ try {
   console.log('✓ Live renderer responsive, popover, and card-refresh checks passed!');
 } finally {
   if (shouldRestoreTokenUsageOff) {
-    await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { if (window.__codexUsageHeaderDebug__?.getState?.()?.settings?.enableTokenUsage) document.querySelector(".stats-toggle-btn")?.click(); })()').catch(() => {});
+    await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { if (window.__codexUsageHeaderDebug__?.getState?.()?.settings?.enableTokenUsage) document.querySelector(".header-module-toggle[data-module=tokens]")?.click(); })()').catch(() => {});
     await new Promise(resolve => setTimeout(resolve, 800));
   }
   await cdpCommand(target.webSocketDebuggerUrl, 'Emulation.clearDeviceMetricsOverride').catch(() => {});

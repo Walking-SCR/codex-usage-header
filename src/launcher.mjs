@@ -22,9 +22,6 @@ const ASSET_DIR = join(__dirname, '..', 'assets');
 const DESIGN_DIR = join(ASSET_DIR, 'ui-quota');
 const DESIGN_ICONS = {
   logo: 'icons/common/app-logo.svg',
-  settings: 'icons/header/settings.svg',
-  export: 'icons/header/export.svg',
-  stats: 'icons/header/stats.svg',
   refresh: 'icons/header/refresh.svg',
   clock: 'icons/quota/clock.svg',
   calendar: 'icons/quota/calendar.svg',

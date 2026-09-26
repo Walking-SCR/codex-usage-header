@@ -25,6 +25,9 @@
   'monitor-startup.test.mjs',
   'reinject.test.mjs',
   'longrun.test.mjs',
+  'ui-design.test.mjs',
+  'dynamic-priority-toggle.test.mjs',
+  'token-design-v4.test.mjs',
 ];
 
 console.log('========================================================');

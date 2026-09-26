@@ -33,7 +33,7 @@
     modeHysteresis: 20,
     breakpoints: { full: 520, compact: 330, minimal: 190, nano: 140 },
     colors: {
-      green: '#32C76A',
+      green: '#34C759',
       yellow: '#FF9500',
       red: '#FF3B30',
       track: 'rgba(120,120,128,.16)',
@@ -87,7 +87,10 @@
   }
 
   let settings = safeSettings();
-  let googleCollapsed = readLocalSetting('codexQuotaHeader.googleCollapsed', 'false') === 'true';
+  let claudeGptCollapsed = readLocalSetting(
+    'codexQuotaHeader.claudeGptCollapsed',
+    readLocalSetting('codexQuotaHeader.googleCollapsed', 'false'),
+  ) === 'true';
   let usageState = {
     status: 'loading',
     primary: null,
@@ -121,16 +124,17 @@
         days30: null,
       },
       coverageStartedAt: null,
+        earliestRecordedDate: null,
       error: null,
     },
   };
   let lastManualRefresh = 0;
   let tokenModelMenuOpen = false;
-  let settingsMenuOpen = false;
   let currentMode = 'full';
   let host = null;
   let popover = null;
   let popoverState = 'closed';
+  let suppressHoverUntilLeave = false;
   let popoverShowTimer = null;
   let popoverHideTimer = null;
   let refreshState = 'idle';
@@ -167,6 +171,7 @@
       subtitle: '合理AI协作，人员负责思考，AI负责执行',
       usageTitle: '使用额度',
       details: 'Codex 用量额度详情',
+      toggleDetails: '展开或收起用量详情',
       fiveHours: '5小时',
       sevenDays: '7天',
       remaining: '剩余',
@@ -200,9 +205,6 @@
       timezone: 'GMT+8',
       expiresSuffix: '到期',
       locale: '切换语言',
-      settings: '显示设置',
-      export: '导出用量快照',
-      statsAction: '查看 Token 统计',
       settingsSaved: '刷新频率已保存',
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token使用量', // Token处理量
@@ -219,12 +221,16 @@
       toggleStats: 'Token使用量 (开启/关闭)',
       toggleVouchers: '额度重置券 (开启/关闭)',
       toggleAccountMask: '显示/隐藏账号名称',
+      toggleClaudeRows: '显示/隐藏 Claude 用量行',
       loadingVouchers: '正在加载重置券…',
       noGoogleAccounts: '未检测到本地 Google AI Pro 账号配置',
       noResetCoupons: '暂无可用重置券',
       today: '今天',
       days7: '近7日',
       days30: '近30日',
+      allTime: '累计',
+      singleModelDedicated: '独占承载',
+      familyUsage: '用量',
       total: '总计',
       other: '其他',
       noData: '暂无数据',
@@ -236,6 +242,7 @@
       subtitle: 'People think, AI executes—collaborate wisely',
       usageTitle: 'Usage quota',
       details: 'Codex usage quota details',
+      toggleDetails: 'Toggle usage details',
       fiveHours: '5 hours',
       sevenDays: '7 days',
       remaining: 'Remaining',
@@ -269,9 +276,6 @@
       timezone: 'GMT+8',
       expiresSuffix: '',
       locale: 'Switch language',
-      settings: 'Show settings',
-      export: 'Export usage snapshot',
-      statsAction: 'View Token statistics',
       settingsSaved: 'Refresh interval saved',
       geminiTitle: 'Google AI Pro', // Gemini AI Pro compatibility
       tokenUsage: 'Token usage',
@@ -288,12 +292,16 @@
       toggleStats: 'Token usage (Toggle on/off)',
       toggleVouchers: 'Reset credits (Toggle on/off)',
       toggleAccountMask: 'Toggle account name mask',
+      toggleClaudeRows: 'Show/hide Claude usage rows',
       loadingVouchers: 'Loading reset credits…',
       noGoogleAccounts: 'No local Google AI Pro accounts found',
       noResetCoupons: 'No available reset coupons',
       today: 'Today',
       days7: 'Last 7 days',
       days30: 'Last 30 days',
+      allTime: 'All time',
+      singleModelDedicated: 'Dedicated',
+      familyUsage: 'Usage',
       total: 'Total',
       other: 'Other',
       noData: 'No data',
@@ -540,34 +548,26 @@
     if (popover) renderPopover();
   }
 
+  function toggleUsageModule(module) {
+    const config = {
+      reset: { key: 'enableResetCredits', command: 'enableResetCredits' },
+      google: { key: 'enableGoogleAiPro', command: 'enableGoogleAiPro' },
+      tokens: { key: 'enableTokenUsage', command: 'enableTokenUsage' },
+    }[module];
+    if (!config) return;
+    settings[config.key] = !settings[config.key];
+    if (module === 'reset' && settings[config.key] && !usageState.resetCreditDetailsLoaded) vouchersLoading = true;
+    persistSettings();
+    emitCommand('settings', { [config.command]: settings[config.key] });
+    if (settings[config.key]) emitCommand('refresh', {}, false);
+    renderAll();
+    positionPopover();
+  }
+
   function switchLocale() {
     settings.locale = settings.locale === 'zh-CN' ? 'en-US' : 'zh-CN';
     persistSettings();
     renderAll();
-  }
-
-  function exportUsageSnapshot() {
-    // 只导出显示用量，不包含账号邮箱、OAuth 凭据或管理密钥。
-    const data = {
-      exportedAt: new Date().toISOString(),
-      codex: { planType: usageState.planType, primary: usageState.primary, secondary: usageState.secondary,
-        resetCredits: usageState.resetCredits, resetCreditDetails: usageState.resetCreditDetails,
-        creditBalance: usageState.creditBalance },
-      googleAiPro: {
-        accounts: (extendedUsageState.antigravity.accounts || []).map((account, index) => ({
-          label: 'Account ' + (index + 1),
-          rows: (account.rows || []).map(row => ({ label: row.label, remainingPercent: row.remainingPercent,
-            resetTime: row.resetTime, unavailable: row.unavailable })),
-        })),
-      },
-      tokens: extendedUsageState.tokens.ranges,
-    };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'codex-usage-' + new Date().toISOString().slice(0, 10) + '.json';
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function renderAll() {
@@ -665,6 +665,8 @@
 
   function updateExpanded(expanded) {
     host?.shadowRoot?.querySelector('.details-trigger')?.setAttribute('aria-expanded', String(expanded));
+    host?.shadowRoot?.querySelector('.capsule-toggle')?.setAttribute('aria-expanded', String(expanded));
+    host?.shadowRoot?.querySelector('.capsule-arrow')?.classList.toggle('is-expanded', expanded);
   }
 
   function ensurePopover() {
@@ -680,6 +682,20 @@
       if (popoverHideTimer) clearTimeout(popoverHideTimer);
     });
     popover.addEventListener('pointerleave', scheduleHidePopover);
+    popover.addEventListener('pointerover', event => {
+      const btn = event.target.closest('.quota-rebalance-pill-btn');
+      const tooltip = popover.querySelector('.quota-rebalance-tooltip');
+      if (btn && tooltip) {
+        tooltip.classList.add('is-active');
+      }
+    });
+    popover.addEventListener('pointerout', event => {
+      const btn = event.target.closest('.quota-rebalance-pill-btn');
+      const tooltip = popover.querySelector('.quota-rebalance-tooltip');
+      if (btn && tooltip && !btn.contains(event.relatedTarget)) {
+        tooltip.classList.remove('is-active');
+      }
+    });
     popover.addEventListener('click', event => {
       const path = event.composedPath();
       const refresh = path.find(node => node?.classList?.contains('card-refresh'));
@@ -688,31 +704,31 @@
       const modelButton = path.find(node => node?.classList?.contains('quota-extension-model-button'));
       const modelOption = path.find(node => node?.classList?.contains('quota-extension-model-option'));
       const accountTab = path.find(node => node?.classList?.contains('quota-extension-account-tab'));
+      const rebalanceBtn = path.find(node => node?.classList?.contains('quota-rebalance-pill-btn') || node?.closest?.('.quota-rebalance-pill-btn'));
       const googleToggle = path.find(node => node?.classList?.contains('quota-extension-toggle'));
-      const settingsButton = path.find(node => node?.classList?.contains('header-settings-btn'));
-      const exportButton = path.find(node => node?.classList?.contains('header-export-btn'));
-      const statsButton = path.find(node => node?.classList?.contains('header-stats-btn'));
+      const foldToggle = path.find(node => node?.classList?.contains('token-folded-toggle'));
+      if (foldToggle) {
+        extendedUsageState.tokens.otherModelsExpanded = !extendedUsageState.tokens.otherModelsExpanded;
+        renderPopover();
+        positionPopover();
+        return;
+      }
+      const moduleToggle = path.find(node => node?.classList?.contains('header-module-toggle'));
       if (tokenModelMenuOpen && !modelButton && !modelOption) {
         tokenModelMenuOpen = false;
         renderPopover();
         positionPopover();
       }
-      if (settingsButton) {
-        settingsMenuOpen = !settingsMenuOpen;
-        renderPopover();
-        positionPopover();
-      } else if (exportButton) {
-        exportUsageSnapshot();
-      } else if (statsButton) {
-        if (!settings.enableTokenUsage) {
-          settings.enableTokenUsage = true;
-          persistSettings();
-          emitCommand('settings', { enableTokenUsage: true });
-          emitCommand('refresh', {}, false);
-          renderPopover();
-        }
-        popover?.querySelector('.quota-extension-section[data-section="tokens"]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      } else if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
+      if (moduleToggle) toggleUsageModule(moduleToggle.dataset.module);
+      else if (rebalanceBtn) {
+        rebalanceBtn.classList.add('is-loading');
+        emitCommand('rebalance', {}, true);
+        setTimeout(() => {
+          rebalanceBtn.classList.remove('is-loading');
+          requestUsage({ manual: true });
+        }, 1200);
+      }
+      else if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
       else if (language) {
         const opt = path.find(node => node?.classList?.contains('lang-opt'));
         const targetLang = opt?.dataset?.lang;
@@ -724,54 +740,22 @@
           switchLocale();
         }
       }
-      else if (path.find(node => node?.classList?.contains('google-toggle-btn'))) {
-        settings.enableGoogleAiPro = !settings.enableGoogleAiPro;
-        persistSettings();
-        emitCommand('settings', { enableGoogleAiPro: settings.enableGoogleAiPro });
-        if (settings.enableGoogleAiPro) {
-          emitCommand('refresh', {}, false);
-        }
-        renderAll();
-        positionPopover();
-      }
-      else if (path.find(node => node?.classList?.contains('voucher-toggle-btn'))) {
-        settings.enableResetCredits = !settings.enableResetCredits;
-        persistSettings();
-        if (settings.enableResetCredits && !usageState.resetCreditDetailsLoaded) {
-          vouchersLoading = true;
-        }
-        emitCommand('settings', { enableResetCredits: settings.enableResetCredits });
-        if (settings.enableResetCredits) {
-          emitCommand('refresh', {}, false);
-        }
-        renderAll();
-        positionPopover();
-      }
       else if (path.find(node => node?.classList?.contains('account-mask-toggle-btn'))) {
         settings.maskAccountNames = !settings.maskAccountNames;
         persistSettings();
         renderPopover();
         positionPopover();
       }
-      else if (path.find(node => node?.classList?.contains('stats-toggle-btn'))) {
-        settings.enableTokenUsage = !settings.enableTokenUsage;
-        persistSettings();
-        emitCommand('settings', { enableTokenUsage: settings.enableTokenUsage });
-        if (settings.enableTokenUsage) {
-          emitCommand('refresh', {}, false);
-        }
-        renderAll();
-        positionPopover();
-      }
       else if (googleToggle) {
-        googleCollapsed = !googleCollapsed;
-        try { localStorage.setItem('codexQuotaHeader.googleCollapsed', String(googleCollapsed)); } catch { /* 忽略保存异常 */ }
+        claudeGptCollapsed = !claudeGptCollapsed;
+        try { localStorage.setItem('codexQuotaHeader.claudeGptCollapsed', String(claudeGptCollapsed)); } catch { /* 忽略保存异常 */ }
         renderPopover();
         positionPopover();
       } else if (rangeTab) {
         const range = rangeTab.dataset.range;
-        if (range && ['today', 'days7', 'days30'].includes(range)) {
+        if (range && ['today', 'days7', 'days30', 'allTime'].includes(range)) {
           extendedUsageState.tokens.selectedRange = range;
+          extendedUsageState.tokens.otherModelsExpanded = false;
           try { localStorage.setItem('codexQuotaHeader.selectedTokenRange', range); } catch { /* 忽略保存异常 */ }
           const selectedModel = extendedUsageState.tokens.selectedModel || 'all';
           if (selectedModel !== 'all'
@@ -791,6 +775,7 @@
         const model = modelOption.dataset.model;
         if (model) {
           persistTokenModel(model);
+        extendedUsageState.tokens.otherModelsExpanded = false;
           tokenModelMenuOpen = false;
           renderPopover();
           positionPopover();
@@ -812,19 +797,31 @@
 
   function positionPopover() {
     if (!host || !popover) return;
-    const trigger = host.shadowRoot?.querySelector('.details-trigger');
+    const trigger = host.shadowRoot?.querySelector('.capsule');
     const rect = trigger?.getBoundingClientRect();
-    if (!rect) return;
+    const shell = popover.querySelector('.popover-shell');
+    if (!rect || !shell) return;
     // 下拉层沿用旧版 590px 宽度，参考图只用于内容比例与视觉语言。
     const width = Math.min(590, Math.max(280, window.innerWidth - CONFIG.viewportInset * 2));
     popover.style.width = width + 'px';
     popover.style.maxWidth = 'calc(100vw - ' + (CONFIG.viewportInset * 2) + 'px)';
-    const height = popover.getBoundingClientRect().height || 260;
     const left = Math.max(CONFIG.viewportInset, Math.min(window.innerWidth - width - CONFIG.viewportInset, rect.right - width));
+    const inset = CONFIG.viewportInset;
     const below = rect.bottom + CONFIG.popoverGap;
-    const belowFits = below + height <= window.innerHeight - CONFIG.viewportInset;
-    const top = belowFits ? below : Math.max(CONFIG.viewportInset, rect.top - height - CONFIG.popoverGap);
-    popover.dataset.side = belowFits ? 'bottom' : 'top';
+    const maxHeight = Math.max(140, window.innerHeight - 40);
+    shell.style.maxHeight = maxHeight + 'px';
+    const naturalHeight = shell.scrollHeight;
+    const belowSpace = Math.max(0, window.innerHeight - below - inset);
+    const aboveSpace = Math.max(0, rect.top - CONFIG.popoverGap - inset);
+    const side = belowSpace >= Math.min(naturalHeight, 200) || belowSpace >= aboveSpace ? 'bottom' : 'top';
+    const availableSpace = side === 'bottom' ? belowSpace : aboveSpace;
+    const boundedHeight = Math.max(120, Math.min(maxHeight, availableSpace));
+    shell.style.maxHeight = boundedHeight + 'px';
+    const height = Math.min(shell.scrollHeight, boundedHeight);
+    const top = side === 'bottom'
+      ? Math.max(inset, Math.min(below, window.innerHeight - height - inset))
+      : Math.max(inset, rect.top - CONFIG.popoverGap - height);
+    popover.dataset.side = side;
     popover.style.left = left + 'px';
     popover.style.top = top + 'px';
   }
@@ -861,11 +858,20 @@
     popoverHideTimer = null;
     popoverState = 'closed';
     tokenModelMenuOpen = false;
-    settingsMenuOpen = false;
     popover?.classList.remove('is-visible');
     popover?.setAttribute('aria-hidden', 'true');
     updateExpanded(false);
     renderHost();
+  }
+
+  function togglePopoverFromCapsule() {
+    if (popoverState !== 'closed') {
+      suppressHoverUntilLeave = true;
+      hidePopover(true);
+    } else {
+      suppressHoverUntilLeave = false;
+      showPopover({ immediate: true, pinned: true });
+    }
   }
 
   function scheduleHidePopover() {
@@ -978,7 +984,30 @@
     return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0;
   }
 
+  function formatStartDate(dateStr, isZh) {
+    if (!dateStr) return '';
+    const parts = String(dateStr).split('-');
+    if (parts.length >= 3) {
+      const month = Number(parts[1]);
+      const day = Number(parts[2]);
+      return isZh ? (month + '月' + day + '日') : (month + '/' + day);
+    }
+    return dateStr;
+  }
+
+  function getModelProfile(modelId, isZh) {
+    const id = String(modelId || '').toLowerCase();
+    if (id.includes('claude')) return isZh ? '长上下文深度推理' : 'Deep Reasoning';
+    if (id.includes('luna')) return isZh ? '极速经济型推理' : 'Fast & Affordable';
+    if (id.includes('astra') || id.includes('ultra') || id.includes('o1') || id.includes('o3')) return isZh ? '复杂高智力任务' : 'Complex Reasoning';
+    if (id.includes('sol')) return isZh ? '主力编码推理' : 'Primary Coding';
+    if (id.includes('flash') || id.includes('gemini')) return isZh ? '多模态闪电响应' : 'Flash Multimodal';
+    if (id.includes('deepseek')) return isZh ? '代码与逻辑专长' : 'Code Specialist';
+    return isZh ? '通用算力模型' : 'General Model';
+  }
+
   function tokenDonutStops(rangeData) {
+    const selectedModel = extendedUsageState.tokens?.selectedModel || "all";
     const active = (rangeData?.items || []).filter(item => Number(item.tokens) > 0)
       .sort((a, b) => b.tokens - a.tokens);
     const top = active.slice(0, 5);
@@ -989,7 +1018,11 @@
     let from = 0;
     const stops = top.map(item => {
       const to = Math.min(100, from + Number(item.tokens) / total * 100);
-      const segment = tokenFamilyColor(item.key) + ' ' + from.toFixed(2) + '% ' + to.toFixed(2) + '%';
+      let color = tokenFamilyColor(item.key);
+      if (selectedModel && selectedModel !== 'all') {
+        color = item.key === selectedModel ? tokenFamilyColor(item.key) : '#E5E9F0';
+      }
+      const segment = color + ' ' + from.toFixed(2) + '% ' + to.toFixed(2) + '%';
       from = to;
       return segment;
     });
@@ -1002,8 +1035,8 @@
     return '<div class="token-model-row">'
       + '<span class="token-model-label" title="' + esc(label) + '"><span class="token-model-dot" style="background:' + tokenFamilyColor(item.key) + '"></span>' + esc(label) + '</span>'
       + '<span class="token-model-bar"><span class="token-model-bar-fill" style="width:' + percentWidth(item.percent) + '%;background:' + tokenFamilyColor(item.key) + '"></span></span>'
-      + '<span class="token-model-amount">' + esc(formatExtendedTokenCount(item.tokens, isZh)) + '</span>'
       + '<span class="token-model-pct">' + esc(item.percent || '—') + '</span>'
+      + '<span class="token-model-amount">' + esc(formatExtendedTokenCount(item.tokens, isZh)) + '</span>'
       + '</div>';
   }
 
@@ -1012,8 +1045,8 @@
     return '<div class="token-model-row is-model-detail">'
       + '<span class="token-model-label" title="' + esc(modelName) + '"><span class="token-model-dot" style="background:' + tokenFamilyColor(familyKey) + '"></span>' + esc(modelName) + '</span>'
       + '<span class="token-model-bar"><span class="token-model-bar-fill" style="width:' + percentWidth(model.percent) + '%;background:' + tokenFamilyColor(familyKey) + '"></span></span>'
-      + '<span class="token-model-amount">' + esc(formatExtendedTokenCount(model.tokens, isZh)) + '</span>'
       + '<span class="token-model-pct">' + esc(model.percent || '—') + '</span>'
+      + '<span class="token-model-amount">' + esc(formatExtendedTokenCount(model.tokens, isZh)) + '</span>'
       + '</div>';
   }
 
@@ -1023,12 +1056,14 @@
     const tok = extendedUsageState.tokens || {};
 
     let tokenSection = '';
+    let modelSelectorMarkup = '';
     if (settings.enableTokenUsage) {
       const selectedRange = tok.selectedRange || 'today';
       const rangeTabs = '<div class="quota-extension-range-tabs">'
         + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'today' ? 'is-active' : '') + '" data-range="today">' + esc(t('today')) + '</button>'
         + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'days7' ? 'is-active' : '') + '" data-range="days7">' + esc(t('days7')) + '</button>'
         + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'days30' ? 'is-active' : '') + '" data-range="days30">' + esc(t('days30')) + '</button>'
+        + '<button type="button" class="quota-extension-range-tab ' + (selectedRange === 'allTime' ? 'is-active' : '') + '" data-range="allTime">' + esc(t('allTime')) + '</button>'
         + '</div>';
 
       const barChartEmptySvg = designIcon('tokenChart', 'section-icon');
@@ -1061,35 +1096,115 @@
               }).join('')
               + '</div>'
             : '';
-          const modelSelector = '<div class="token-model-selector-row">'
+          modelSelectorMarkup = '<div class="token-model-selector-row">'
             + '<button type="button" class="quota-extension-model-button" aria-haspopup="listbox" aria-expanded="' + tokenModelMenuOpen + '">'
             + esc(selectedLabel)
-            + '<span class="quota-extension-model-chevron" aria-hidden="true">⌄</span>'
+            + designIcon('chevronDown', 'quota-extension-model-chevron-icon')
             + '</button>' + modelMenu + '</div>';
 
           let itemRows = '';
           if (selectedModel === 'all') {
-            itemRows = '<div class="token-model-columns"><span>' + esc(t('model')) + '</span><span>' + esc(isZh ? '占比' : 'Share') + '</span><span>Token</span><span>' + esc(t('shareOfTotal')) + '</span></div>'
-              + rawItems.map(item => renderTokenFamilyRow(item, isZh)).join('');
+            const summaryItems = rangeData.summaryItems || rawItems;
+            itemRows = summaryItems.map(item => renderTokenFamilyRow(item, isZh)).join('');
           } else if (selectedFamily?.models?.length) {
-            itemRows = '<div class="token-family-summary">'
-              + '<span><strong>' + esc(tokenFamilyLabel(selectedFamily, isZh)) + ' ' + esc(t('familySubtotal')) + '</strong> '
-              + esc(formatExtendedTokenCount(selectedFamily.tokens, isZh)) + ' Token</span>'
-              + '<span>' + esc(t('shareOfTotal')) + ' ' + esc(selectedFamily.percent) + '</span>'
-              + '</div>'
-              + '<div class="token-model-columns"><span>' + esc(isZh ? '型号' : 'Model ID') + '</span><span>' + esc(isZh ? '占比' : 'Share') + '</span><span>Token</span><span>' + esc(t('shareOfFamily')) + '</span></div>'
-              + selectedFamily.models.map(model => renderTokenModelRow(model, selectedFamily.key, isZh)).join('');
+            const models = selectedFamily.models;
+            const familyColor = tokenFamilyColor(selectedFamily.key);
+            if (models.length === 1) {
+              const m = models[0];
+              const profile = getModelProfile(m.id, isZh);
+              itemRows = '<div class="single-model-hero-card is-model-detail">'
+                + '<div class="hero-top-row">'
+                + '<div class="hero-name"><span class="hero-dot" style="background:' + familyColor + '"></span>' + esc(m.id) + '</div>'
+                + '<div class="hero-badge" style="background:' + familyColor + '18;color:' + familyColor + '">✦ ' + esc(t('singleModelDedicated')) + ' · 100%</div>'
+                + '</div>'
+                + '<div class="hero-progress-bar"><div class="hero-progress-fill" style="background:' + familyColor + '"></div></div>'
+                + '<div class="hero-stats-deck">'
+                + '<div class="hero-stat-box"><span class="hero-stat-label">' + esc(isZh ? '分类消耗' : 'Family Usage') + '</span><span class="hero-stat-val" style="color:' + familyColor + '">' + esc(formatExtendedTokenCount(m.tokens, isZh)) + ' Token</span></div>'
+                + '<div class="hero-stat-box"><span class="hero-stat-label">' + esc(t('shareOfTotal')) + '</span><span class="hero-stat-val">' + esc(selectedFamily.percent || '100%') + '</span></div>'
+                + '<div class="hero-stat-box"><span class="hero-stat-label">' + esc(isZh ? '承载属性' : 'Profile') + '</span><span class="hero-stat-val hero-stat-desc">' + esc(profile) + '</span></div>'
+                + '</div>'
+                + '</div>';
+            } else if (models.length === 2) {
+              itemRows = '<div class="dual-cards-stack is-model-detail">'
+                + models.map(m => {
+                  return '<div class="dual-subcard">'
+                    + '<div class="dual-subcard-header">'
+                    + '<div class="dual-subcard-title"><span class="hero-dot" style="background:' + familyColor + '"></span>' + esc(m.id) + '</div>'
+                    + '<div class="dual-subcard-num">' + esc(formatExtendedTokenCount(m.tokens, isZh)) + '</div>'
+                    + '</div>'
+                    + '<div class="dual-subcard-body">'
+                    + '<div class="dual-subcard-bar"><div style="height:100%;width:' + percentWidth(m.percent) + '%;background:' + familyColor + ';border-radius:3.5px;"></div></div>'
+                    + '<div class="dual-subcard-pct">' + esc(m.percent || '—') + '</div>'
+                    + '</div>'
+                    + '</div>';
+                }).join('')
+                + '</div>';
+            } else if (models.length > 4) {
+              const topModels = models.slice(0, 3);
+              const restModels = models.slice(3);
+              const restTokens = restModels.reduce((sum, item) => sum + (Number(item.tokens) || 0), 0);
+              const restPctVal = selectedFamily.tokens > 0 ? (restTokens / selectedFamily.tokens * 100).toFixed(1) : '0.0';
+              const restPercent = restPctVal + '%';
+              const isExpanded = Boolean(extendedUsageState.tokens.otherModelsExpanded);
+
+              if (!isExpanded) {
+                const otherLabel = isZh ? ('其他 (' + restModels.length + '个模型) ▾') : ('Other (' + restModels.length + ' models) ▾');
+                const otherRow = '<div class="token-model-row is-model-detail is-folded-other token-folded-toggle" role="button" tabindex="0" title="' + esc(isZh ? '点击展开长尾模型明细' : 'Click to expand detail') + '">'
+                  + '<span class="token-model-label" title="' + esc(otherLabel) + '"><span class="token-model-dot" style="background:#94a3b8"></span>' + esc(otherLabel) + '</span>'
+                  + '<span class="token-model-bar"><span class="token-model-bar-fill" style="width:' + percentWidth(restPercent) + '%;background:#94a3b8"></span></span>'
+                  + '<span class="token-model-pct">' + esc(restPercent) + '</span>'
+                  + '<span class="token-model-amount">' + esc(formatExtendedTokenCount(restTokens, isZh)) + '</span>'
+                  + '</div>';
+                itemRows = topModels.map(model => renderTokenModelRow(model, selectedFamily.key, isZh)).join('') + otherRow;
+              } else {
+                const topRows = topModels.map(model => renderTokenModelRow(model, selectedFamily.key, isZh)).join('');
+                const restRows = restModels.map(model => renderTokenModelRow(model, selectedFamily.key, isZh)).join('');
+                const collapseLabel = isZh ? ('收起长尾模型 (' + restModels.length + '个) ▴') : ('Collapse (' + restModels.length + ' models) ▴');
+                const collapseRow = '<div class="token-collapse-wrap">'
+                  + '<div class="token-collapse-btn token-folded-toggle" role="button" tabindex="0" title="' + esc(isZh ? '点击收起' : 'Click to collapse') + '">'
+                  + '<span class="token-model-dot" style="background:var(--quota-blue)"></span>'
+                  + '<span>' + esc(collapseLabel) + '</span>'
+                  + '</div>'
+                  + '</div>';
+                itemRows = topRows + restRows + collapseRow;
+              }
+            } else {
+              itemRows = selectedFamily.models.map(model => renderTokenModelRow(model, selectedFamily.key, isZh)).join('');
+            }
           } else {
             itemRows = renderEmptyState(barChartEmptySvg, t('noModelUsage'));
           }
 
+          let donutCenterHtml = '';
+          if (selectedModel === 'all') {
+            donutCenterHtml = '<span class="token-summary-number">' + esc(totalFormatted) + '</span><span class="token-summary-unit">Token</span>';
+          } else if (selectedFamily) {
+            donutCenterHtml = '<span class="token-summary-number">' + esc(formatExtendedTokenCount(selectedFamily.tokens, isZh)) + '</span>'
+              + '<span class="token-summary-unit">' + esc(tokenFamilyLabel(selectedFamily, isZh)) + ' ' + esc(t('familyUsage')) + '</span>'
+              + '<span class="token-donut-badge">' + esc(t('shareOfTotal')) + ' ' + esc(selectedFamily.percent) + '</span>';
+          } else {
+            donutCenterHtml = '<span class="token-summary-number">' + esc(totalFormatted) + '</span><span class="token-summary-unit">Token</span>';
+          }
+
+          const globalLabel = selectedRange === 'allTime'
+            ? (isZh ? '累计总计' : 'All-time')
+            : (isZh ? '全局总计' : 'Total');
+
+          const globalStatTopHtml = selectedModel !== 'all'
+            ? '<div class="token-global-stat">'
+              + '<span class="token-global-stat-label">' + esc(globalLabel) + '</span>'
+              + '<span class="token-global-stat-value">' + esc(totalFormatted) + '</span>'
+              + '</div>'
+            : '';
+
           tokenContent = '<div class="quota-extension-token-table">'
             + '<div class="token-summary-col">'
+            + globalStatTopHtml
             + '<div class="token-donut" style="--donut-stops:' + tokenDonutStops(rangeData) + '">'
-            + '<div class="token-donut-center"><span class="token-summary-number">' + esc(totalFormatted) + '</span><span class="token-summary-unit">Token</span></div>'
+            + '<div class="token-donut-center">' + donutCenterHtml + '</div>'
             + '</div>'
             + '</div>'
-            + '<div class="token-models-col">' + modelSelector + itemRows + '</div>'
+            + '<div class="token-models-col">' + itemRows + '</div>'
             + '</div>';
         }
       }
@@ -1102,7 +1217,7 @@
         + chartSvg
         + '<span class="quota-extension-title">' + esc(t('tokenUsage')) + '</span>'
         + '</div>'
-        + rangeTabs
+        + '<div class="quota-token-controls">' + rangeTabs + modelSelectorMarkup + '</div>'
         + '</div>'
         + tokenContent
         + '</div>';
@@ -1119,32 +1234,96 @@
     const isManualValid = manualAccount && isAccountAvailable(manualAccount);
     const activeAccount = (isManualValid ? manualAccount : (accounts.find(a => a.email === anti.selectedAccount) || accounts.find(isAccountAvailable))) || accounts[0] || anti;
     const activeRows = activeAccount.rows || anti.rows || [];
+    const enableDynamic = Boolean(anti.enableDynamicPriority && anti.poolStatus?.available);
+    const poolStatus = anti.poolStatus || {};
 
     let accountTabsHtml = '';
     if (accounts.length > 1) {
+      let fallbackIndex = 1;
       accountTabsHtml = '<div class="quota-extension-account-tabs">'
         + accounts.map((acc, idx) => {
-          const isActive = (acc.email === activeAccount.email);
+          const isSelected = (acc.email === activeAccount.email);
           const rawLabel = acc.label || (acc.email ? acc.email.split('@')[0] : '') || (isZh ? ('账号' + (idx + 1)) : ('Account ' + (idx + 1)));
-          const tabLabel = settings.maskAccountNames ? maskAccountName(rawLabel) : rawLabel;
-          const tabTitle = settings.maskAccountNames ? maskAccountName(acc.email) : acc.email;
-          return '<button type="button" class="quota-extension-account-tab ' + (isActive ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" title="' + esc(tabTitle) + '">'
-            + esc(tabLabel)
+          const displayName = settings.maskAccountNames ? maskAccountName(rawLabel) : rawLabel;
+          let tabLabel = esc(displayName);
+          let statusForAccess = '';
+          if (enableDynamic) {
+            const norm = (acc.email || '').toLowerCase();
+            const info = poolStatus.accountMap?.[norm];
+            const primaryEmail = String(poolStatus.primaryAccount || '').toLowerCase();
+            const isInUse = info?.status === 'COOLING'
+              ? false
+              : primaryEmail
+                ? norm === primaryEmail
+                : Boolean(info?.isPrimary || info?.rankLabel === '使用中');
+            if (isInUse) {
+              statusForAccess = isZh ? '使用中' : 'In Use';
+              tabLabel = '<span class="quota-tab-dot"></span>' + tabLabel;
+            } else if (info?.status === 'COOLING') {
+              statusForAccess = isZh ? '冷却中' : 'Cooling';
+              tabLabel += ' · ❄ ' + (isZh ? '冷却' : 'Cooling');
+            } else {
+              statusForAccess = isZh ? ('备选' + fallbackIndex) : ('Backup ' + fallbackIndex);
+              tabLabel += ' · ' + (isZh ? ('备' + fallbackIndex) : statusForAccess);
+              fallbackIndex++;
+            }
+          }
+          const accountDescription = displayName + (statusForAccess ? ' · ' + statusForAccess : '');
+          const rawTitle = (settings.maskAccountNames ? maskAccountName(acc.email) : acc.email) || displayName;
+          const tabTitle = rawTitle + (statusForAccess ? ' · ' + statusForAccess : '');
+          return '<button type="button" class="quota-extension-account-tab ' + (isSelected ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" aria-label="' + esc(accountDescription) + '" title="' + esc(tabTitle) + '">'
+            + tabLabel
             + '</button>';
         }).join('')
         + '</div>';
     }
 
-    const chevronSvg = designIcon('chevronDown', 'chevron-icon' + (googleCollapsed ? '' : ' is-expanded'));
+    let queueBackupIndex = 1;
+    const primaryEmail = String(poolStatus.primaryAccount || poolStatus.rankings?.[0]?.email || '').toLowerCase();
+    const queueLabels = (Array.isArray(poolStatus.rankings) ? poolStatus.rankings : []).map((rank, index) => {
+      const email = String(rank.email || '').trim().toLowerCase();
+      const account = accounts.find(item => String(item.email || '').trim().toLowerCase() === email);
+      const rawName = account?.label || (rank.email ? String(rank.email).split('@')[0] : '');
+      const name = settings.maskAccountNames ? maskAccountName(rawName) : rawName;
+      let state;
+      if (rank.status === 'COOLING') state = isZh ? '冷却中' : 'Cooling';
+      else if (email === primaryEmail || index === 0) state = isZh ? '使用中' : 'In Use';
+      else {
+        state = isZh ? ('备选' + queueBackupIndex) : ('Backup ' + queueBackupIndex);
+        queueBackupIndex++;
+      }
+      return name + ' (' + state + ')';
+    });
+    const queueText = queueLabels.join(' → ') || (isZh ? '暂无账号排序信息' : 'No account order available');
+    const rebalanceDescription = isZh
+      ? '重排。队列顺序：' + queueText + '。调度规则：优先临近重置 · Pro 高配额优先。'
+      : 'Reorder. Queue: ' + queueText + '. Rules: imminent reset first · Pro tier priority.';
+    const rebalanceButtonHtml = accounts.length > 1 && enableDynamic
+      ? '<div class="quota-rebalance-wrap">'
+        + '<button type="button" class="quota-rebalance-pill-btn" aria-label="' + esc(rebalanceDescription) + '" aria-describedby="quota-rebalance-tooltip">'
+        + '<span>' + esc(isZh ? '重排' : 'Reorder') + '</span>'
+        + '</button>'
+        + '</div>'
+      : '';
+    const rebalanceTooltipHtml = accounts.length > 1 && enableDynamic
+      ? '<div id="quota-rebalance-tooltip" class="quota-rebalance-tooltip" role="tooltip">'
+        + (isZh ? '排队顺序：' + esc(queueText) + '<br/>调度规则：优先临近重置 · Pro 高配额优先' : 'Queue: ' + esc(queueText) + '<br/>Rules: Imminent reset first · Pro tier priority')
+        + '</div>'
+      : '';
+
+    const chevronSvg = designIcon('chevronDown', 'chevron-icon' + (claudeGptCollapsed ? '' : ' is-expanded'));
+    const visibleProviderRows = claudeGptCollapsed
+      ? activeRows.filter(row => !/claude\s*&\s*gpt/i.test(row.label || ''))
+      : activeRows;
 
     const docEmptySvg = '<svg width="22" height="24" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M5 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5zm3 5a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1zm0 4a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1zm0 4a1 1 0 0 1 1-1h4a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1z"/></svg>';
 
     let geminiContent = '';
     if (!accounts.length || !activeRows || activeRows.length === 0) {
       geminiContent = renderEmptyState(docEmptySvg, t('noData'));
-    } else if (!googleCollapsed) {
+    } else if (visibleProviderRows.length) {
         geminiContent = '<div class="quota-extension-rows">'
-          + activeRows.map((row, idx) => {
+          + visibleProviderRows.map((row, idx) => {
             const color = getQuotaColor(row.remainingPercent);
             const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
               ? row.remainingPercent + '%'
@@ -1152,8 +1331,11 @@
             const countdownStr = formatDynamicCountdown(row, isZh);
             const resetInfo = row.unavailable ? esc(t('noData')) : esc(countdownStr);
 
-            return '<div class="quota-extension-row' + (idx === activeRows.length - 1 ? ' is-last' : '') + '">'
-              + '<span class="quota-extension-label">' + esc(row.label) + '</span>'
+            const providerLabel = /^Claude\s*&\s*GPT\b/i.test(row.label || '')
+              ? String(row.label).replace(/^Claude\s*&\s*GPT/i, 'Claude')
+              : row.label;
+            return '<div class="quota-extension-row' + (idx === visibleProviderRows.length - 1 ? ' is-last' : '') + '">'
+              + '<span class="quota-extension-label">' + esc(providerLabel) + '</span>'
               + '<span class="quota-extension-track"><span class="quota-extension-fill" style="width:' + (row.unavailable ? 0 : (row.remainingPercent || 0)) + '%;background:' + color + '"></span></span>'
               + '<span class="quota-extension-percent">' + esc(percentText) + '</span>'
               + '<span class="quota-extension-value">' + esc(resetInfo) + '</span>'
@@ -1167,19 +1349,20 @@
     const maskButton = '<button type="button" class="account-mask-toggle-btn' + (settings.maskAccountNames ? ' is-active' : '') + '" aria-label="' + esc(t('toggleAccountMask')) + '" title="' + esc(t('toggleAccountMask')) + '">'
       + designIcon('eye')
       + '</button>';
-
     geminiSection = '<div class="card-section quota-extension-section">'
-      + '<div class="quota-extension-header' + (!googleCollapsed && activeRows?.length ? ' has-rows' : '') + '">'
+      + '<div class="quota-extension-header' + (visibleProviderRows.length ? ' has-rows' : '') + '">'
       + '<div class="quota-extension-title-wrap">'
       + sparkleSvg
       + '<span class="quota-extension-title">' + esc(t('geminiTitle')) + '</span>'
       + maskButton
+      + rebalanceButtonHtml
       + '</div>'
       + '<div class="quota-extension-header-actions">'
       + accountTabsHtml
-      + '<button type="button" class="quota-extension-toggle" aria-label="Toggle Google AI Pro">' + chevronSvg + '</button>'
+      + '<button type="button" class="quota-extension-toggle" aria-label="' + esc(t('toggleClaudeRows')) + '" title="' + esc(t('toggleClaudeRows')) + '" aria-expanded="' + !claudeGptCollapsed + '">' + chevronSvg + '</button>'
       + '</div>'
       + '</div>'
+      + rebalanceTooltipHtml
       + geminiContent
       + '</div>';
 
@@ -1233,7 +1416,7 @@
     const primaryRow = showFiveHours
       ? '<div class="row">'
         + '<span class="usage-icon">' + designIcon('clock') + '</span>'
-        + '<span class="usage-label"><span class="label">' + esc(t('fiveHours')) + '</span><small>' + esc(isZh ? '5小时额度' : '5-hour limit') + '</small></span>'
+        + '<span class="usage-label"><span class="label">' + esc(t('fiveHours')) + '</span></span>'
         + '<span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span>'
         + '<span class="percent">' + esc(pPercent) + '</span>'
         + '<span class="value popover-primary-value"><span class="info-time">' + esc(pInfoTime) + '</span><span class="info-remain">' + esc(pInfoRemain) + '</span></span>'
@@ -1241,7 +1424,7 @@
       : '';
     const secondaryRow = '<div class="row">'
       + '<span class="usage-icon">' + designIcon('calendar') + '</span>'
-      + '<span class="usage-label"><span class="label">' + esc(t('sevenDays')) + '</span><small>' + esc(isZh ? '每周额度' : 'Weekly limit') + '</small></span>'
+      + '<span class="usage-label"><span class="label">' + esc(t('sevenDays')) + '</span></span>'
       + '<span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span>'
       + '<span class="percent">' + esc(sPercent) + '</span>'
       + '<span class="value popover-secondary-value"><span class="info-time">' + esc(sInfoTime) + '</span><span class="info-remain">' + esc(sInfoRemain) + '</span></span>'
@@ -1249,7 +1432,7 @@
 
     const usageContent = ready
       ? '<div class="card-section usage-section">'
-        + '<div class="card-section-header"><span class="card-section-title">' + esc(t('usageTitle')) + '</span></div>'
+        + '<div class="card-section-header"><span class="card-section-heading">' + designIcon('clock', 'section-icon') + '<span class="card-section-title">' + esc(t('usageTitle')) + '</span></span></div>'
         + '<div class="rows">' + primaryRow + secondaryRow + '</div>'
         + '</div>'
       : '<div class="card-section usage-section"><div class="unavailable">' + esc(message) + '</div></div>';
@@ -1264,7 +1447,7 @@
       + ticketSvg
       + '<span class="credits-text">' + esc(t('resetCredits')) + ' ' + resetCountText + '</span>'
       + '</span>'
-      + '<span class="balance">' + esc(t('balance') + '：' + usageState.creditBalance.displayValue) + ' ' + designIcon('info') + '</span>'
+      + '<span class="balance">' + esc(t('balance') + '：' + usageState.creditBalance.displayValue) + '</span>'
       + '</span>'
       + '</div>';
 
@@ -1289,12 +1472,12 @@
       '.lang-opt{color:' + (dark ? '#8E8E93' : '#8E8E93') + ';font-weight:500;padding:1px 3px;border-radius:4px;transition:all .15s ease}',
       '.lang-opt.is-active{color:#007AFF;font-weight:700}',
       '.lang-sep{color:' + (dark ? 'rgba(255,255,255,.2)' : 'rgba(0,0,0,.15)') + ';font-size:10.5px}',
-      '.card-refresh,.google-toggle-btn,.stats-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
-      '.google-toggle-btn:hover,.stats-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
-      '.google-toggle-btn.is-active,.stats-toggle-btn.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
-      '.card-refresh,.google-toggle-btn,.stats-toggle-btn,.voucher-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
-      '.google-toggle-btn:hover,.stats-toggle-btn:hover,.voucher-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
-      '.google-toggle-btn.is-active,.stats-toggle-btn.is-active,.voucher-toggle-btn.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
+      '.card-refresh,.header-module-toggle{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
+      '.header-module-toggle:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.header-module-toggle.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
+      '.card-refresh,.header-module-toggle{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
+      '.header-module-toggle:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.header-module-toggle.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
       '.account-mask-toggle-btn{width:20px;height:20px;padding:0;border:0;background:transparent;color:' + (dark ? '#8E8E93' : '#9CA3AF') + ';border-radius:5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s ease;margin-left:4px}',
       '.account-mask-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
       '.account-mask-toggle-btn.is-active{color:#007AFF}',
@@ -1352,6 +1535,15 @@
       '.quota-extension-account-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';border-radius:999px;padding:3px 12px;font-size:11.5px;font-weight:500;cursor:pointer;transition:all .15s ease;white-space:nowrap}',
       '.quota-extension-account-tab:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
       '.quota-extension-account-tab.is-active{background:#007AFF;color:#FFFFFF;box-shadow:0 1px 2px rgba(0,122,255,.25)}',
+      '.quota-tab-dot{width:5px;height:5px;background-color:#34C759;border-radius:50%;display:inline-block;margin-right:5px;vertical-align:middle}',
+      '.quota-rebalance-wrap{position:relative;display:inline-flex;align-items:center;margin-left:6px}',
+      '.quota-rebalance-pill-btn{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:12px;border:1px solid ' + (dark ? 'rgba(255,255,255,.15)' : 'rgba(0,0,0,.1)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : '#FFFFFF') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';font-size:11px;font-weight:500;cursor:pointer;transition:all .15s ease;box-shadow:0 1px 2px rgba(0,0,0,.04)}',
+      '.quota-rebalance-pill-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : '#F5F5F7') + ';border-color:' + (dark ? 'rgba(255,255,255,.25)' : 'rgba(0,0,0,.18)') + '}',
+      '.quota-rebalance-pill-btn:active{transform:scale(0.96)}',
+      '.quota-rebalance-pill-btn.is-loading svg{animation:quota-spin .8s linear infinite}',
+      '.quota-extension-header:hover + .quota-rebalance-tooltip,.quota-extension-header:focus-within + .quota-rebalance-tooltip,.quota-rebalance-tooltip:hover{display:block}',
+      '.quota-rebalance-tooltip{display:none;position:static;width:100%;max-width:100%;margin:0 0 7px;transform:none;opacity:1;visibility:visible;transition:none;background:' + (dark ? 'rgba(30,30,30,.96)' : 'rgba(255,255,255,.96)') + ';backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)') + ';border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.15);padding:8px 12px;font-size:11px;line-height:1.5;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';white-space:normal;overflow-wrap:anywhere;pointer-events:auto;z-index:auto}',
+      '@keyframes quota-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}',
       '.quota-extension-toggle{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:4px;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s ease}',
       '.quota-extension-toggle:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + ';background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + '}',
       '.quota-extension-rows{display:flex;flex-direction:column}',
@@ -1389,8 +1581,10 @@
       '.quota-extension-model-option:hover{background:' + (dark ? 'rgba(255,255,255,.08)' : '#F3F4F6') + '}',
       '.quota-extension-model-option.is-active{background:' + (dark ? 'rgba(10,132,255,.18)' : 'rgba(0,122,255,.10)') + ';color:#007AFF;font-weight:650}',
       '.quota-extension-model-option-amount{color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font-variant-numeric:tabular-nums}',
-      '.token-family-summary{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:2px 0 5px;font-size:12px;color:' + (dark ? '#A1A1A6' : '#6B7280') + '}',
-      '.token-family-summary strong{font-size:12.5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';font-weight:650}',
+      '.token-family-summary{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;margin-top:8px;padding:6px 10px;background:' + (dark ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.03)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.05)') + ';border-radius:8px;width:min(100%,140px);box-sizing:border-box;gap:2px}',
+      '.token-family-summary strong{font-size:11.5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';font-weight:650}',
+      '.token-family-summary-line1{font-size:11.5px;color:' + (dark ? '#E5E5EA' : '#1D1D1F') + ';white-space:nowrap}',
+      '.token-family-summary-line2{font-size:11px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';white-space:nowrap}',
       '.token-model-columns{display:grid;grid-template-columns:minmax(112px,1.3fr) minmax(70px,1fr) 48px;align-items:center;gap:10px;padding:0 0 3px;color:' + (dark ? '#8E8E93' : '#8A8A8E') + ';font-size:10.5px;text-align:right}',
       '.token-model-columns span:first-child{text-align:left}',
       '.token-model-row.is-model-detail .token-model-label{font-variant-numeric:tabular-nums}',
@@ -1398,11 +1592,9 @@
       '.unavailable{font-size:12.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:8px 0}',
     ].join('');
 
-    const settingsMenu = '<div class="quota-settings-menu' + (settingsMenuOpen ? ' is-open' : '') + '" role="group" aria-label="' + esc(t('settings')) + '">'
-      + '<button type="button" class="voucher-toggle-btn' + (settings.enableResetCredits ? ' is-active' : '') + '" aria-label="' + esc(t('toggleVouchers')) + '">' + esc(t('toggleVouchers')) + '</button>'
-      + '<button type="button" class="google-toggle-btn' + (settings.enableGoogleAiPro ? ' is-active' : '') + '" aria-label="' + esc(t('toggleGoogle')) + '">' + esc(t('toggleGoogle')) + '</button>'
-      + '<button type="button" class="stats-toggle-btn' + (settings.enableTokenUsage ? ' is-active' : '') + '" aria-label="' + esc(t('toggleStats')) + '">' + esc(t('toggleStats')) + '</button>'
-      + '</div>';
+    const moduleButton = (module, icon, label, active) =>
+      '<button type="button" class="quota-icon-btn header-module-toggle' + (active ? ' is-active' : '') + '" data-module="' + module + '" aria-label="' + esc(label) + '" title="' + esc(label) + '" aria-pressed="' + active + '">'
+      + designIcon(icon) + '</button>';
     return '<style>' + css + (window.__codexUsageHeaderDesignCSS__ || '') + '</style>'
       + '<div class="popover-shell quota-dashboard' + (dark ? ' is-dark' : '') + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
       + '<div class="popover-header">'
@@ -1419,11 +1611,10 @@
       + '<span class="lang-sep">/</span>'
       + '<span class="lang-opt' + (!isZh ? ' is-active' : '') + '" data-lang="en-US">EN</span>'
       + '</button> <!-- 中 / EN -->'
-      + '<button type="button" class="quota-icon-btn header-settings-btn" aria-label="' + esc(t('settings')) + '" aria-expanded="' + settingsMenuOpen + '">' + designIcon('settings') + '</button>'
-      + '<button type="button" class="quota-icon-btn header-export-btn" aria-label="' + esc(t('export')) + '">' + designIcon('export') + '</button>'
-      + '<button type="button" class="quota-icon-btn header-stats-btn" aria-label="' + esc(t('statsAction')) + '">' + designIcon('stats') + '</button>'
+      + moduleButton('reset', 'coupon', t('toggleVouchers'), settings.enableResetCredits)
+      + moduleButton('google', 'sparkle', t('toggleGoogle'), settings.enableGoogleAiPro)
+      + moduleButton('tokens', 'tokenChart', t('toggleStats'), settings.enableTokenUsage)
       + '<button type="button" class="quota-icon-btn card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + designIcon('refresh') + '</button>'
-      + settingsMenu
       + '</div>'
       + '</div>'
       + usageContent
@@ -1563,7 +1754,35 @@
     } else {
       content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining, 5 * 3600) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>';
     }
-    const style = '<style>*{box-sizing:border-box}:host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}:host([data-space-hidden="true"]){display:none!important}.capsule{height:34px;min-width:0;padding:0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}.details-trigger{height:32px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.details-trigger:focus-visible{outline:2px solid ' + (dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)') + ';outline-offset:2px}.label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}.track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:' + CONFIG.colors.track + '}.fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}.mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ' + CONFIG.colors.track + ' var(--remaining) 100%);transform:rotate(-90deg)}.value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}.primary-countdown{min-width:0}.divider{flex:none;width:1px;height:16px;margin:0;background:' + (dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)') + '}@keyframes quota-number-shimmer{0%{opacity:.35;filter:blur(0.4px)}50%{opacity:.85;filter:blur(0px)}100%{opacity:.35;filter:blur(0.4px)}}.capsule.is-refreshing .value{animation:quota-number-shimmer .75s ease-in-out infinite}</style><div class="capsule' + (refreshState === 'loading' ? ' is-refreshing' : '') + '"><button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button></div>';
+    const style = `<style>
+      *{box-sizing:border-box}
+      :host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}
+      :host([data-space-hidden="true"]){display:none!important}
+      .capsule{height:34px;min-width:0;padding:0 0 0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:0;color:${dark ? '#F5F5F7' : '#1D1D1F'};background:${dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)'};border:1px solid ${dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)'};box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}
+      .details-trigger{height:32px;padding:0 8px 0 0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+      .details-trigger:focus-visible,.capsule-toggle:focus-visible{outline:2px solid ${dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)'};outline-offset:-2px}
+      .capsule-separator{flex:none;width:1px;height:18px;margin-right:2px;background:${dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)'}}
+      .capsule-toggle{flex:none;width:30px;height:32px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:0 999px 999px 0;background:transparent;color:inherit;cursor:pointer;transition:background .15s ease}
+      .capsule-toggle:hover{background:${dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.035)'}}
+      .capsule-arrow{display:block;width:14px;height:14px;opacity:.72;transition:transform .16s ease}
+      .capsule-arrow.is-expanded{transform:rotate(180deg)}
+      .label{flex:none;font-size:12px;font-weight:700;letter-spacing:-.15px}
+      .track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:${CONFIG.colors.track}}
+      .fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}
+      .mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ${CONFIG.colors.track} var(--remaining) 100%);transform:rotate(-90deg)}
+      .value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}
+      .primary-countdown{min-width:0}
+      .divider{flex:none;width:1px;height:16px;margin:0;background:${dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)'}}
+      @keyframes quota-number-shimmer{0%{opacity:.35;filter:blur(.4px)}50%{opacity:.85;filter:blur(0)}100%{opacity:.35;filter:blur(.4px)}}
+      .capsule.is-refreshing .value{animation:quota-number-shimmer .75s ease-in-out infinite}
+    </style>`
+      + '<div class="capsule' + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
+      + '<button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button>'
+      + '<span class="capsule-separator" aria-hidden="true"></span>'
+      + '<button class="capsule-toggle" type="button" aria-label="' + esc(t('toggleDetails')) + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">'
+      + designIcon('chevronDown', 'capsule-arrow' + (detailsOpen ? ' is-expanded' : ''))
+      + '</button>'
+      + '</div>';
     host.shadowRoot.innerHTML = style;
   }
   function updateMode() {
@@ -1612,6 +1831,7 @@
     const openFromHost = event => {
       lastPointerX = event.clientX;
       lastPointerY = event.clientY;
+      if (suppressHoverUntilLeave) return;
       const path = event.composedPath();
       if (path.some(node => node?.classList?.contains('details-trigger')) || path.includes(host)) showPopover();
     };
@@ -1619,20 +1839,25 @@
     host.addEventListener('pointerenter', openFromHost, true);
     host.addEventListener('mouseover', openFromHost, true);
     host.addEventListener('mouseenter', openFromHost, true);
-    host.addEventListener('pointerleave', scheduleHidePopover, true);
-    host.addEventListener('mouseleave', scheduleHidePopover, true);
+    const onHostLeave = () => {
+      suppressHoverUntilLeave = false;
+      scheduleHidePopover();
+    };
+    host.addEventListener('pointerleave', onHostLeave, true);
+    host.addEventListener('mouseleave', onHostLeave, true);
     host.addEventListener('click', event => {
       const path = event.composedPath();
-      if (!path.some(node => node?.classList?.contains('details-trigger'))) return;
-      if (popoverState === 'pinned') hidePopover(true);
-      else showPopover({ immediate: true, pinned: true });
+      if (!path.some(node => node?.classList?.contains('details-trigger') || node?.classList?.contains('capsule-toggle'))) return;
+      togglePopoverFromCapsule();
     }, true);
     host.addEventListener('keydown', event => {
-      if (event.key === 'Escape') hidePopover(true);
-      if ((event.key === 'Enter' || event.key === ' ') && event.composedPath().some(node => node?.classList?.contains('details-trigger'))) {
+      if (event.key === 'Escape') {
+        suppressHoverUntilLeave = true;
+        hidePopover(true);
+      }
+      if ((event.key === 'Enter' || event.key === ' ') && event.composedPath().some(node => node?.classList?.contains('details-trigger') || node?.classList?.contains('capsule-toggle'))) {
         event.preventDefault();
-        if (popoverState === 'pinned') hidePopover(true);
-        else showPopover({ immediate: true, pinned: true });
+        togglePopoverFromCapsule();
       }
     }, true);
 
@@ -1651,7 +1876,7 @@
         if (popoverHideTimer) clearTimeout(popoverHideTimer);
         popoverHideTimer = null;
       }
-      if (inside) showPopover();
+      if (inside && !suppressHoverUntilLeave) showPopover();
       else if (!insidePopover && popoverState !== 'pinned') scheduleHidePopover();
     };
     on(document, 'pointermove', handleDocumentPointerMove, true);
@@ -1952,12 +2177,6 @@
       renderPopover();
       positionPopover();
       popover?.querySelector('.quota-extension-model-button')?.focus();
-      event.preventDefault();
-      event.stopPropagation();
-    } else if (event.key === 'Escape' && settingsMenuOpen) {
-      settingsMenuOpen = false;
-      renderPopover();
-      popover?.querySelector('.header-settings-btn')?.focus();
       event.preventDefault();
       event.stopPropagation();
     } else if (event.key === 'Escape') {

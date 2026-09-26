@@ -2,12 +2,13 @@
  * 单实例用量调度器。渲染器目标只提交命令，
  * 并通过本机 CDP Runtime.evaluate 接收脱敏快照。
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AppServerClient } from './account-client.mjs';
 import { ExtendedUsageCoordinator } from './extended-usage.mjs';
+import { triggerRebalance } from './dynamic-priority-adapter.mjs';
 import { evaluateInTarget, fetchCdpTargets, launchAndInject, selectUsageTargets } from './launcher.mjs';
 import { acquireMonitorLock, releaseMonitorLock, monitorCodeHash, MONITOR_LOCK_PATH } from './monitor-lock.mjs';
 
@@ -33,6 +34,8 @@ function acquireLock() {
 function releaseLock() { releaseMonitorLock(MONITOR_LOCK_PATH); }
 
 function readSettings() {
+  const skillPath = join(process.env.HOME || tmpdir(), '.codex/skills/codex-autoheal-bridge/SKILL.md');
+  const skillInstalled = existsSync(skillPath);
   try {
     const value = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'));
     return {
@@ -40,9 +43,18 @@ function readSettings() {
       enableGoogleAiPro: Boolean(value.enableGoogleAiPro),
       enableTokenUsage: Boolean(value.enableTokenUsage),
       enableResetCredits: Boolean(value.enableResetCredits),
+      enableDynamicPriority: skillInstalled && Boolean(value.enableDynamicPriority),
+      skillInstalled,
     };
   } catch {
-    return { refreshIntervalSeconds: 30, enableGoogleAiPro: false, enableTokenUsage: false, enableResetCredits: false };
+    return {
+      refreshIntervalSeconds: 30,
+      enableGoogleAiPro: false,
+      enableTokenUsage: false,
+      enableResetCredits: false,
+      enableDynamicPriority: false,
+      skillInstalled,
+    };
   }
 }
 
@@ -54,6 +66,7 @@ function persistSettings(settings) {
     enableGoogleAiPro: Boolean(settings.enableGoogleAiPro),
     enableTokenUsage: Boolean(settings.enableTokenUsage),
     enableResetCredits: Boolean(settings.enableResetCredits),
+    enableDynamicPriority: Boolean(settings.enableDynamicPriority),
   }, null, 2));
 }
 
@@ -103,7 +116,7 @@ async function run(cdpPort) {
   try {
     mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
     await launchAndInject(cdpPort, { launchIfNeeded: true });
-    const extendedCoordinator = new ExtendedUsageCoordinator();
+    const extendedCoordinator = new ExtendedUsageCoordinator({ settings });
     extendedCoordinator.init();
     let nextTokensAt = 0;
     let nextGeminiAt = 0;
@@ -174,9 +187,22 @@ async function run(cdpPort) {
             nextRefreshAt = 0;
           }
         }
+        if (typeof command.payload?.enableDynamicPriority === 'boolean') {
+          settings.enableDynamicPriority = settings.skillInstalled && command.payload.enableDynamicPriority;
+          extendedCoordinator.updateSettings(settings);
+          nextGeminiAt = 0;
+        }
         persistSettings(settings);
         rememberCommand(command.id);
         nextRefreshAt = 0;
+      }
+      const rebalanceCommands = commands.filter(command => command.kind === 'rebalance' && command.id && !seenCommands.has(command.id));
+      for (const command of rebalanceCommands) {
+        rememberCommand(command.id);
+        try {
+          await triggerRebalance();
+        } catch { /* 忽略重平衡异常 */ }
+        nextGeminiAt = 0;
       }
       const refreshCommands = commands.filter(command => command.kind === 'refresh' && command.id && !seenCommands.has(command.id));
       for (const command of refreshCommands) rememberCommand(command.id);
