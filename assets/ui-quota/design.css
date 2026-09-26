@@ -179,6 +179,7 @@
 .quota-dashboard .lang-opt{font-size:11px;padding:1px}.quota-dashboard .lang-sep{font-size:10px}
 .quota-dashboard .quota-icon-btn img{width:16px;height:16px}
 .quota-dashboard .quota-icon-btn.header-module-toggle img,.quota-dashboard .header-module-toggle img{width:24px;height:24px}
+.quota-dashboard .quota-icon-btn.failover-toggle-btn{width:32px;min-width:32px;height:32px;border-radius:8px}
 .quota-dashboard .header-module-toggle{opacity:.58}
 .quota-dashboard .header-module-toggle:hover{opacity:1}
 .quota-dashboard .header-module-toggle.is-active{opacity:1;background:#EAF5FF;border-color:#B9D7F7;color:var(--quota-blue)}

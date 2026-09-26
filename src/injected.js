@@ -1773,7 +1773,6 @@
       + '</div>'
       + '</div>'
       + '<div class="popover-actions">'
-      + renderFailoverToggleButton(dark, isZh)
       + '<button class="language-toggle" aria-label="' + esc(t('locale')) + '">'
       + '<span class="lang-opt' + (isZh ? ' is-active' : '') + '" data-lang="zh-CN">中</span>'
       + '<span class="lang-sep">/</span>'
@@ -1782,6 +1781,7 @@
       + moduleButton('reset', 'coupon', t('toggleVouchers'), settings.enableResetCredits)
       + moduleButton('google', 'sparkle', t('toggleGoogle'), settings.enableGoogleAiPro)
       + moduleButton('tokens', 'tokenChart', t('toggleStats'), settings.enableTokenUsage)
+      + renderFailoverToggleButton(dark, isZh)
       + '<button type="button" class="quota-icon-btn card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + designIcon('refresh') + '</button>'
       + '</div>'
       + '</div>'
@@ -2221,6 +2221,22 @@
       const point = validateActionAnchor(candidateButtons[0], true);
       if (point) return point;
     }
+
+    // Tier 6：首页/新聊天极简顶栏兜底（右侧无任何原生操作按钮时，直接挂载到顶栏 header 最右端实现右对齐）。
+    const header = doc.querySelector ? doc.querySelector("header") : null;
+    if (header) {
+      const headerRect = visibleRect(header);
+      if (headerRect && headerRect.height <= 80 && headerRect.width >= 400) {
+        let container = header;
+        const mainChild = [...(header.children || [])].find(c => {
+          const r = visibleRect(c);
+          return r && r.width >= headerRect.width * 0.6;
+        });
+        if (mainChild) container = mainChild;
+        return { header, toolbar: container, container, reference: null, placement: "new-chat" };
+      }
+    }
+
     return null;
   }
   // __MOUNT_POINT_LOGIC_END__
@@ -2231,13 +2247,16 @@
     if (!point) return false;
     if (existing?.isConnected) {
       host = existing;
-      if (existing.parentElement !== point.container || existing.nextElementSibling !== point.reference) {
-        point.container.insertBefore(existing, point.reference);
+      const needsMove = existing.parentElement !== point.container
+        || (point.reference ? existing.nextElementSibling !== point.reference : existing.parentElement.lastElementChild !== existing);
+      if (needsMove) {
+        if (point.reference) point.container.insertBefore(existing, point.reference);
+        else point.container.appendChild(existing);
       }
       existing.dataset.placement = point.placement;
       if (point.placement === 'new-chat') {
         existing.style.setProperty('margin-left', 'auto');
-        existing.style.setProperty('margin-right', '6px');
+        existing.style.setProperty('margin-right', '16px');
       } else {
         existing.style.removeProperty('margin-left');
         existing.style.setProperty('margin-right', '0px');
@@ -2253,13 +2272,14 @@
     host.dataset.placement = point.placement;
     if (point.placement === 'new-chat') {
       host.style.setProperty('margin-left', 'auto');
-      host.style.setProperty('margin-right', '6px');
+      host.style.setProperty('margin-right', '16px');
     } else {
       host.style.removeProperty('margin-left');
       host.style.setProperty('margin-right', '0px');
     }
     host.attachShadow({ mode: 'open' });
-    point.container.insertBefore(host, point.reference);
+    if (point.reference) point.container.insertBefore(host, point.reference);
+    else point.container.appendChild(host);
     bindHostEvents();
     renderHost();
     bindResizeObserver();
