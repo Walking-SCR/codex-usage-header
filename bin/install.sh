@@ -9,6 +9,16 @@ APP_DIR="${CODEX_USAGE_HEADER_APP_DIR:-$HOME/Applications/Codex Quota Header.app
 
 printf '%s\n' "=== Installing Codex Quota Header (macOS) ==="
 
+# 清理历史可能残留的旧 launcher worker 进程与临时锁文件
+old_workers=$(/bin/ps -ax -o pid= -o command= | /usr/bin/awk '($0 ~ "codex-usage-header-launcher" || $0 ~ "Codex Quota Header") && $0 ~ "--__worker" { print $1 }' || true)
+for pid in $old_workers; do
+  if [[ -n "$pid" ]]; then
+    /bin/kill -TERM "$pid" 2>/dev/null || true
+  fi
+done
+pkill -f "codex-usage-header-launcher" 2>/dev/null || true
+rm -rf "${TMPDIR:-/tmp}/codex-quota-header-launcher.lock" 2>/dev/null || true
+
 mkdir -p "$PLUGIN_DIR" "$(dirname "$LAUNCHER_BIN")"
 
 if [[ "$ROOT_DIR" != "$PLUGIN_DIR" ]]; then

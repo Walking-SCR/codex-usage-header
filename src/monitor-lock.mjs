@@ -40,7 +40,7 @@ export function isMonitorProcess(pid, installDir) {
     const command = process.platform === 'win32'
       ? execFileSync('powershell.exe', ['-NoProfile', '-Command',
         `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`], { encoding: 'utf8' })
-      : execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+      : execFileSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
     const executable = command.trim().match(/^(?:"([^"]+)"|(\S+))/)?.[1]
       || command.trim().match(/^(?:"[^"]+"|(\S+))/)?.[1];
     if (!/(?:^|[\\/])node(?:\.exe)?$/i.test(executable || '')) return false;

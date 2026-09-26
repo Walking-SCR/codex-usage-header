@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { exportQuotaSnapshot, readPoolStatus } from './dynamic-priority-adapter.mjs';
+import { getAccountHealth } from './account-health.mjs';
 
 export const SCHEMA_VERSION = 1;
 export const TIMEZONE = 'Asia/Shanghai';
@@ -146,7 +147,7 @@ export function matchGeminiStandardRow(groupName, bucketWindow) {
 }
 
 export function isAccountAvailable(acc) {
-  if (!acc || acc.disabled || acc.status === 'error' || acc.status === 'disabled') return false;
+  if (!acc || acc.disabled || acc.health?.state === 'unavailable' || acc.status === 'error' || acc.status === 'disabled') return false;
   const rows = acc.rows || [];
   if (!rows.length) return false;
   const gemini5h = rows.find(r => r.label === 'Gemini 5h');
@@ -169,6 +170,8 @@ export class GeminiQuotaManager {
     this.clientSecret = options.clientSecret || creds.clientSecret;
     this.accountCaches = new Map();
     this.selectedAccount = null;
+    this.routingHealthReadAt = null;
+    this.routingHealthByAccount = new Map();
     this.enableDynamicPriority = Boolean(options.enableDynamicPriority);
     this.cache = {
       status: 'idle',
@@ -211,6 +214,40 @@ export class GeminiQuotaManager {
     } catch {
       return [];
     }
+  }
+
+  /** 只读本地调用冷却记录；最多每五秒扫描一次，不探测模型、不写入凭证。 */
+  readRoutingHealth(accounts, now = Date.now()) {
+    if (this.routingHealthReadAt !== null && now - this.routingHealthReadAt < 5000) return this.routingHealthByAccount;
+    this.routingHealthReadAt = now;
+    const healthByAccount = new Map();
+    try {
+      for (const name of readdirSync(this.authDir).filter(name => name.endsWith('.cds'))) {
+        const path = join(this.authDir, name);
+        if (statSync(path).size > 2 * 1024 * 1024) continue;
+        let data;
+        try { data = JSON.parse(readFileSync(path, 'utf8')); } catch { continue; }
+        if (String(data.provider || '').toLowerCase() !== 'antigravity') continue;
+        for (const record of Array.isArray(data.records) ? data.records : []) {
+          if (!record || typeof record !== 'object') continue;
+          const authId = String(record.auth_id || data.auth_id || name.replace(/\.cds$/, '.json')).trim();
+          const filename = authId.split(/[\\/]/).pop();
+          const account = accounts.find(account => account.id === filename || String(account.email || '').toLowerCase() === authId.toLowerCase());
+          if (!account) continue;
+          const status = String(record.status || '').toUpperCase();
+          const health = ['ACTIVE', 'READY', 'OK'].includes(status)
+            ? getAccountHealth()
+            : getAccountHealth({}, record);
+          const retryAt = Date.parse(record.next_retry_after || record.quota?.next_recover_at || '');
+          if (health.code === 'cooling' && Number.isFinite(retryAt) && retryAt <= now) continue;
+          const previous = healthByAccount.get(account.email);
+          const severity = { healthy: 0, unknown: 1, cooling: 2, unavailable: 3 };
+          if (!previous || severity[health.state] >= severity[previous.state]) healthByAccount.set(account.email, health);
+        }
+      }
+    } catch { /* 状态文件可能在扫描过程中被 bridge 原子替换；下一轮再读 */ }
+    this.routingHealthByAccount = healthByAccount;
+    return healthByAccount;
   }
 
   async refreshAccessToken(authData, authFilePath) {
@@ -291,7 +328,8 @@ export class GeminiQuotaManager {
               reject(err);
             }
           } else {
-            reject(new Error(`Google API status ${res.statusCode}: ${data.slice(0, 100)}`));
+            const health = getAccountHealth({ error: data, httpStatus: res.statusCode });
+            reject(Object.assign(new Error(health.code), { code: health.code, httpStatus: res.statusCode }));
           }
         });
       });
@@ -334,7 +372,8 @@ export class GeminiQuotaManager {
               if (parsed.status_code === 200) {
                 resolve(typeof parsed.body === 'string' ? JSON.parse(parsed.body) : parsed.body);
               } else {
-                reject(new Error(`api-call upstream status ${parsed.status_code}`));
+                const health = getAccountHealth({ error: parsed.body, httpStatus: parsed.status_code });
+                reject(Object.assign(new Error(health.code), { code: health.code, httpStatus: parsed.status_code }));
               }
             } catch (err) {
               reject(err);
@@ -460,12 +499,18 @@ export class GeminiQuotaManager {
       this.accountCaches.set(email, res);
       return res;
     } catch (err) {
+      const health = getAccountHealth({ error: err.message || String(err), httpStatus: err.httpStatus });
       const prev = this.accountCaches.get(email);
       if (prev && prev.rows && prev.rows.some(r => !r.unavailable)) {
         return {
           ...prev,
+          priority,
+          disabled,
+          status: disabled ? 'disabled' : health.state === 'unavailable' ? 'error' : prev.status,
           stale: true,
-          error: String(err.message || err),
+          error: health.code,
+          errorCode: health.code,
+          httpStatus: err.httpStatus || null,
         };
       }
       return {
@@ -483,7 +528,9 @@ export class GeminiQuotaManager {
         ],
         fetchedAt: null,
         stale: false,
-        error: String(err.message || err),
+        error: health.code,
+        errorCode: health.code,
+        httpStatus: err.httpStatus || null,
       };
     }
   }
@@ -572,18 +619,19 @@ export class GeminiQuotaManager {
       };
     });
 
-    const accounts = (this.cache.accounts || []).map(acc => ({
-      ...acc,
-      rows: updateRows(acc.rows || []),
-    }));
+    const poolStatus = this.enableDynamicPriority ? readPoolStatus({ authDir: this.authDir }) : null;
+    const routingHealth = this.readRoutingHealth(this.cache.accounts || []);
+    const accounts = (this.cache.accounts || []).map(acc => {
+      const account = { ...acc, health: undefined, routingHealth: routingHealth.get(acc.email), rows: updateRows(acc.rows || []) };
+      const health = getAccountHealth(account, poolStatus?.accountMap?.[String(acc.email || '').toLowerCase()]);
+      return { ...account, health, error: acc.error ? health.code : null };
+    });
 
     accounts.sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
     const manualAccount = this.selectedAccount ? accounts.find(a => a.email === this.selectedAccount) : null;
     const isManualValid = manualAccount && isAccountAvailable(manualAccount);
     const active = (isManualValid ? manualAccount : accounts.find(isAccountAvailable)) || accounts[0];
-
-    const poolStatus = this.enableDynamicPriority ? readPoolStatus({ authDir: this.authDir }) : null;
 
     return {
       status: this.cache.status,
@@ -593,7 +641,7 @@ export class GeminiQuotaManager {
       rows: updateRows(active?.rows || this.cache.rows || []),
       fetchedAt: this.cache.fetchedAt,
       stale: active?.stale || this.cache.stale,
-      error: active?.error || this.cache.error,
+      error: active?.error || (this.cache.error ? getAccountHealth({ error: this.cache.error, status: 'error' }).code : null),
       enableDynamicPriority: this.enableDynamicPriority,
       poolStatus,
     };

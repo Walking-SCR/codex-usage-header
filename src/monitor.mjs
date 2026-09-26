@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { AppServerClient } from './account-client.mjs';
 import { ExtendedUsageCoordinator } from './extended-usage.mjs';
 import { triggerRebalance } from './dynamic-priority-adapter.mjs';
+import { readFailoverStatus, triggerToggleFailoverMode } from './failover-mode-adapter.mjs';
 import { evaluateInTarget, fetchCdpTargets, launchAndInject, selectUsageTargets } from './launcher.mjs';
 import { acquireMonitorLock, releaseMonitorLock, monitorCodeHash, MONITOR_LOCK_PATH } from './monitor-lock.mjs';
 
@@ -90,12 +91,24 @@ async function inspectTarget(target) {
 async function pushUsage(target, payload, metadata = {}) {
   const serialized = JSON.stringify(payload).replace(/</g, '\\u003c');
   const serializedMetadata = JSON.stringify(metadata).replace(/</g, '\\u003c');
-  await evaluateInTarget(target.webSocketDebuggerUrl, `window.__codexUsageHeaderSetUsage__?.(${serialized}, ${serializedMetadata})`);
+  await evaluateInTarget(target.webSocketDebuggerUrl, `window.__codexUsageHeaderAppServerDiagnostics__ = ${JSON.stringify(metadata.appServer || null)}; window.__codexUsageHeaderSetUsage__?.(${serialized}, ${serializedMetadata})`);
 }
 
-async function pushRefreshError(target, requestId, message) {
+function classifyUsageError(error) {
+  const message = String(error?.message || '');
+  const code = typeof error?.code === 'number' ? error.code : null;
+  if (code === -32600 || code === -32602) return { kind: 'protocol', code };
+  if (/auth|login|unauthorized|forbidden|\b401\b|\b403\b/i.test(message)) return { kind: 'auth', code };
+  if (/timeout/i.test(message)) return { kind: 'timeout', code };
+  if (/app_server|broken pipe|epipe|econnreset|closed|exited|not_running|spawn_failed/i.test(message)) return { kind: 'server', code };
+  return { kind: 'unknown', code };
+}
+
+async function pushUsageError(target, errorInfo, metadata = {}) {
+  const serialized = JSON.stringify(errorInfo).replace(/</g, '\\u003c');
+  const serializedMetadata = JSON.stringify(metadata).replace(/</g, '\\u003c');
   await evaluateInTarget(target.webSocketDebuggerUrl,
-    `window.__codexUsageHeaderSetRefreshError__?.(${JSON.stringify(requestId)}, ${JSON.stringify(message)})`);
+    `window.__codexUsageHeaderSetUsageError__?.(${serialized}, ${serializedMetadata})`);
 }
 
 async function pushExtendedUsage(target, payload) {
@@ -123,6 +136,7 @@ async function run(cdpPort) {
     let lastExpiredAutoRefresh = 0;
     let extendedRevision = 0;
     const deliveredExtendedRevision = new Map();
+    let lastAccountHealthSignature = '';
     let nextRefreshAt = 0;
     let payload = null;
     let revision = 0;
@@ -196,6 +210,17 @@ async function run(cdpPort) {
         rememberCommand(command.id);
         nextRefreshAt = 0;
       }
+      const failoverCommands = commands.filter(command => command.kind === 'toggleFailoverMode' && command.id && !seenCommands.has(command.id));
+      for (const command of failoverCommands) {
+        rememberCommand(command.id);
+        try {
+          await triggerToggleFailoverMode();
+        } catch { /* 忽略切换异常 */ }
+        nextGeminiAt = 0;
+        nextRefreshAt = 0;
+        extendedRevision += 1;
+      }
+
       const rebalanceCommands = commands.filter(command => command.kind === 'rebalance' && command.id && !seenCommands.has(command.id));
       for (const command of rebalanceCommands) {
         rememberCommand(command.id);
@@ -262,14 +287,17 @@ async function run(cdpPort) {
           nextRefreshAt = Date.now() + 5000;
         }
       }
-      if (refreshError && manualRequests.length > 0) {
-        await Promise.all(manualRequests.map(command => pushRefreshError(
-          command.target,
-          command.id,
-          '刷新失败，请确认 Codex 已登录',
-        ).catch(() => {})));
+      if (refreshError) {
+        const diagnostics = JSON.stringify(client.getDiagnostics()).replace(/</g, '\\u003c');
+        const errorInfo = classifyUsageError(refreshError);
+        // 不记录上游错误正文，避免错误数据中的凭据或验证链接落盘。
+        await Promise.all(valid.map(async item => {
+          const manual = manualRequests.find(command => command.target === item.target);
+          await evaluateInTarget(item.target.webSocketDebuggerUrl, `window.__codexUsageHeaderAppServerDiagnostics__ = ${diagnostics}`);
+          await pushUsageError(item.target, errorInfo, { requestId: manual?.id || null, fetchedAt: Date.now() });
+        }).map(promise => promise.catch(() => {})));
       }
-      if (payload) {
+      if (payload && !refreshError) {
         await Promise.all(valid.map(async item => {
           const key = item.target.id || item.target.webSocketDebuggerUrl;
           if (!refreshed && deliveredRevision.get(key) === revision) return;
@@ -278,12 +306,22 @@ async function run(cdpPort) {
             requestId: manual?.id || null,
             fetchedAt: Date.now(),
             revision,
+            appServer: client.getDiagnostics(),
           });
           deliveredRevision.set(key, revision);
         }).map(promise => promise.catch(() => {})));
       }
 
       const extendedSnapshot = extendedCoordinator.getSnapshot();
+      extendedSnapshot.failover = readFailoverStatus();
+      const accountHealthSignature = JSON.stringify([
+        extendedSnapshot.antigravity.poolStatus?.primaryAccount || null,
+        (extendedSnapshot.antigravity.accounts || []).map(account => [account.id, account.health?.code || 'ok']),
+      ]);
+      if (accountHealthSignature !== lastAccountHealthSignature) {
+        lastAccountHealthSignature = accountHealthSignature;
+        extendedRevision += 1;
+      }
       await Promise.all(valid.map(async item => {
         const key = item.target.id || item.target.webSocketDebuggerUrl;
         if (deliveredExtendedRevision.get(key) === extendedRevision) return;

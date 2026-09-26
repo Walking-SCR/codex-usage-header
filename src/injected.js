@@ -48,6 +48,7 @@
   window.__codexUsageHeaderTeardown__?.();
   const ICONS = window.__codexUsageHeaderIcons__ || {};
   const DESIGN_ICONS = window.__codexUsageHeaderDesignIcons__ || {};
+  const getAccountHealth = window.__codexUsageHeaderAccountHealth__ || (account => account.health || { state: 'healthy', code: 'ok', zh: '', en: '' });
   const designIcon = (name, className = '') => DESIGN_ICONS[name]
     ? '<img class="' + className + '" src="' + DESIGN_ICONS[name] + '" alt="" aria-hidden="true">'
     : '';
@@ -127,7 +128,16 @@
         earliestRecordedDate: null,
       error: null,
     },
+    failover: {
+      available: false,
+      mode: 'openai',
+      lifecycle_state: 'OPENAI_ACTIVE',
+      external_model: null,
+      resets_at: null,
+      resets_at_iso: null,
+    },
   };
+  let failoverSwitching = false;
   let lastManualRefresh = 0;
   let tokenModelMenuOpen = false;
   let currentMode = 'full';
@@ -188,6 +198,11 @@
       waiting: '等待首次更新',
       syncing: '正在同步额度…',
       unavailable: '暂时无法读取额度，请确认 Codex 已登录',
+      usageErrorTimeout: 'Codex 额度读取超时，稍后将自动重试',
+      usageErrorAuth: '无法读取 Codex 额度，请确认账号已登录',
+      usageErrorProtocol: 'Codex 额度接口版本不兼容，兼容模式仍读取失败',
+      usageErrorServer: 'Codex App Server 暂时不可用，正在自动重连',
+      usageErrorUnknown: 'Codex 额度读取失败，稍后将自动重试',
       refresh: '刷新额度',
       refreshing: '正在刷新额度',
       refreshFailed: '更新失败，当前显示上次数据',
@@ -259,6 +274,11 @@
       waiting: 'Waiting for first update',
       syncing: 'Syncing quota…',
       unavailable: 'Quota unavailable. Confirm Codex is signed in.',
+      usageErrorTimeout: 'Codex quota request timed out. It will retry automatically.',
+      usageErrorAuth: 'Codex quota unavailable. Confirm the account is signed in.',
+      usageErrorProtocol: 'Codex quota protocol mismatch. Compatibility fallback also failed.',
+      usageErrorServer: 'Codex App Server is temporarily unavailable. Reconnecting automatically.',
+      usageErrorUnknown: 'Codex quota request failed. It will retry automatically.',
       refresh: 'Refresh quota',
       refreshing: 'Refreshing quota',
       refreshFailed: 'Refresh failed, showing previous data',
@@ -540,6 +560,39 @@
     return true;
   }
 
+  function applyUsageError(errorInfo = {}, metadata = {}) {
+    const kind = typeof errorInfo === 'string' ? errorInfo : errorInfo?.kind;
+    const errorKey = ({
+      timeout: 'usageErrorTimeout',
+      auth: 'usageErrorAuth',
+      protocol: 'usageErrorProtocol',
+      server: 'usageErrorServer',
+      unknown: 'usageErrorUnknown',
+    })[kind] || 'usageErrorUnknown';
+    const message = t(errorKey);
+
+    if (usageState.status === 'ready') {
+      // 已有有效快照：保留旧数值，只提示当前刷新失败，避免闪空。
+      usageState = { ...usageState, error: message };
+    } else {
+      // 首次加载失败：必须结束 loading，不能永久显示“正在同步”。
+      usageState = {
+        ...usageState,
+        status: 'error',
+        error: message,
+        lastUpdated: Number(metadata.fetchedAt) || Date.now(),
+      };
+      vouchersLoading = false;
+    }
+
+    renderAll();
+
+    if (refreshState === 'loading' && metadata.requestId === refreshRequestId) {
+      settleRefresh('error', message);
+    }
+    return true;
+  }
+
   function saveInterval(value) {
     const seconds = Number(value) === 60 ? 60 : 30;
     settings.refreshIntervalSeconds = seconds;
@@ -634,7 +687,7 @@
     if (settings.enableGoogleAiPro && anti?.accounts?.length) {
       const accounts = anti.accounts;
       const manualAccount = anti.userSelectedAccount ? accounts.find(a => a.email === anti.userSelectedAccount) : null;
-      const isManualValid = manualAccount && isAccountAvailable(manualAccount);
+      const isManualValid = Boolean(manualAccount);
       const activeAccount = (isManualValid ? manualAccount : (accounts.find(a => a.email === anti.selectedAccount) || accounts.find(isAccountAvailable))) || accounts[0] || anti;
       const rows = activeAccount.rows || [];
 
@@ -709,6 +762,15 @@
       const foldToggle = path.find(node => node?.classList?.contains('token-folded-toggle'));
       if (foldToggle) {
         extendedUsageState.tokens.otherModelsExpanded = !extendedUsageState.tokens.otherModelsExpanded;
+        renderPopover();
+        positionPopover();
+        return;
+      }
+      const failoverBtn = path.find(node => node?.classList?.contains('failover-toggle-btn') || node?.closest?.('.failover-toggle-btn'));
+      if (failoverBtn) {
+        if (failoverSwitching) return;
+        failoverSwitching = true;
+        emitCommand('toggleFailoverMode', {});
         renderPopover();
         positionPopover();
         return;
@@ -829,6 +891,8 @@
   function showPopover({ immediate = false, pinned = false } = {}) {
     if (popoverShowTimer) clearTimeout(popoverShowTimer);
     if (popoverHideTimer) clearTimeout(popoverHideTimer);
+    // 已点击固定展开时，后续悬停不能把它降级为移出即关闭的状态。
+    if (!pinned && popoverState === 'pinned') return;
     const open = () => {
       const target = ensurePopover();
       popoverState = pinned ? 'pinned' : 'hover';
@@ -1050,6 +1114,66 @@
       + '</div>';
   }
 
+  function renderFailoverToggleButton(dark, isZh) {
+    const failover = extendedUsageState.failover || {};
+    const mode = failover.mode || 'openai';
+    const isExternal = mode === 'external';
+    const p = usageState.primary;
+    const pRemain = p?.remainingPercent;
+    const pUsed = p?.usedPercent;
+    const pExhausted = (pRemain === 0 || pUsed >= 100);
+    const pCountdown = formatDuration(p?.secondsRemaining, 5 * 3600);
+
+    let modeLabel = isZh ? '当前模式：官方原生' : 'Current: Native OpenAI';
+    let desc = '';
+    let action = '';
+
+    if (failoverSwitching) {
+      modeLabel = isZh ? '正在切换模式' : 'Switching Mode';
+      desc = isZh ? '正在切换模型路由并平滑重启服务，请稍候…' : 'Switching model routing & reloading service…';
+      action = isZh ? '命令执行中…' : 'Executing command…';
+    } else if (isExternal) {
+      modeLabel = isZh ? '当前模式：自定义模型' : 'Current: External Model';
+      if (!pExhausted && pRemain > 0) {
+        desc = isZh ? '官方额度已重置满格！' : 'OpenAI quota has fully reset!';
+        action = isZh ? '👉 点击切回「官方原生模式」，用回官方 GPT' : '👉 Click to switch back to Native OpenAI mode';
+      } else {
+        desc = isZh
+          ? ('当前免鉴权使用第三方模型。官方额度还需 ' + pCountdown + ' 重置')
+          : ('Using third-party models. OpenAI quota resets in ' + pCountdown);
+        action = isZh ? '点击可强制切回官方原生模式' : 'Click to force switch back to Native OpenAI mode';
+      }
+    } else {
+      modeLabel = isZh ? '当前模式：官方原生' : 'Current: Native OpenAI';
+      if (pExhausted) {
+        desc = isZh
+          ? ('官方用量已耗尽（将在 ' + pCountdown + ' 后重置）')
+          : ('5-hour quota exhausted (resets in ' + pCountdown + ')');
+        action = isZh
+          ? '👉 点击切换至「自定义模型模式」，继续可用 Gemini / Claude'
+          : '👉 Click to switch to External Model mode to continue';
+      } else {
+        desc = isZh
+          ? ('官方 GPT 链路运行正常（剩余 ' + (pRemain ?? '—') + '%）')
+          : ('OpenAI pipeline running smoothly (' + (pRemain ?? '—') + '% remaining)');
+        action = isZh ? '点击可随时切换至自定义接入模型' : 'Click to switch to External Model mode';
+      }
+    }
+
+    const swapSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="failover-swap-icon"><path d="M4 8h12l-4-4m4 4l-4 4"></path><path d="M20 16H8l4-4m-4 4l4 4"></path></svg>';
+
+    return '<div class="failover-toggle-wrap">'
+      + '<button type="button" class="quota-icon-btn failover-toggle-btn ' + (isExternal ? 'is-external' : 'is-openai') + (failoverSwitching ? ' is-loading' : '') + '" aria-label="' + esc(modeLabel) + '" title="' + esc(modeLabel) + '">'
+      + swapSvg
+      + '</button>'
+      + '<div class="failover-tooltip">'
+      + '<div class="failover-tooltip-header">' + esc(modeLabel) + '</div>'
+      + '<div class="failover-tooltip-desc">' + esc(desc) + '</div>'
+      + '<div class="failover-tooltip-action">' + esc(action) + '</div>'
+      + '</div>'
+      + '</div>';
+  }
+
   function renderExtendedUsage(dark) {
     const isZh = settings.locale === 'zh-CN';
     const anti = extendedUsageState.antigravity || {};
@@ -1231,14 +1355,15 @@
 
     const accounts = anti.accounts || [];
     const manualAccount = anti.userSelectedAccount ? accounts.find(a => a.email === anti.userSelectedAccount) : null;
-    const isManualValid = manualAccount && isAccountAvailable(manualAccount);
+    const isManualValid = Boolean(manualAccount);
     const activeAccount = (isManualValid ? manualAccount : (accounts.find(a => a.email === anti.selectedAccount) || accounts.find(isAccountAvailable))) || accounts[0] || anti;
     const activeRows = activeAccount.rows || anti.rows || [];
     const enableDynamic = Boolean(anti.enableDynamicPriority && anti.poolStatus?.available);
     const poolStatus = anti.poolStatus || {};
+    const accountHealth = acc => getAccountHealth(acc, poolStatus.accountMap?.[String(acc.email || '').toLowerCase()]);
 
     let accountTabsHtml = '';
-    if (accounts.length > 1) {
+    if (accounts.length > 0) {
       let fallbackIndex = 1;
       accountTabsHtml = '<div class="quota-extension-account-tabs">'
         + accounts.map((acc, idx) => {
@@ -1247,6 +1372,7 @@
           const displayName = settings.maskAccountNames ? maskAccountName(rawLabel) : rawLabel;
           let tabLabel = esc(displayName);
           let statusForAccess = '';
+          const health = accountHealth(acc);
           if (enableDynamic) {
             const norm = (acc.email || '').toLowerCase();
             const info = poolStatus.accountMap?.[norm];
@@ -1258,7 +1384,7 @@
                 : Boolean(info?.isPrimary || info?.rankLabel === '使用中');
             if (isInUse) {
               statusForAccess = isZh ? '使用中' : 'In Use';
-              tabLabel = '<span class="quota-tab-dot"></span>' + tabLabel;
+              if (health.state !== 'unavailable') tabLabel = '<span class="quota-tab-dot" aria-hidden="true"></span>' + tabLabel;
             } else if (info?.status === 'COOLING') {
               statusForAccess = isZh ? '冷却中' : 'Cooling';
               tabLabel += ' · ❄ ' + (isZh ? '冷却' : 'Cooling');
@@ -1268,10 +1394,12 @@
               fallbackIndex++;
             }
           }
+          if (health.state === 'unavailable') tabLabel = '<span class="quota-tab-dot is-error" aria-hidden="true"></span>' + tabLabel;
+          if (health.state !== 'healthy') statusForAccess = (health.state === 'unavailable' ? (isZh ? '暂不可用' : 'Unavailable') : statusForAccess) + ' · ' + (isZh ? health.zh : health.en);
           const accountDescription = displayName + (statusForAccess ? ' · ' + statusForAccess : '');
           const rawTitle = (settings.maskAccountNames ? maskAccountName(acc.email) : acc.email) || displayName;
           const tabTitle = rawTitle + (statusForAccess ? ' · ' + statusForAccess : '');
-          return '<button type="button" class="quota-extension-account-tab ' + (isSelected ? 'is-active' : '') + '" data-account="' + esc(acc.email) + '" aria-label="' + esc(accountDescription) + '" title="' + esc(tabTitle) + '">'
+          return '<button type="button" class="quota-extension-account-tab ' + (isSelected ? 'is-active' : '') + '" aria-pressed="' + isSelected + '" data-account="' + esc(acc.email) + '" aria-label="' + esc(accountDescription) + '" title="' + esc(tabTitle) + '">'
             + tabLabel
             + '</button>';
         }).join('')
@@ -1285,8 +1413,10 @@
       const account = accounts.find(item => String(item.email || '').trim().toLowerCase() === email);
       const rawName = account?.label || (rank.email ? String(rank.email).split('@')[0] : '');
       const name = settings.maskAccountNames ? maskAccountName(rawName) : rawName;
+      const health = accountHealth(account || { email: rank.email });
       let state;
-      if (rank.status === 'COOLING') state = isZh ? '冷却中' : 'Cooling';
+      if (health.state === 'unavailable') state = isZh ? '暂不可用' : 'Unavailable';
+      else if (rank.status === 'COOLING') state = isZh ? '冷却中' : 'Cooling';
       else if (email === primaryEmail || index === 0) state = isZh ? '使用中' : 'In Use';
       else {
         state = isZh ? ('备选' + queueBackupIndex) : ('Backup ' + queueBackupIndex);
@@ -1295,9 +1425,26 @@
       return name + ' (' + state + ')';
     });
     const queueText = queueLabels.join(' → ') || (isZh ? '暂无账号排序信息' : 'No account order available');
+    const healthNotes = accounts.map(acc => {
+      const health = accountHealth(acc);
+      if (health.state === 'healthy' || health.state === 'cooling') return null;
+      const rawName = acc.label || String(acc.email || '').split('@')[0];
+      const name = settings.maskAccountNames ? maskAccountName(rawName) : rawName;
+      return { name, health, technicalCode: (health.httpStatus ? health.httpStatus + ' ' : '') + health.code };
+    }).filter(Boolean);
+    const healthDescription = healthNotes.map(({ name, health, technicalCode }) => name + '：' + (isZh ? health.zh : health.en) + ' [' + technicalCode + ']').join(' ');
+    const healthNotesHtml = healthNotes.length
+      ? '<div class="quota-account-health-notes"><strong>' + (isZh ? '账号状态' : 'Account status') + '</strong>'
+        + healthNotes.map(({ name, health, technicalCode }) => '<div class="quota-account-health-note' + (health.state === 'unavailable' ? ' is-error' : '') + '"><b>' + esc(name) + '</b>：' + esc(isZh ? health.zh : health.en) + ' <span class="quota-account-health-code">' + esc(technicalCode) + '</span></div>').join('') + '</div>'
+      : '';
+    const unassignedAuthError = anti.error && getAccountHealth({ error: anti.error }).code === 'auth_unavailable'
+      && !healthNotes.some(({ health }) => health.state === 'unavailable');
+    const poolWarning = unassignedAuthError
+      ? (isZh ? '代理当前没有可调用的登录凭证，但错误未指明具体账号；请检查登录授权状态。' : 'The proxy has no usable login credentials, but the error does not identify an account. Check login authorization.')
+      : '';
     const rebalanceDescription = isZh
-      ? '重排。队列顺序：' + queueText + '。调度规则：优先临近重置 · Pro 高配额优先。'
-      : 'Reorder. Queue: ' + queueText + '. Rules: imminent reset first · Pro tier priority.';
+      ? '重排。队列顺序：' + queueText + '。调度规则：优先临近重置 · Pro 高配额优先。' + healthDescription + poolWarning
+      : 'Reorder. Queue: ' + queueText + '. Rules: imminent reset first · Pro tier priority. ' + healthDescription + poolWarning;
     const rebalanceButtonHtml = accounts.length > 1 && enableDynamic
       ? '<div class="quota-rebalance-wrap">'
         + '<button type="button" class="quota-rebalance-pill-btn" aria-label="' + esc(rebalanceDescription) + '" aria-describedby="quota-rebalance-tooltip">'
@@ -1308,6 +1455,8 @@
     const rebalanceTooltipHtml = accounts.length > 1 && enableDynamic
       ? '<div id="quota-rebalance-tooltip" class="quota-rebalance-tooltip" role="tooltip">'
         + (isZh ? '排队顺序：' + esc(queueText) + '<br/>调度规则：优先临近重置 · Pro 高配额优先' : 'Queue: ' + esc(queueText) + '<br/>Rules: Imminent reset first · Pro tier priority')
+        + healthNotesHtml
+        + (poolWarning ? '<div class="quota-account-health-notes">' + esc(poolWarning) + '</div>' : '')
         + '</div>'
       : '';
 
@@ -1386,8 +1535,12 @@
 
     const ticketEmptySvg = '<svg width="24" height="20" viewBox="0 0 24 20" fill="currentColor"><path d="M22 6C20.9 6 20 5.1 20 4V3C20 1.9 19.1 1 18 1H6C4.9 1 4 1.9 4 3V4C4 5.1 3.1 6 2 6C0.9 6 0 6.9 0 8V12C0 13.1 0.9 14 2 14C3.1 14 4 14.9 4 16V17C4 18.1 4.9 19 6 19H18C19.1 19 20 18.1 20 17V16C20 14.9 20.9 14 22 14C23.1 14 24 13.1 24 12V8C24 6.9 23.1 6 22 6ZM12 4.5a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1ZM12 11.5a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1Z"/></svg>';
 
-    const isVoucherLoading = vouchersLoading || (settings.enableResetCredits && !usageState.resetCreditDetailsLoaded);
-    const details = isVoucherLoading
+    const voucherUnavailable = Boolean(usageState.error) && !usageState.resetCreditDetailsLoaded;
+    const isVoucherLoading = !voucherUnavailable
+      && (vouchersLoading || (settings.enableResetCredits && !usageState.resetCreditDetailsLoaded));
+    const details = voucherUnavailable
+      ? renderEmptyState(ticketEmptySvg, usageState.error || t('unavailable'))
+      : isVoucherLoading
       ? ('<div class="empty-state-box is-loading">'
           + '<div class="voucher-loading-spinner"></div>'
           + '<div class="empty-state-text">' + esc(t('loadingVouchers')) + '</div>'
@@ -1439,7 +1592,9 @@
 
     const ticketSvg = designIcon('coupon', 'credit-icon');
 
-    const resetCountText = isVoucherLoading && usageState.resetCredits === null
+    const resetCountText = voucherUnavailable
+      ? '<strong class="credits-count">—</strong> ' + esc(t('available'))
+      : isVoucherLoading && usageState.resetCredits === null
       ? esc(t('syncing')) : '<strong class="credits-count">' + esc(usageState.resetCredits ?? '—') + '</strong> ' + esc(t('available'));
     const voucherBanner = '<div class="meta-row">'
       + '<span class="meta-actions">'
@@ -1478,6 +1633,16 @@
       '.card-refresh,.header-module-toggle{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
       '.header-module-toggle:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
       '.header-module-toggle.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
+      '.failover-toggle-wrap{position:relative;display:inline-flex;align-items:center}',
+      '.failover-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
+      '.failover-toggle-btn.is-external{background:' + (dark ? 'rgba(122,90,248,.20)' : 'rgba(122,90,248,.10)') + ';border-color:' + (dark ? 'rgba(122,90,248,.50)' : 'rgba(122,90,248,.35)') + ';color:#7A5AF8}',
+      '.failover-toggle-btn.is-openai{background:' + (dark ? 'rgba(50,199,106,.18)' : 'rgba(50,199,106,.10)') + ';border-color:' + (dark ? 'rgba(50,199,106,.45)' : 'rgba(50,199,106,.30)') + ';color:#32C76A}',
+      '.failover-toggle-btn.is-loading .failover-swap-icon{animation:quota-refresh-spin .8s linear infinite}',
+      '.failover-tooltip{position:absolute;top:calc(100% + 8px);right:0;width:250px;padding:10px 12px;border-radius:10px;background:' + (dark ? '#242428' : '#FFFFFF') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)') + ';box-shadow:0 6px 20px rgba(0,0,0,.15);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);font-size:11.5px;line-height:1.45;pointer-events:none;opacity:0;visibility:hidden;transform:translateY(-4px);transition:all .15s cubic-bezier(0.16,1,0.3,1);z-index:1000;white-space:normal}',
+      '.failover-toggle-wrap:hover .failover-tooltip{opacity:1;visibility:visible;transform:translateY(0)}',
+      '.failover-tooltip-header{font-weight:700;font-size:12px;margin-bottom:4px;color:#007AFF}',
+      '.failover-tooltip-desc{color:' + (dark ? '#A1A1A6' : '#6B7280') + ';margin-bottom:6px}',
+      '.failover-tooltip-action{font-weight:600;color:' + (dark ? '#30D158' : '#34C759') + ';border-top:1px solid ' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)') + ';padding-top:6px}',
       '.account-mask-toggle-btn{width:20px;height:20px;padding:0;border:0;background:transparent;color:' + (dark ? '#8E8E93' : '#9CA3AF') + ';border-radius:5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s ease;margin-left:4px}',
       '.account-mask-toggle-btn:hover{background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.06)') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
       '.account-mask-toggle-btn.is-active{color:#007AFF}',
@@ -1536,6 +1701,8 @@
       '.quota-extension-account-tab:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
       '.quota-extension-account-tab.is-active{background:#007AFF;color:#FFFFFF;box-shadow:0 1px 2px rgba(0,122,255,.25)}',
       '.quota-tab-dot{width:5px;height:5px;background-color:#34C759;border-radius:50%;display:inline-block;margin-right:5px;vertical-align:middle}',
+      '.quota-tab-dot.is-error{background-color:#FF3B30;box-shadow:0 0 0 1px rgba(255,255,255,.8)}',
+      '.quota-account-health-notes{margin-top:7px;padding-top:7px;border-top:1px solid rgba(128,128,128,.2)}.quota-account-health-note{margin-top:4px;line-height:1.5}.quota-account-health-note.is-error b{color:#FF3B30}.quota-account-health-code{font-size:10px;opacity:.7;white-space:nowrap}',
       '.quota-rebalance-wrap{position:relative;display:inline-flex;align-items:center;margin-left:6px}',
       '.quota-rebalance-pill-btn{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:12px;border:1px solid ' + (dark ? 'rgba(255,255,255,.15)' : 'rgba(0,0,0,.1)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : '#FFFFFF') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';font-size:11px;font-weight:500;cursor:pointer;transition:all .15s ease;box-shadow:0 1px 2px rgba(0,0,0,.04)}',
       '.quota-rebalance-pill-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : '#F5F5F7') + ';border-color:' + (dark ? 'rgba(255,255,255,.25)' : 'rgba(0,0,0,.18)') + '}',
@@ -1606,6 +1773,7 @@
       + '</div>'
       + '</div>'
       + '<div class="popover-actions">'
+      + renderFailoverToggleButton(dark, isZh)
       + '<button class="language-toggle" aria-label="' + esc(t('locale')) + '">'
       + '<span class="lang-opt' + (isZh ? ' is-active' : '') + '" data-lang="zh-CN">中</span>'
       + '<span class="lang-sep">/</span>'
@@ -1658,7 +1826,7 @@
 
   function measureAvailableWidth(element) {
     if (!element) return 520;
-    const header = element.closest('header') || document.querySelector('header');
+    const header = element.closest('header') || element.closest('[data-app-shell-header-toolbar="true"]') || element.closest('[role="toolbar"]') || document.querySelector('header');
     const headerRect = visibleRect(header);
     const actionGroup = element.parentElement;
     const newChat = element.dataset?.placement === 'new-chat';
@@ -1692,29 +1860,30 @@
 
     const isTopHeader = (toolbar === header);
     let titleNeed = 160;
-    if (!newChat) {
-      if (isTopHeader && headerRect) {
-        let maxLeftRight = headerRect.left + 160;
-        const hostRect = visibleRect(element);
-        const hostLeft = hostRect ? hostRect.left : headerRect.right - 200;
-        const leftCandidates = [...header.querySelectorAll('button,a,[role="button"],h1,h2,.title')].filter(isVisible);
-        for (const el of leftCandidates) {
-          if (element.contains(el)) continue;
-          const r = visibleRect(el);
-          if (r && r.right < hostLeft && r.width < headerRect.width * 0.6) {
-            if (r.right > maxLeftRight) maxLeftRight = r.right;
-          }
+    if (isTopHeader && headerRect) {
+      let maxLeftRight = headerRect.left + 160;
+      const hostRect = visibleRect(element);
+      const hostLeft = hostRect ? hostRect.left : headerRect.right - 200;
+      const leftCandidates = [...header.querySelectorAll('button,a,[role="button"],[role="tab"],h1,h2,.title')].filter(isVisible);
+      for (const el of leftCandidates) {
+        if (element.contains(el)) continue;
+        const r = visibleRect(el);
+        if (r && r.right < hostLeft && r.width < headerRect.width * 0.6) {
+          if (r.right > maxLeftRight) maxLeftRight = r.right;
         }
-        titleNeed = Math.max(160, maxLeftRight - headerRect.left + 16);
-      } else {
-        const titleRegion = [...toolbar.children].find(child => child !== actionGroup) || null;
-        titleNeed = measureTitleNeed(titleRegion);
       }
+      titleNeed = Math.max(160, maxLeftRight - headerRect.left + 16);
+    } else if (!newChat) {
+      const titleRegion = [...toolbar.children].find(child => child !== actionGroup) || null;
+      titleNeed = measureTitleNeed(titleRegion);
     }
 
+    const nativeRects = [...actionGroup.querySelectorAll('button,[role="button"]')].filter(button => !element.contains(button)).map(visibleRect).filter(Boolean);
     const native = newChat
       ? (visibleRect(element.nextElementSibling)?.width || 70)
-      : [...actionGroup.children].filter(child => child !== element).map(visibleRect).filter(Boolean).reduce((sum, rect) => sum + rect.width, 0);
+      : nativeRects.length
+        ? Math.max(...nativeRects.map(rect => rect.right)) - Math.min(...nativeRects.map(rect => rect.left))
+        : [...actionGroup.children].filter(child => child !== element).map(visibleRect).filter(Boolean).reduce((sum, rect) => sum + rect.width, 0);
 
     return Math.max(0, toolbarRect.width - titleNeed - native - 32);
   }
@@ -1916,27 +2085,64 @@
   const NEWCHAT_ACTION_RES = [
     /^切换底部面板显示$|^toggle bottom panel visibility$|^toggle bottom panel$/i,
     /^显示\/隐藏侧边面板$|^show\/hide side panel$|^toggle side panel$/i,
+    /^(?:新聊天|新建聊天|开启新聊天|创建新聊天|新会话|新建会话|新标签页|新建标签页|新标签|新建标签|打开新标签页|new\s*chat|create\s*(?:new\s*)?chat|open\s*new\s*chat|start\s*new\s*chat|new\s*tab|create\s*(?:new\s*)?tab|open\s*new\s*tab|add\s*tab|new\s*conversation)(?:\s*[\(（][^\)）]+[\)）])?$/i,
+    /^[+＋]$/,
   ];
   const SHARE_ACTION_RE = /^分享$|^share$/i;
 
-  // 校验单个候选按钮是否位于有效顶栏：必须在 <header> 内，
-  // 顶栏高度不超过 80px，且工具栏有足够宽度。
+  function isNewChatAction(button) {
+    if (!button) return false;
+    const label = button.getAttribute('aria-label') || button.getAttribute('title') || '';
+    if (NEWCHAT_ACTION_RES.some(re => re.test(label))) return true;
+    const text = button.textContent?.trim() || '';
+    if (text && NEWCHAT_ACTION_RES.some(re => re.test(text))) return true;
+    const testId = button.getAttribute('data-testid') || '';
+    if (/^(?:new-chat|create-(?:new-)?chat|new-tab|add-tab)(?:-button)?$/i.test(testId)) return true;
+    return false;
+  }
+
+  // 校验原生按钮所在顶栏，兼容新版的 display:contents 包装及无 header 的显式工具栏。
+  // 仍要求顶部位置、足够宽度和已知原生操作，不能挂载到侧栏或正文。
   // 返回挂载点描述；不合格返回 null，调用方继续尝试下一个候选。
   function validateActionAnchor(button, isNewChat) {
-    const header = button.closest('header');
-    const nativeRegion = isNewChat ? [...(header?.children || [])].find(child => child.contains(button)) : null;
-    let reference = isNewChat ? nativeRegion : button;
-    if (!isNewChat && reference?.parentElement && reference.parentElement.tagName === 'SPAN' && reference.parentElement.parentElement !== header) {
-      reference = reference.parentElement;
-    }
-    const container = isNewChat ? header : reference?.parentElement;
-    const toolbar = isNewChat ? header : container?.parentElement;
-    if (!header || !container || !toolbar || !header.contains(toolbar)) return null;
+    const shellToolbar = button.closest('[data-app-shell-header-toolbar="true"]');
+    const header = button.closest('header') || shellToolbar || button.closest('[role="toolbar"]');
+    if (!header) return null;
+
     const headerRect = visibleRect(header);
-    const toolbarRect = visibleRect(toolbar);
     const buttonRect = visibleRect(button);
-    if (!reference || !headerRect || !toolbarRect || !buttonRect || headerRect.height > 80 || headerRect.width < 400) return null;
-    if (!isNewChat && toolbarRect.width < 240 && buttonRect.left < (typeof window !== 'undefined' ? window.innerWidth * 0.35 : 300)) return null;
+    if (!headerRect || !buttonRect || headerRect.height > 80 || headerRect.width < 400) return null;
+
+    const minLeft = typeof window !== 'undefined' ? window.innerWidth * 0.35 : 300;
+    if (buttonRect.left < minLeft) return null;
+
+    // 从 button 自底向上寻找直接的排版定位容器（unwrap display: contents、span 与单个小尺寸包装 div）
+    let reference = button;
+    while (reference?.parentElement && reference.parentElement !== header) {
+      const parent = reference.parentElement;
+      const pStyle = getComputedStyle(parent);
+      if (pStyle.display === 'contents' || parent.tagName === 'SPAN') {
+        reference = parent;
+        continue;
+      }
+      if (isNewChat) {
+        const pRect = visibleRect(parent);
+        if (parent.children.length === 1 && pRect && pRect.width < 80 && parent.parentElement && parent !== header) {
+          reference = parent;
+          continue;
+        }
+      }
+      break;
+    }
+
+    const container = reference?.parentElement || header;
+    const toolbar = (container === header) ? header : (shellToolbar || container.parentElement || header);
+    if (!container || !toolbar || !header.contains(toolbar)) return null;
+
+    const toolbarRect = visibleRect(toolbar);
+    if (!toolbarRect) return null;
+    if (!isNewChat && toolbarRect.width < 240) return null;
+
     return { header, toolbar, container, reference, placement: isNewChat ? 'new-chat' : 'thread' };
   }
 
@@ -1947,10 +2153,19 @@
       return rect && rect.top < 80 && rect.height <= 80;
     });
     if (!shellToolbar) return null;
-    const header = shellToolbar.closest('header');
-    if (!header) return null;
+    const header = shellToolbar.closest('header') || shellToolbar;
     const headerRect = visibleRect(header);
-    if (!headerRect || headerRect.top > 0 || headerRect.height > 80) return null;
+    if (!headerRect || headerRect.top >= 80 || headerRect.height > 80 || headerRect.width < 400) return null;
+
+    // 新版 Work 的原生操作在显式 App Shell 工具栏内，不一定有 obstacle 属性。
+    for (const button of [...shellToolbar.querySelectorAll('button')].filter(isVisible)) {
+      const label = button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent?.trim() || '';
+      const isNewChat = isNewChatAction(button);
+      if (!isNewChat && !THREAD_ACTION_RE.test(label) && !SHARE_ACTION_RE.test(label)) continue;
+      if (visibleRect(button)?.left < window.innerWidth * 0.35) continue;
+      const point = validateActionAnchor(button, isNewChat);
+      if (point) return { ...point, placement: SHARE_ACTION_RE.test(label) ? 'chat' : point.placement };
+    }
 
     const obstacles = [...header.querySelectorAll('[data-app-shell-header-obstacle="true"]')];
     for (const obstacle of obstacles) {
@@ -1971,17 +2186,19 @@
 
   function resolveMountPoint(doc = document) {
     const buttons = [...doc.querySelectorAll('button')].filter(isVisible);
+    // 按水平从右至左排序，优先匹配顶栏右侧的操作按钮
+    const rightwardButtons = [...buttons].sort((a, b) => (visibleRect(b)?.left || 0) - (visibleRect(a)?.left || 0));
+
     // Tier 1：对话页顶栏。遍历全部同名候选并逐个校验，
     // 侧栏里的同名按钮（不在 <header> 内）会被跳过。
-    for (const button of buttons) {
+    for (const button of rightwardButtons) {
       if (!THREAD_ACTION_RE.test(button.getAttribute('aria-label') || '')) continue;
       const point = validateActionAnchor(button, false);
       if (point) return point;
     }
-    // Tier 2：新对话页顶栏。
-    for (const button of buttons) {
-      const label = button.getAttribute('aria-label') || '';
-      if (!NEWCHAT_ACTION_RES.some(re => re.test(label))) continue;
+    // Tier 2：新对话页顶栏（匹配新建聊天/新标签页/面板切换等原生操作）。
+    for (const button of rightwardButtons) {
+      if (!isNewChatAction(button)) continue;
       const point = validateActionAnchor(button, true);
       if (point) return point;
     }
@@ -1989,9 +2206,19 @@
     const shellPoint = resolveShellToolbarPoint(doc);
     if (shellPoint) return shellPoint;
     // Tier 4：分享按钮兜底（同样逐个校验）。
-    for (const button of buttons) {
+    for (const button of rightwardButtons) {
       if (!SHARE_ACTION_RE.test(button.getAttribute('aria-label') || button.textContent || '')) continue;
       const point = validateActionAnchor(button, false);
+      if (point) return point;
+    }
+    // Tier 5：新版主页/工作台顶栏右侧按钮兜底（聊天/工作 Tab 右侧的新建[+]按钮）。
+    const candidateButtons = rightwardButtons.filter(btn => {
+      const h = btn.closest?.('header') || btn.closest?.('[data-app-shell-header-toolbar="true"]');
+      const r = visibleRect(btn);
+      return Boolean(h && r && r.left >= (typeof window !== 'undefined' ? window.innerWidth * 0.4 : 350));
+    });
+    if (candidateButtons.length > 0) {
+      const point = validateActionAnchor(candidateButtons[0], true);
       if (point) return point;
     }
     return null;
@@ -2004,9 +2231,17 @@
     if (!point) return false;
     if (existing?.isConnected) {
       host = existing;
-      if (existing.parentElement !== point.container || existing.nextElementSibling !== point.reference) point.container.insertBefore(existing, point.reference);
+      if (existing.parentElement !== point.container || existing.nextElementSibling !== point.reference) {
+        point.container.insertBefore(existing, point.reference);
+      }
       existing.dataset.placement = point.placement;
-      existing.style.setProperty('margin-right', point.placement === 'new-chat' ? '6px' : '0px');
+      if (point.placement === 'new-chat') {
+        existing.style.setProperty('margin-left', 'auto');
+        existing.style.setProperty('margin-right', '6px');
+      } else {
+        existing.style.removeProperty('margin-left');
+        existing.style.setProperty('margin-right', '0px');
+      }
       if (!existing.shadowRoot) existing.attachShadow({ mode: 'open' });
       bindHostEvents();
       renderHost();
@@ -2016,7 +2251,13 @@
     }
     host = document.createElement(HOST_TAG);
     host.dataset.placement = point.placement;
-    host.style.setProperty('margin-right', point.placement === 'new-chat' ? '6px' : '0px');
+    if (point.placement === 'new-chat') {
+      host.style.setProperty('margin-left', 'auto');
+      host.style.setProperty('margin-right', '6px');
+    } else {
+      host.style.removeProperty('margin-left');
+      host.style.setProperty('margin-right', '0px');
+    }
     host.attachShadow({ mode: 'open' });
     point.container.insertBefore(host, point.reference);
     bindHostEvents();
@@ -2043,7 +2284,7 @@
   function initObserver() {
     ensureMounted();
     mountObserver?.disconnect();
-    const headerSelectors = 'header,[data-app-shell-header-toolbar="true"],[data-app-shell-header-obstacle="true"]';
+    const headerSelectors = 'header,[role="toolbar"],[data-app-shell-header-toolbar="true"],[data-app-shell-header-obstacle="true"]';
     const isHeaderMutation = record => {
       const target = record.target?.nodeType === 1 ? record.target : record.target?.parentElement;
       if (target?.closest?.(headerSelectors)) return true;
@@ -2070,6 +2311,7 @@
   window.__codexUsageHeaderRemount = ensureMounted;
   window.__codexUsageHeaderSetUsage__ = applyUsagePayload;
   window.__codexUsageHeaderSetRefreshError__ = applyRefreshError;
+  window.__codexUsageHeaderSetUsageError__ = applyUsageError;
 
   function applyExtendedUsagePayload(payload) {
     if (!payload || typeof payload !== 'object') return;
@@ -2078,6 +2320,13 @@
         ...extendedUsageState.antigravity,
         ...payload.antigravity,
       };
+    }
+    if (payload.failover && typeof payload.failover === 'object') {
+      extendedUsageState.failover = {
+        ...extendedUsageState.failover,
+        ...payload.failover,
+      };
+      failoverSwitching = false;
     }
     if (payload.tokens && typeof payload.tokens === 'object') {
       const savedRange = extendedUsageState.tokens.selectedRange ||
@@ -2148,7 +2397,7 @@
       const rect = visibleRect(point.reference);
       return { placement: point.placement, referenceX: rect ? Math.round(rect.left) : null };
     },
-    showPopover: () => showPopover({ immediate: true }),
+    showPopover: (options = {}) => showPopover({ immediate: true, ...options }),
     hidePopover: () => hidePopover(true),
     getExtendedState: () => ({ ...extendedUsageState }),
   };

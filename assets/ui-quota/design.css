@@ -320,6 +320,12 @@
   margin-right: 5px;
   vertical-align: middle;
 }
+.quota-tab-dot.is-error{background-color:#FF3B30;box-shadow:0 0 0 1px rgba(255,255,255,.8)}
+.quota-account-health-notes{margin-top:7px;padding-top:7px;border-top:1px solid var(--quota-line,#D9E3EF)}
+.quota-account-health-note{margin-top:4px;line-height:1.5}
+.quota-account-health-note.is-error b{color:#C5281C}
+.quota-dashboard.is-dark .quota-account-health-note.is-error b{color:#FF8A82}
+.quota-account-health-code{font-size:10px;opacity:.7;white-space:nowrap}
 .quota-rebalance-wrap {
   position: relative;
   display: inline-flex;

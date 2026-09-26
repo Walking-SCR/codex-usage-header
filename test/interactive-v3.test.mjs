@@ -175,10 +175,10 @@ const maskedAccounts = await evaluateInTarget(target.webSocketDebuggerUrl, '[...
 console.log('  Masked accounts:', maskedAccounts);
 assert.ok(maskedAccounts.every(name => name.includes('*****')), 'All account tabs should contain ***** when masked');
 if (maskedAccounts.some(name => name.startsWith('wa'))) {
-  assert.ok(maskedAccounts.includes('wa*****scr'), 'walkingscr should be masked to wa*****scr');
+  assert.ok(maskedAccounts.some(name => name.startsWith('wa*****scr')), 'walkingscr should be masked to wa*****scr; keep the compact status suffix');
 }
 if (maskedAccounts.some(name => name.startsWith('she'))) {
-  assert.ok(maskedAccounts.includes('she*****rong'), 'shekchoyrong should be masked to she*****rong');
+  assert.ok(maskedAccounts.some(name => name.startsWith('she*****rong')), 'shekchoyrong should be masked to she*****rong; keep the compact status suffix');
 }
 // 关闭遮罩（恢复完整名称）
 await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".account-mask-toggle-btn").click()');

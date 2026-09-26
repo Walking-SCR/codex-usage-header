@@ -267,8 +267,12 @@ Google 配额接口使用的是上游内部配额端点，未来可能因 Google
 ### 3. 额度显示“不可用”或一直在加载？
  请检查当前 Codex 客户端是否已成功登录账号并连接网络。组件数据由后台通过 Codex App Server 读取，当未登录或离线时会显示不可用状态。登录成功后打开详情卡片，点击卡片右上角刷新按钮即可恢复。
 
+如果发生在桌面客户端升级后，请先更新插件并重新运行 `./bin/install.sh`，再执行 `codex-header --inject-only`。26.924 系列的内置 CLI 已移至 `Contents/Resources/codex-cli/bin/codex`；插件优先定位正在运行的 ChatGPT/Codex App，兼容新旧目录与 Homebrew 路径，不需要另装 CLI 或重建登录配置。`codex-header --status` 中的 `targets[].appServer` 可查看实际二进制路径、版本、初始化状态和固定故障类型；不包含凭证或原始错误正文。
+
 ### 4. 页面刷新、切换 Chat 对话或新建对话后组件暂时消失？
 后台监控会检查当前 CDP 页面；发现页面已重载但组件未挂载时会自动重新注入。若客户端刚启动仍未显示，可运行 `codex-header --status` 查看通道，再运行 `codex-header --inject-only` 触发一次手动恢复。
+
+新版 Work 顶栏的操作按钮可能嵌套在多层 `display: contents` 容器中；插件会跳过这些无尺寸容器，使用原生顶栏操作组定位，也兼容没有 `header` 标签的明确 App Shell 工具栏。仍只注入本机主聊天/工作页面，不注入付款页、头像浮层或独立窗口。修改源码后需重新安装：命令行启动器默认读取安装目录，不会自动读取项目目录。
 
 ### 5. 悬停组件没有弹出详情卡片？
 顶栏属于 Codex 的原生拖拽区域，旧版本可能把鼠标悬停事件交给拖拽层，导致点击偶尔可用但悬停无反应。当前版本已为组件设置独立的可命中区域，并增加页面坐标兜底；安装后运行 `codex-header --status` 确认 `mountedCount` 为 `1`。若仍未显示，运行一次 `codex-header --inject-only` 即可重新注入，无需退出 Codex。
@@ -317,6 +321,9 @@ Google 配额接口使用的是上游内部配额端点，未来可能因 Google
 │   ├── injected.js     # 注入到客户端顶栏的 UI 组件代码
 │   ├── launcher.mjs    # 客户端启动管理与 CDP 注入
 │   ├── account-client.mjs # Codex App Server JSON-RPC 客户端
+│   ├── desktop-runtime.mjs # 桌面 App 与新旧内置 CLI 路径发现
+│   ├── account-health.mjs # 账号健康状态、脱敏错误分类与双语说明
+│   ├── dynamic-priority-adapter.mjs # 现有账号优先级信息适配
 │   ├── extended-usage.mjs # Gemini 配额与 Token 日志增量聚合引擎
 │   ├── monitor.mjs       # 单实例刷新调度与 CDP 广播
 │   └── utils.mjs       # 色阶、倒计时计算等辅助工具

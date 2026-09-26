@@ -15,7 +15,12 @@ assert.deepEqual(selectUsageTargets([
   ...targets,
   { type: 'page', title: 'Main', url: 'app://-/index.html', webSocketDebuggerUrl: 'ws://main' },
   { type: 'page', title: 'Detached', url: 'app://-/index.html?initialRoute=%2Fsettings', webSocketDebuggerUrl: 'ws://detached' },
-]).map(target => target.title), ['Main']);
+  { type: 'page', title: 'Work', url: 'app://-/index.html?initialRoute=%2Fwork%2Ftask-1', webSocketDebuggerUrl: 'ws://work' },
+  { type: 'webview', title: 'Work HTML', url: 'app://-/work/index.html', webSocketDebuggerUrl: 'ws://work-html' },
+  { type: 'page', title: 'Avatar overlay', url: 'app://-/index.html?initialRoute=%2Favatar-overlay', webSocketDebuggerUrl: 'ws://overlay' },
+  { type: 'page', title: 'Detached window', url: 'app://-/detached-window.html', webSocketDebuggerUrl: 'ws://detached-window' },
+  { type: 'webview', title: 'Checkout', url: 'https://chatgpt.com/?source=codex-embedded-checkout', webSocketDebuggerUrl: 'ws://checkout' },
+]).map(target => target.title), ['Main', 'Work', 'Work HTML']);
 
 const unusedPort = 65534;
 const status = await getStatus(unusedPort);
@@ -39,5 +44,7 @@ assert.notEqual(classifyMountProbe({ installed: true, mounted: false, mountable:
 assert.equal(statusExitCode({ installedCount: 1, mountedCount: 0, waitingCount: 0, failedCount: 1 }), 2,
   '已注入但挂载失败必须以失败状态退出');
 assert.equal(statusExitCode({ installedCount: 1, mountedCount: 0, waitingCount: 1, failedCount: 0 }), 0);
+assert.equal(statusExitCode({ installedCount: 2, mountedCount: 1, waitingCount: 0, failedCount: 1 }), 0,
+  '主窗口已挂载时，即便辅助目标未挂载也不应报错退出');
 
 console.log('✓ Launcher target selection and offline status tests passed!');

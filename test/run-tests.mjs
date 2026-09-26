@@ -13,6 +13,9 @@
    'polling.test.mjs',
    'resilience.test.mjs',
   'launcher.test.mjs',
+  'desktop-runtime.test.mjs',
+  'account-client-compat.test.mjs',
+  'cdp-injection-retry.test.mjs',
   'installer.test.mjs',
   'renderer-contract.test.mjs',
   'storage-safety.test.mjs',
@@ -20,6 +23,7 @@
   'extended-tokens.test.mjs',
   'extended-gemini.test.mjs',
   'account-switch.test.mjs',
+  'account-health.test.mjs',
   'mount-point.test.mjs',
   'monitor-lock.test.mjs',
   'monitor-startup.test.mjs',
@@ -28,6 +32,7 @@
   'ui-design.test.mjs',
   'dynamic-priority-toggle.test.mjs',
   'token-design-v4.test.mjs',
+  'failover-mode.test.mjs',
 ];
 
 console.log('========================================================');

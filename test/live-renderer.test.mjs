@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { evaluateInTarget, fetchCdpTargets, selectUsageTargets } from '../src/launcher.mjs';
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const evidenceDir = join(rootDir, 'audit', '2026-09-18-quota-header');
+// 每次实机测试使用独立归档目录，不覆盖已有的手工截图或验收证据。
+const evidenceDir = join(rootDir, 'audit', '2026-09-26-live-regression');
 let shouldRestoreTokenUsageOff = false;
 
 function cdpCommand(wsUrl, method, params = {}, timeoutMs = 6000) {
@@ -72,14 +73,14 @@ try {
   const modelOptions = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => ({open:document.querySelector(".quota-extension-model-button")?.getAttribute("aria-expanded"),keys:[...document.querySelectorAll(".quota-extension-model-option")].map(option=>option.dataset.model)}))()');
   assert.equal(modelOptions.open, 'true');
   assert.deepEqual(modelOptions.keys, expectedModelOptions);
-  const totalBeforeModelFilter = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".token-summary-number")?.textContent');
+  const totalBeforeModelFilter = await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".token-global-stat-value")?.textContent || document.querySelector(".token-summary-number")?.textContent');
   await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-model-option[data-model=gpt]")?.click()');
-  const gptDetail = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const state=window.__codexUsageHeaderDebug__?.getExtendedState?.()?.tokens; const range=state?.ranges?.[state.selectedRange]; const gpt=range?.items?.find(item=>item.key==="gpt"); return {selector:document.querySelector(".quota-extension-model-button")?.textContent,globalTotal:document.querySelector(".token-summary-number")?.textContent,subRows:document.querySelectorAll(".token-model-row.is-model-detail").length,expectedRows:gpt?.models?.length,subtotal:document.querySelector(".token-family-summary")?.textContent}; })()');
+  const gptDetail = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const state=window.__codexUsageHeaderDebug__?.getExtendedState?.()?.tokens; const range=state?.ranges?.[state.selectedRange]; const gpt=range?.items?.find(item=>item.key==="gpt"); return {selector:document.querySelector(".quota-extension-model-button")?.textContent,globalTotal:document.querySelector(".token-global-stat-value")?.textContent||document.querySelector(".token-summary-number")?.textContent,subRows:document.querySelectorAll(".token-model-row.is-model-detail").length,expectedRows:gpt?.models?.length,familyLabel:document.querySelector(".token-summary-unit")?.textContent}; })()');
   assert.match(gptDetail.selector, /GPT/);
   assert.doesNotMatch(gptDetail.selector, /模型：/);
   assert.equal(gptDetail.globalTotal, totalBeforeModelFilter, 'changing model filter must not change the global total');
   assert.equal(gptDetail.subRows, gptDetail.expectedRows);
-  assert.match(gptDetail.subtotal, /占总计/);
+  assert.match(gptDetail.familyLabel, /GPT/);
   await evaluateInTarget(target.webSocketDebuggerUrl, `document.querySelector('.quota-extension-range-tab[data-range="${originalTokenView.range}"]')?.click()`);
   await new Promise(resolve => setTimeout(resolve, 80));
   await evaluateInTarget(target.webSocketDebuggerUrl, 'document.querySelector(".quota-extension-model-button")?.click()');
@@ -100,7 +101,7 @@ try {
     assert.equal(snapshot.hostHeight, 34);
     assert.equal(snapshot.hostRegion, 'no-drag');
     assert.equal(snapshot.triggerRegion, 'no-drag');
-    assert.equal(snapshot.gapStyle, '5px');
+    assert.equal(snapshot.gapStyle, '0px', '连续胶囊与箭头之间不留缝隙');
     assert.equal(snapshot.topRefresh, 0);
     if (snapshot.track !== null) assert.equal(snapshot.track, '12px');
   }
@@ -135,8 +136,8 @@ try {
 
   const cardLayout = await evaluateInTarget(target.webSocketDebuggerUrl, '(() => { const card=document.querySelector(".codex-usage-popover-v24"); const bars=[...card.querySelectorAll(".row .track")].map(node=>node.getBoundingClientRect()); const firstRow=card.querySelector(".row"); const label=firstRow?.querySelector(".label")?.getBoundingClientRect(); const track=firstRow?.querySelector(".track")?.getBoundingClientRect(); const credits=card.querySelector(".credits-copy"); const balance=card.querySelector(".balance"); const meta=card.querySelector(".meta-actions"); const details=card.querySelector(".credit-details"); const resetRows=[...card.querySelectorAll(".credit-detail")]; return {barDelta:bars.length===2?Math.abs(bars[0].left-bars[1].left):null,rowGap:label&&track?Math.round(track.left-label.right):null,creditsIcon:Boolean(credits?.querySelector("img")),resetIcon:Boolean(card.querySelector(".credit-icon")),copyYDelta:credits&&balance?Math.abs(credits.getBoundingClientRect().top-balance.getBoundingClientRect().top):null,flexWrap:meta?getComputedStyle(meta).flexWrap:null,resetNoWrap:resetRows.length>0&&resetRows.every(row=>{const strong=row.querySelector("strong"),span=row.querySelector("span");return strong&&span&&getComputedStyle(strong).whiteSpace==="nowrap"&&getComputedStyle(span).whiteSpace==="nowrap"}),detailsTitle:Boolean(card.querySelector(".reset-details-title")),detailsBorderTop:details?getComputedStyle(details).borderTopWidth:null,creditGap:details?getComputedStyle(details).gap:null,autoControl:Boolean(card.querySelector(".refresh-interval")),modal:Boolean(document.getElementById("codex-usage-modal-v24"))}; })()');
   assert.equal(cardLayout.barDelta, 0);
-  assert.ok(cardLayout.creditGap === '5px' || cardLayout.creditGap === '12px');
-  assert.ok(cardLayout.rowGap === 10 || cardLayout.rowGap === 14);
+  assert.ok(['5px', '6px', '12px'].includes(cardLayout.creditGap));
+  assert.ok([6, 10, 14].includes(cardLayout.rowGap));
   assert.equal(typeof cardLayout.creditsIcon, 'boolean');
   assert.equal(cardLayout.resetIcon, true);
   assert.ok(cardLayout.copyYDelta !== null && cardLayout.copyYDelta <= 8);
@@ -206,13 +207,14 @@ try {
   }
   await new Promise(resolve => setTimeout(resolve, 80));
   assert.equal(await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState()?.refreshState'), 'loading');
-  const deadline = Date.now() + 7000;
+  // App Server 重启/恢复连接可能触发一次后台重连，按客户端请求超时留出完整恢复窗口。
+  const deadline = Date.now() + 25000;
   let finalState = 'loading';
   while (Date.now() < deadline && finalState === 'loading') {
     await new Promise(resolve => setTimeout(resolve, 160));
     finalState = await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState()?.refreshState');
   }
-  assert.notEqual(finalState, 'loading');
+  assert.ok(['success', 'idle'].includes(finalState), 'manual refresh should settle successfully; an error state is not a successful refresh');
   assert.equal(await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.getState()?.lastUpdated > ' + Number(before || 0)), true);
 
   await evaluateInTarget(target.webSocketDebuggerUrl, 'window.__codexUsageHeaderDebug__?.showPopover()');

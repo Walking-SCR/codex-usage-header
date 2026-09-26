@@ -10,6 +10,14 @@ LOG_FILE="$LOG_DIR/Codex Quota Header.log"
 # macOS 就会报"应用程序没有响应"。因此这里改为立即派生后台 worker
 # 执行真正逻辑，App 进程本身秒退，之后每次点击都会启动全新实例。
 if [[ "${1:-}" != "--__worker" ]]; then
+  # 停止之前残留的旧 worker 进程，避免旧的退出重试循环干扰
+  old_workers=$(/bin/ps -axww -o pid= -o command= | /usr/bin/awk '($0 ~ "codex-usage-header-launcher" || $0 ~ "Codex Quota Header") && $0 ~ "--__worker" { print $1 }' || true)
+  for pid in $old_workers; do
+    if [[ -n "$pid" && "$pid" != "$$" ]]; then
+      /bin/kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done
+  /bin/rm -rf "${TMPDIR:-/tmp}/codex-quota-header-launcher.lock" 2>/dev/null || true
   {
     printf '\n[%s] Launch requested' "$(/bin/date '+%Y-%m-%d %H:%M:%S')"
     printf ' %q' "$@"
@@ -53,9 +61,8 @@ trap release_lock EXIT
 acquire_lock || exit 1
 
 desktop_pids() {
-  /bin/ps -ax -o pid= -o command= | /usr/bin/awk '
-    $2 == "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" ||
-    $2 == ENVIRON["HOME"] "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" { print $1 }
+  /bin/ps -axww -o pid= -o command= | /usr/bin/awk '
+    $0 ~ "/(ChatGPT|Codex)\\.app/Contents/MacOS/(ChatGPT|Codex)" { print $1 }
   '
 }
 
@@ -119,6 +126,9 @@ if run_launcher "$@"; then
   :
 else
   initial_rc=$?
+  if [[ "$initial_rc" -eq 3 ]]; then
+    exit 0
+  fi
   if [[ "$initial_rc" -ne 10 ]]; then
     show_launch_failure_dialog >/dev/null 2>&1 || true
     exit "$initial_rc"
@@ -129,6 +139,7 @@ else
   # 如果 ChatGPT 的正常退出处理器正在等待渲染器或后台辅助进程，
   # 也不能让 AppleScript 阻塞恢复流程。
   /usr/bin/osascript -e 'tell application "ChatGPT" to quit' >/dev/null 2>&1 &
+  /usr/bin/osascript -e 'tell application "Codex" to quit' >/dev/null 2>&1 &
   quit_pid=$!
   if ! wait_for_desktop_exit; then
     kill "$quit_pid" 2>/dev/null || true
@@ -144,6 +155,9 @@ else
     :
   else
     retry_rc=$?
+    if [[ "$retry_rc" -eq 3 ]]; then
+      exit 0
+    fi
     show_launch_failure_dialog >/dev/null 2>&1 || true
     exit "$retry_rc"
   fi

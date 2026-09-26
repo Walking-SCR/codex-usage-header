@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { getMonitorStatus, isMonitorProcess, isPidAlive, monitorCodeHash } from './monitor-lock.mjs';
+import { getAccountHealth } from './account-health.mjs';
+import { desktopExecutableCandidates } from './desktop-runtime.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INJECTED_SCRIPT_PATH = join(__dirname, 'injected.js');
@@ -36,6 +38,9 @@ const DESIGN_ICONS = {
 };
 const DEFAULT_PORT = 9229;
 const READY_TIMEOUT_MS = 12000;
+const CDP_EVALUATION_TIMEOUT_MS = 8000;
+const CDP_INJECTION_TIMEOUT_MS = 20000;
+const CDP_INJECTION_RETRY_DELAY_MS = 300;
 
 function readIconDataUrl(name) {
   const data = readFileSync(join(ASSET_DIR, `${name}.svg`));
@@ -49,10 +54,7 @@ function readImageDataUrl(name, extension, mimeType) {
 
 export function locateExecutable() {
   if (process.platform === 'darwin') {
-    const candidates = [
-      '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT',
-      `${process.env.HOME}/Applications/ChatGPT.app/Contents/MacOS/ChatGPT`,
-    ];
+    const candidates = desktopExecutableCandidates();
     return candidates.find(existsSync) ?? candidates[0];
   }
 
@@ -71,12 +73,9 @@ export function locateExecutable() {
 
 export function getDesktopAppProcessInfo(port = DEFAULT_PORT) {
   if (process.platform !== 'darwin') return { running: false, hasCdpFlag: false };
-  const candidates = [
-    '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT',
-    `${process.env.HOME}/Applications/ChatGPT.app/Contents/MacOS/ChatGPT`,
-  ];
+  const candidates = desktopExecutableCandidates();
   try {
-    const processes = execFileSync('/bin/ps', ['-ax', '-o', 'command='], { encoding: 'utf8' });
+    const processes = execFileSync('/bin/ps', ['-axww', '-o', 'command='], { encoding: 'utf8' });
     const lines = processes.split('\n');
     let running = false;
     let hasCdpFlag = false;
@@ -143,17 +142,43 @@ export function selectRendererTargets(targets) {
 }
 
 export function selectUsageTargets(targets) {
-  return selectRendererTargets(targets).filter(target => (target.url || '').toLowerCase() === 'app://-/index.html');
+  return targets.filter(target => {
+    if (!target?.webSocketDebuggerUrl || !['page', 'webview'].includes(target.type)) return false;
+    try {
+      const url = new URL(target.url);
+      if (url.protocol !== 'app:') return false;
+      if (url.hostname !== '-') return false;
+      const initialRoute = url.searchParams.get('initialRoute');
+      // 明确排除设置、个人资料等辅助浮窗窗口
+      if (initialRoute && /^\/(?:settings|preferences|profile|auth|login|help|avatar-overlay)(?:\/|$|\?)/i.test(initialRoute)) {
+        return false;
+      }
+      const pathname = url.pathname.toLowerCase();
+      // 支持根路径、index.html 以及各类单页工作区或对话路由
+      const isUsagePath = ['/', '/index.html', '/work/index.html', '/chat/index.html', '/work', '/chat'].includes(pathname)
+        || /^\/(?:work|threads?|chats?|projects?|new)(?:\/|$)/i.test(pathname);
+      if (!isUsagePath) return false;
+      // 若有 initialRoute，确认符合主工作路由
+      if (initialRoute && !/^\/(?:work|threads?|chats?|projects?|new)(?:\/|$|\?)/i.test(initialRoute)) {
+        return false;
+      }
+      return true;
+    } catch { return false; }
+  });
 }
 
 const cdpSocketPool = new Map();
 
+export function closeCdpSocket(wsUrl) {
+  const entry = cdpSocketPool.get(wsUrl);
+  if (!entry) return;
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  cdpSocketPool.delete(wsUrl);
+  try { entry.ws.close(); } catch {}
+}
+
 export function closeAllCdpSockets() {
-  for (const [wsUrl, entry] of cdpSocketPool.entries()) {
-    if (entry.idleTimer) clearTimeout(entry.idleTimer);
-    try { entry.ws.close(); } catch {}
-    cdpSocketPool.delete(wsUrl);
-  }
+  for (const wsUrl of cdpSocketPool.keys()) closeCdpSocket(wsUrl);
 }
 
 function resetIdleTimer(entry, wsUrl) {
@@ -217,7 +242,8 @@ function getOrCreateCdpSocket(wsUrl) {
 
   ws.onclose = () => {
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
-    cdpSocketPool.delete(wsUrl);
+    // 重试可能已经建立新连接；旧 socket 的延迟 close 不得摘除新连接。
+    if (cdpSocketPool.get(wsUrl) === entry) cdpSocketPool.delete(wsUrl);
     for (const waiter of entry.pending.values()) {
       waiter.reject(new Error('cdp_websocket_closed'));
     }
@@ -229,7 +255,7 @@ function getOrCreateCdpSocket(wsUrl) {
   return entry;
 }
 
-export async function evaluateInTarget(wsUrl, expression, timeoutMs = 6000) {
+export async function evaluateInTarget(wsUrl, expression, timeoutMs = CDP_EVALUATION_TIMEOUT_MS) {
   const entry = getOrCreateCdpSocket(wsUrl);
   if (entry.ws.readyState !== WebSocket.OPEN) {
     await entry.readyPromise;
@@ -239,6 +265,7 @@ export async function evaluateInTarget(wsUrl, expression, timeoutMs = 6000) {
     const id = entry.nextId++;
     const timer = setTimeout(() => {
       entry.pending.delete(id);
+      closeCdpSocket(wsUrl);
       reject(new Error('cdp_evaluation_timeout'));
     }, timeoutMs);
 
@@ -300,9 +327,25 @@ export function classifyMountProbe(probe) {
 //   mounted —— 组件已挂载；waiting —— 已注入、顶栏尚未出现（页面观察器会继续尝试）；
 //   failed  —— 已注入、顶栏存在锚点却挂载不上（明确错误）。
 // 只有安装标记都没立起来时才抛错（注入本身失败）。
+function isRetryableCdpInjectionError(error) {
+  return /cdp_evaluation_timeout|cdp_(?:socket|websocket)_closed|cdp_eval_failed/i.test(String(error?.message || error));
+}
+
+async function evaluateInjectionWithRetry(wsUrl, scriptCode) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await evaluateInTarget(wsUrl, scriptCode, CDP_INJECTION_TIMEOUT_MS);
+    } catch (error) {
+      if (attempt === 1 || !isRetryableCdpInjectionError(error)) throw error;
+      closeCdpSocket(wsUrl);
+      await new Promise(resolve => setTimeout(resolve, CDP_INJECTION_RETRY_DELAY_MS));
+    }
+  }
+}
+
 export async function injectScriptIntoTarget(wsUrl, scriptCode) {
-  await evaluateInTarget(wsUrl, scriptCode);
-  const deadline = Date.now() + 4000;
+  await evaluateInjectionWithRetry(wsUrl, scriptCode);
+  const deadline = Date.now() + 6000;
   let probe;
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 150));
@@ -321,18 +364,21 @@ export async function injectScriptIntoTarget(wsUrl, scriptCode) {
   return { ...probe, status };
 }
 
-async function waitForTargets(port, timeoutMs = READY_TIMEOUT_MS) {
+export async function waitForTargets(port, timeoutMs = READY_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
+  let lastTargets = [];
   while (Date.now() < deadline) {
     try {
       const targets = await fetchCdpTargets(port);
-      if (targets.length > 0) return targets;
+      lastTargets = targets;
+      if (targets.length > 0 && selectUsageTargets(targets).length > 0) return targets;
     } catch (error) {
       lastError = error;
     }
     await new Promise(resolve => setTimeout(resolve, 300));
   }
+  if (lastTargets.length > 0) return lastTargets;
   throw new Error(`cdp_not_ready: ${lastError?.message || 'no_targets'}`);
 }
 
@@ -379,6 +425,7 @@ export async function getStatus(port = DEFAULT_PORT) {
             installed: Boolean(window.__codexUsageHeaderInstalled__),
             sourceDir: window.__codexUsageHeaderSource__ || null,
             contentHash: window.__codexUsageHeaderContentHash__ || null,
+            appServer: window.__codexUsageHeaderAppServerDiagnostics__ || null,
             mounted: Boolean(element && element.isConnected),
             placement: element?.dataset?.placement || null,
             title: document.title,
@@ -431,8 +478,9 @@ export async function getStatus(port = DEFAULT_PORT) {
 }
 
 export function statusExitCode(status) {
+  if (status.mountedCount > 0) return 0;
   if (status.failedCount > 0) return 2;
-  return status.mountedCount > 0 || status.waitingCount > 0 ? 0 : 2;
+  return status.waitingCount > 0 ? 0 : 2;
 }
 
 // 计算注入脚本的内容哈希并填入占位符：任何代码改动都会改变哈希，
@@ -440,6 +488,7 @@ export function statusExitCode(status) {
 export function buildInjectableScript() {
   const scriptSource = readFileSync(INJECTED_SCRIPT_PATH, 'utf8');
   const hash = createHash('sha256').update(scriptSource);
+  hash.update(getAccountHealth.toString());
   hash.update(readFileSync(join(DESIGN_DIR, 'design.css')));
   for (const path of Object.values(DESIGN_ICONS)) hash.update(readFileSync(join(DESIGN_DIR, path)));
   const contentHash = hash.digest('hex');
@@ -492,7 +541,7 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
     return [key, `data:image/svg+xml;base64,${data.toString('base64')}`];
   }));
   const designCss = readFileSync(join(DESIGN_DIR, 'design.css'), 'utf8');
-  const bootstrap = `window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderDesignIcons__ = ${JSON.stringify(designIcons)}; window.__codexUsageHeaderDesignCSS__ = ${JSON.stringify(designCss)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))};`;
+  const bootstrap = `window.__codexUsageHeaderAccountHealth__ = ${getAccountHealth.toString()}; window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderDesignIcons__ = ${JSON.stringify(designIcons)}; window.__codexUsageHeaderDesignCSS__ = ${JSON.stringify(designCss)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))};`;
 
   const results = [];
   for (const target of renderers) {
@@ -664,10 +713,13 @@ async function main() {
         : '';
     console.log(`  ${mark} [${item.status}] ${item.title || item.target}${item.placement ? ` (${item.placement})` : ''}${extra}`);
   }
-  if (result.failedCount > 0) process.exitCode = 2;
-  else if (result.mountedCount === 0 && result.waitingCount > 0) {
+  if (result.mountedCount > 0) {
+    process.exitCode = 0;
+  } else if (result.waitingCount > 0) {
     console.log('[Codex Quota Header] 顶栏尚未出现，已进入等待挂载状态；打开任意对话页后组件会自动出现。');
     process.exitCode = 3;
+  } else if (result.failedCount > 0) {
+    process.exitCode = 2;
   }
 }
 

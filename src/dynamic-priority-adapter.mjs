@@ -12,6 +12,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, chmodSy
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
+import { getAccountHealth } from './account-health.mjs';
 
 const DEFAULT_AUTH_DIR = join(homedir(), '.cli-proxy-api');
 const QUOTA_SNAPSHOT_NAME = 'quota-snapshot.json';
@@ -91,7 +92,13 @@ export function readPoolStatus(options = {}) {
   try {
     const raw = readFileSync(statusPath, 'utf8');
     const data = JSON.parse(raw);
-    const rankings = Array.isArray(data.rankings) ? data.rankings : [];
+    const rankings = (Array.isArray(data.rankings) ? data.rankings : [])
+      .filter(item => item && typeof item.email === 'string')
+      .map(item => {
+        const health = getAccountHealth({}, item);
+        return { email: item.email.trim(), priority: Number(item.priority) || 0,
+          status: String(item.status || '').toUpperCase(), reason: health.code, httpStatus: health.httpStatus };
+      });
     const accountMap = {};
 
     let fallbackIndex = 1;
@@ -179,7 +186,10 @@ export function formatAccountTabHtml(rawLabel, email, poolStatus = {}, isSelecte
   if (/^备选(\d+)$/.test(tag || '')) tag = tag.replace(/^备选(\d+)$/, '备$1');
 
   const rankTag = tag ? ` · ${tag}` : '';
-  const activeDot = isInUse ? '<span class="quota-tab-dot"></span>' : '';
+  const health = getAccountHealth({}, info);
+  const activeDot = health.state === 'unavailable'
+    ? '<span class="quota-tab-dot is-error" aria-hidden="true"></span>'
+    : isInUse ? '<span class="quota-tab-dot"></span>' : '';
 
   return `${activeDot}${label}${rankTag}`;
 }

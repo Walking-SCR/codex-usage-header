@@ -47,4 +47,31 @@ No actionable P0, P1, or P2 differences remain for the requested compact dropdow
 
 Follow-up P3: day-over-day Token trend remains omitted because the local source has no previous-period comparison metric.
 
+## 2026-09-26：账号异常红点与通俗说明
+
+- 本次视觉参考：`/var/folders/f0/52x8x6191fb4s_yfn9w1wfbr0000gn/T/codex-clipboard-240c6b46-530b-4e49-b9e2-502ef5b6de59.png`。
+- 生产渲染器隔离预览：`http://127.0.0.1:4270/compare`，全部账号与错误均为模拟数据。
+- 已检查正常绿色标记、503 认证不可用红点、403 验证异常和深色提示；不改变字体、其余配色、图标资产或路由排序。
+- 新测试验证缓存不会掩盖认证失败、账号错误严格匹配、恢复清除红点、验证链接不进入渲染快照、异常账号可只读选中查看。21/21 套测试通过。
+- 当时的阻断：系统盘剩余约 163MB，预览保存失败。此后可用空间恢复至约 3.6GB，本次安装完成；未通过删除用户文件释放空间。
+- 对比归档：`audit/2026-09-26-account-health/comparison.png`（1280 × 1000）；英文窄屏：`audit/2026-09-26-account-health/narrow-en.png`（480 × 900）。异常红点与选中高亮独立，点选账号仅查看统计，不改变调用优先级。
+
+## 2026-09-26：Codex 26.924 更新适配
+
+- 实机确认内置 CLI 从 `Contents/Resources/codex` 移至 `Contents/Resources/codex-cli/bin/codex`，版本为 `codex-cli 0.158.0-alpha.2`。新版路径已经成功完成初始化并读取额度。
+- Work 页面仍使用 `app://-/index.html`，并非已证实的独立 renderer 问题。实际原因是原生操作按钮外新增两层 `display: contents` 包装，旧挂载逻辑读取了零尺寸容器。
+- 新逻辑跳过透明布局包装，保留顶栏尺寸与位置校验；明确的 App Shell 工具栏可作为无 `header` 场景的安全锚点。目标筛选仍排除付款、头像与独立窗口。
+- 合并安装目录已有热修复的 RPC 参数兼容、有限重连和 CDP 注入重试；没有回退源码新版 Token 界面。失败提示结束首次加载，已有额度快照保留；不向页面推送原始 stderr 或 RPC 错误数据。
+- `npm test`：24/24 套通过；新增路径、并发初始化、断线重建、旧 RPC 参数与首次失败/缓存失败的行为回归。语法检查与 `git diff --check` 通过。
+- 已在运行中的 Work 页面热更新，无需重启桌面应用。原生页面只读检查：组件数量 1，挂载 `thread`，高度 34px，父容器为 `flex`；用量状态 `ready`，连接 `initialized: true`、`lastError: null`。组件右边缘与同一操作组原生按钮间距 6px，无遮挡。
+- 本次没有自动操作原生窗口中的账号、路由或模块设置；原生窗口点击/悬停未自动验证，交互行为由生产渲染器预览及测试覆盖。
+
+## 2026-09-26：新版实机全功能回归
+
+- `npm test`：24/24 套通过；包含新版 CLI 路径发现、App Server 初始化/断线重连、RPC 新旧参数兼容、CDP 超时重试、Work 顶栏挂载、失败状态提示、账号健康和 Token 聚合。
+- `test/live-renderer.test.mjs` 与 `test/interactive-v3.test.mjs` 均在 Codex 26.924 实际 renderer 运行通过：五种视口宽度、胶囊展开/收起、悬停卡片、语言切换、额度刷新、重置券、Google/Claude 折叠、Token 周期与模型、模块显隐、账号仅查看切换、账号名称遮罩。
+- 修正了旧实机断言：模型筛选时比较全局总量与模型小计、误期望胶囊留缝、误用旧账号标签和旧布局间距。生产 UI 未因测试而改动。
+- 实机回归截图存于忽略跟踪的 `audit/2026-09-26-live-regression/04-implementation-wide-popover.png`；既有验收截图未覆盖。
+- 测试后恢复窄屏模拟、收起弹卡并恢复模块可见状态；Codex App Server 仍为已初始化、额度为 ready。未改动账号路由或优先级。
+
 final result: passed
