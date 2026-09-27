@@ -4,6 +4,7 @@
  * 职责：
  * 1. 轻量读取 ~/.config/codex-cli-model-bridge/quota-state.json 获取当前运行模式（openai / external）
  * 2. 提供触发 `python3 ... quota_failover.py toggle --apply --restart` 的异步执行方法
+ * 3. 切换完成后，触发打开【Codex Quota Header】APP，确保应用携带 CDP 端口启动并完成插件挂载
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -19,6 +20,11 @@ const DEFAULT_STATE_PATH = join(
 const DEFAULT_SCRIPT_PATH = join(
   homedir(),
   '.codex/skills/codex-autoheal-bridge/scripts/quota_failover.py'
+);
+
+const DEFAULT_APP_PATH = join(
+  homedir(),
+  'Applications/Codex Quota Header.app'
 );
 
 /**
@@ -62,8 +68,21 @@ export function readFailoverStatus(options = {}) {
 }
 
 /**
+ * 打开【Codex Quota Header】APP
+ */
+export function launchCodexQuotaHeaderApp(options = {}) {
+  const appPath = options.appPath || DEFAULT_APP_PATH;
+  if (existsSync(appPath)) {
+    execFile('/usr/bin/open', [appPath], () => {});
+  } else {
+    execFile('/usr/bin/open', ['-a', 'Codex Quota Header'], () => {});
+  }
+}
+
+/**
  * 触发双向交替切换命令
  * python3 ~/.codex/skills/codex-autoheal-bridge/scripts/quota_failover.py toggle --apply --restart
+ * 执行后触发打开【Codex Quota Header】APP
  */
 export function triggerToggleFailoverMode(options = {}) {
   const scriptPath = options.scriptPath || DEFAULT_SCRIPT_PATH;
@@ -79,6 +98,11 @@ export function triggerToggleFailoverMode(options = {}) {
       [scriptPath, 'toggle', '--apply', '--restart'],
       { timeout: 20000 },
       (error, stdout, stderr) => {
+        // 模式切换命令执行后关闭了 app，触发延迟打开【Codex Quota Header】APP 重新拉起并完成注入
+        setTimeout(() => {
+          launchCodexQuotaHeaderApp(options);
+        }, 1200);
+
         if (error) {
           return resolve({ ok: false, error: error.message, stderr: String(stderr || '') });
         }
