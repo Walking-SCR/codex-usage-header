@@ -46,6 +46,7 @@ function makeEl({ tag = 'div', rect = makeRect(), attrs = {}, text = '', childre
       let node = this;
       while (node) {
         if (selector === 'header' && node.tagName === 'HEADER') return node;
+        if (selector === '[data-app-shell-header-slot="end"]' && node._attrs['data-app-shell-header-slot'] === 'end') return node;
         if (selector === '[data-app-shell-header-toolbar="true"]' && node._attrs['data-app-shell-header-toolbar'] === 'true') return node;
         if (selector === '[role="toolbar"]' && node._attrs.role === 'toolbar') return node;
         node = node.parentElement;
@@ -69,8 +70,9 @@ function makeEl({ tag = 'div', rect = makeRect(), attrs = {}, text = '', childre
   return el;
 }
 
-function makeEnv(buttons) {
+function makeEnv(buttons, { title = '' } = {}) {
   const fakeDocument = {
+    title,
     querySelectorAll(selector) {
       if (selector === 'button') return [...buttons];
       return [];
@@ -83,6 +85,53 @@ function makeEnv(buttons) {
     `${logicBlock}\nreturn { resolveMountPoint, validateActionAnchor };`
   );
   return factory(fakeDocument, fakeWindow, fakeGetComputedStyle);
+}
+
+// 首页/空白新聊天可同时渲染「聊天操作」和右上角 [+]；generic title 下必须优先把组件放到 [+] 左侧。
+{
+  const threadActionsBtn = makeEl({
+    tag: 'button',
+    rect: makeRect({ top: 8, left: 1320, width: 28, height: 28 }),
+    attrs: { 'aria-label': '聊天操作' },
+  });
+  const newChatBtn = makeEl({
+    tag: 'button',
+    rect: makeRect({ top: 8, left: 1400, width: 28, height: 28 }),
+    attrs: { 'aria-label': '新建标签页' },
+  });
+  const actionGroup = makeEl({
+    rect: makeRect({ top: 6, left: 1310, width: 130, height: 36 }),
+    children: [threadActionsBtn, newChatBtn],
+  });
+  const header = makeEl({ tag: 'header', rect: makeRect({ width: 1440, height: 46 }), children: [actionGroup] });
+
+  const point = makeEnv([threadActionsBtn, newChatBtn], { title: 'ChatGPT' }).resolveMountPoint();
+  assert.ok(point, '空白新聊天页必须解析到有效挂载点');
+  assert.equal(point.reference, newChatBtn, '空白新聊天页应将组件锚定在 [+] 前，而非聊天操作按钮');
+  assert.equal(point.container, actionGroup, '组件与 [+] 应共享实际操作区容器');
+  assert.equal(point.placement, 'new-chat');
+}
+
+// 回归：新版主页的 [+] 位于固定 end slot。挂载到其内层 action row，不能成为 header 同级 flex 项。
+{
+  const plusButton = makeEl({
+    tag: 'button',
+    rect: makeRect({ top: 8, left: 1364, width: 28, height: 28 }),
+    attrs: { 'aria-label': '新建标签页' },
+  });
+  const plusWrapper = makeEl({ rect: makeRect({ top: 8, left: 1364, width: 28, height: 28 }), children: [plusButton] });
+  const actionGroup = makeEl({ rect: makeRect({ top: 0, left: 1364, width: 28, height: 44 }), display: 'flex', children: [plusWrapper] });
+  const actionRow = makeEl({ rect: makeRect({ top: 0, left: 1364, width: 28, height: 44 }), display: 'inline-flex', children: [actionGroup] });
+  const slotContent = makeEl({ rect: makeRect({ top: 0, left: 1364, width: 36, height: 44 }), children: [actionRow] });
+  const endSlot = makeEl({ rect: makeRect({ top: 0, left: 1364, width: 36, height: 44 }), attrs: { 'data-app-shell-header-slot': 'end' }, children: [slotContent] });
+  makeEl({ tag: 'header', rect: makeRect({ width: 1400, height: 44 }), children: [endSlot] });
+
+  const point = makeEnv([plusButton], { title: 'ChatGPT' }).resolveMountPoint();
+  assert.ok(point, '主页必须找到右侧 App Shell end slot');
+  assert.equal(point.container, actionRow, '组件应进入 [+] 所在的内层操作行');
+  assert.equal(point.reference, actionGroup, '组件应插入 [+] 操作组前');
+  assert.equal(point.toolbar, endSlot);
+  assert.equal(point.placement, 'new-chat-right');
 }
 
 // 构造：侧栏按钮（DOM 顺序在前，不在 <header> 内）+ 顶栏 header 内按钮

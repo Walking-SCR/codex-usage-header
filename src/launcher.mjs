@@ -99,9 +99,11 @@ export function isDesktopAppRunning() {
   return getDesktopAppProcessInfo().running;
 }
 
+const cdpHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 1, keepAliveMsecs: 10000 });
+
 export function fetchCdpTargets(port = DEFAULT_PORT) {
   return new Promise((resolve, reject) => {
-    const req = http.get(`http://127.0.0.1:${port}/json/list`, { timeout: 2000 }, res => {
+    const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: cdpHttpAgent, timeout: 2000 }, res => {
       let data = '';
       res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
@@ -183,6 +185,10 @@ export function closeAllCdpSockets() {
 
 function resetIdleTimer(entry, wsUrl) {
   if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  if (entry.bindingListeners.size > 0) {
+    entry.idleTimer = null;
+    return;
+  }
   entry.idleTimer = setTimeout(() => {
     if (entry.pending.size === 0) {
       try { entry.ws.close(); } catch {}
@@ -208,6 +214,7 @@ function getOrCreateCdpSocket(wsUrl) {
     ws,
     nextId: 1,
     pending: new Map(),
+    bindingListeners: new Set(),
     readyPromise: null,
     idleTimer: null,
   };
@@ -220,7 +227,15 @@ function getOrCreateCdpSocket(wsUrl) {
   ws.onmessage = event => {
     try {
       const message = JSON.parse(event.data);
-      if (message.id === undefined) return;
+      if (message.id === undefined) {
+        if (message.method === 'Runtime.bindingCalled' && typeof message.params?.name === 'string') {
+          for (const binding of [...entry.bindingListeners]) {
+            if (binding.name !== message.params.name) continue;
+            try { binding.listener(message.params); } catch { /* Listener failure must not break CDP. */ }
+          }
+        }
+        return;
+      }
       const waiter = entry.pending.get(message.id);
       if (!waiter) return;
       entry.pending.delete(message.id);
@@ -248,6 +263,12 @@ function getOrCreateCdpSocket(wsUrl) {
       waiter.reject(new Error('cdp_websocket_closed'));
     }
     entry.pending.clear();
+    for (const binding of [...entry.bindingListeners]) {
+      try { binding.listener({ name: binding.name, disconnected: true }); } catch { /* teardown callback */ }
+    }
+    entry.bindingListeners.clear();
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
   };
 
   cdpSocketPool.set(wsUrl, entry);
@@ -290,6 +311,58 @@ export async function evaluateInTarget(wsUrl, expression, timeoutMs = CDP_EVALUA
       reject(err);
     }
   });
+}
+
+function sendCdpCommand(entry, wsUrl, method, params = {}, timeoutMs = CDP_EVALUATION_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const id = entry.nextId++;
+    const timer = setTimeout(() => {
+      entry.pending.delete(id);
+      closeCdpSocket(wsUrl);
+      reject(new Error(`cdp_${method}_timeout`));
+    }, timeoutMs);
+    entry.pending.set(id, {
+      resolve: value => { clearTimeout(timer); resolve(value); },
+      reject: error => { clearTimeout(timer); reject(error); },
+    });
+    try {
+      entry.ws.send(JSON.stringify({ id, method, params }));
+    } catch (error) {
+      clearTimeout(timer);
+      entry.pending.delete(id);
+      reject(error);
+    }
+  });
+}
+
+/**
+ * Subscribe to a Runtime binding event. The subscribed CDP socket remains open
+ * while at least one listener is registered; callers must unsubscribe on stop.
+ */
+export async function subscribeToCdpBinding(wsUrl, name, listener, timeoutMs = CDP_EVALUATION_TIMEOUT_MS) {
+  if (!/^[$A-Z_a-z][$\w]*$/.test(name) || typeof listener !== 'function') {
+    throw new TypeError('invalid_cdp_binding_subscription');
+  }
+  const entry = getOrCreateCdpSocket(wsUrl);
+  if (entry.ws.readyState !== WebSocket.OPEN) await entry.readyPromise;
+  const binding = { name, listener };
+  entry.bindingListeners.add(binding);
+  resetIdleTimer(entry, wsUrl);
+  try {
+    await sendCdpCommand(entry, wsUrl, 'Runtime.addBinding', { name }, timeoutMs);
+  } catch (error) {
+    // A previous monitor instance may have registered this binding on the
+    // same renderer session. The existing binding is still valid.
+    if (!/already exists|duplicate/i.test(String(error?.message || ''))) {
+      entry.bindingListeners.delete(binding);
+      resetIdleTimer(entry, wsUrl);
+      throw error;
+    }
+  }
+  return () => {
+    entry.bindingListeners.delete(binding);
+    resetIdleTimer(entry, wsUrl);
+  };
 }
 
 // 挂载状态探针：区分「已注入/等待顶栏/已挂载/挂载失败」四态。
@@ -600,7 +673,7 @@ export async function startUsageMonitor(port = DEFAULT_PORT) {
     const stopped = await stopUsageMonitor(source);
     if (!stopped.stopped) throw new Error(`monitor_handoff_failed: ${stopped.reason}`);
   }
-  const child = spawn(process.execPath, [MONITOR_PATH, '--port', String(port)], {
+  const child = spawn(process.execPath, ['--max-old-space-size=64', MONITOR_PATH, '--port', String(port)], {
     detached: true,
     stdio: 'ignore',
   });

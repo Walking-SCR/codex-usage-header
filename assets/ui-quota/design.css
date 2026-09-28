@@ -167,6 +167,7 @@
 .popover-shell.quota-dashboard{
   width:590px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);
   padding:12px 14px 16px;border-radius:18px;
+  container-type:inline-size;container-name:quota-card;
 }
 .quota-dashboard .popover-header{min-height:0;flex-direction:row;align-items:center;gap:8px;padding:12px 14px;margin-bottom:10px;border-radius:14px}
 .quota-dashboard .popover-brand{gap:10px}
@@ -681,4 +682,30 @@
 .quota-dashboard.is-dark .token-collapse-btn {
   background: rgba(0, 122, 255, 0.12);
   border-color: rgba(0, 122, 255, 0.4);
+}
+
+/* 依据卡片自身可用宽度重排，而不是只看整个 Codex 窗口宽度。 */
+@container quota-card (max-width: 719px) {
+  .quota-dashboard .popover-header{align-items:flex-start;gap:7px;padding:10px}
+  .quota-dashboard .popover-subtitle{white-space:normal}
+  .quota-dashboard .usage-section .row{grid-template-columns:24px 48px minmax(45px,1fr) 34px minmax(90px,auto);gap:5px;padding:4px 6px}
+  .quota-dashboard .credit-details{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
+  .quota-dashboard .quota-extension-row{grid-template-columns:minmax(85px,120px) minmax(40px,1fr) 34px minmax(72px,90px);gap:4px}
+  .quota-dashboard .quota-extension-token-table{grid-template-columns:110px minmax(0,1fr);gap:7px}
+  .quota-dashboard .token-donut{width:104px;padding:15px}
+  .quota-dashboard .token-models-col{padding-left:8px}
+}
+
+@container quota-card (max-width: 520px) {
+  .popover-shell.quota-dashboard{padding:9px}
+  .quota-dashboard .popover-header{flex-wrap:wrap;gap:7px;padding:9px}
+  .quota-dashboard .popover-actions{width:100%;justify-content:flex-end}
+  .quota-dashboard .usage-section .row{grid-template-columns:24px minmax(0,1fr) 34px;gap:5px}
+  .quota-dashboard .usage-section .row .track{grid-column:1/-1;grid-row:2}
+  .quota-dashboard .usage-section .row .percent{grid-column:3;grid-row:1}
+  .quota-dashboard .usage-section .row .value{grid-column:1/-1;grid-row:3;white-space:normal}
+  .quota-dashboard .credit-details{grid-auto-flow:column;grid-auto-columns:minmax(150px,1fr);grid-template-columns:none;overflow-x:auto}
+  .quota-dashboard .quota-extension-token-table{grid-template-columns:1fr;gap:8px}
+  .quota-dashboard .token-donut{width:116px;padding:17px}
+  .quota-dashboard .token-models-col{padding:8px 0 0;border-left:0;border-top:1px solid var(--quota-line)}
 }

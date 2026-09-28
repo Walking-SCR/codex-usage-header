@@ -38,6 +38,14 @@ try {
   assert.equal(snapshot.accounts[1].health.state, 'healthy', '全局或未匹配错误不能误标另一账号');
   assert.ok(!JSON.stringify(snapshot).includes('must-not-leak'), '渲染快照不得携带验证 URL');
   assert.equal(manager.readRoutingHealth(manager.cache.accounts), manager.routingHealthByAccount, '五秒内复用本地健康缓存');
+  const recoveryAt = Date.now() + 45 * 60 * 1000;
+  writeFileSync(recordPath, JSON.stringify({ provider: 'antigravity', records: [
+    { auth_id: healthy.id, status: 'COOLING', reason: 'quota', next_retry_after: new Date(recoveryAt).toISOString() },
+  ] }));
+  manager.routingHealthReadAt -= 6000;
+  const coolingSnapshot = manager.getSnapshot();
+  assert.equal(coolingSnapshot.accounts[0].health.state, 'cooling');
+  assert.ok(Math.abs(coolingSnapshot.accounts[0].health.recoveryAt - recoveryAt) < 20, '冷却状态应携带真实恢复时间');
   writeFileSync(recordPath, JSON.stringify({ provider: 'antigravity', records: [{ auth_id: healthy.email, status: 'ACTIVE' }] }));
   manager.routingHealthReadAt -= 6000;
   assert.equal(manager.getSnapshot().accounts[0].health.state, 'healthy', '恢复状态清除红点');

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   toShanghaiDate,
+  toDateKey,
+  shiftDateKey,
   formatTokenCount,
   classifyModel,
   TokenRollupEngine,
@@ -45,6 +47,9 @@ assert.equal(formatTokenCount(1280000000, 'zh-CN'), '12.8亿');
 // 3. 时区转换
 assert.equal(toShanghaiDate('2026-09-19T14:43:20.636Z'), '2026-09-19');
 assert.equal(toShanghaiDate('2026-09-19T16:05:00.000Z'), '2026-09-20');
+assert.equal(toDateKey('2026-09-19T23:30:00.000Z', 'America/Los_Angeles'), '2026-09-19');
+assert.equal(toDateKey('2026-09-19T23:30:00.000Z', 'Asia/Shanghai'), '2026-09-20');
+assert.equal(shiftDateKey('2026-03-09', -1), '2026-03-08', 'calendar ranges remain correct across DST boundaries');
 
 // 4. TokenRollupEngine 增量与 inode 跟踪
 const testDir = mkdtempSync(join(tmpdir(), 'token-test-'));
@@ -198,6 +203,38 @@ try {
   engine.data.files[oldSessionFile] = { inode: 999, offset: 0 };
   const recentFiles = engine.collectSessionFiles(true);
   assert.ok(recentFiles.includes(oldSessionFile), "跨天老会话文件必须被 recentOnly 收集增量扫描");
+
+  // 测试 pruneOldDays 自动清理超过 32 天未修改或已不存在的文件路径
+  const nonExistentFile = join(sessionsDir, "non-existent-session.jsonl");
+  const expiredFile = join(testDir, "expired-session.jsonl");
+  writeFileSync(expiredFile, "{\"type\":\"session_meta\"}\n");
+  engine.data.files[nonExistentFile] = { inode: 1001, offset: 0, mtime: Date.now() };
+  engine.data.files[expiredFile] = { inode: 1002, offset: 0, mtime: Date.now() - (35 * 86400000) };
+  engine.pruneOldDays();
+  assert.equal(engine.data.files[nonExistentFile], undefined, "不存在的文件必须被 pruneOldDays 清理");
+  assert.equal(engine.data.files[expiredFile], undefined, "超过 32 天未更新的文件必须被 pruneOldDays 清理");
+
+  // 固定大小分块解析跨块多行数据，且不提交末尾未完成行的偏移
+  const chunkFile = join(testDir, 'chunked-rollout.jsonl');
+  const chunkLines = [
+    ...Array.from({ length: 60 }, (_, i) => JSON.stringify({ type: 'noise', index: i, data: 'x'.repeat(90) })),
+    JSON.stringify({ type: 'turn_context', payload: { model: 'gemini-3.8-flash-high' } }),
+    JSON.stringify({ type: 'event_msg', timestamp: new Date().toISOString(), payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 10 } } } }),
+    JSON.stringify({ type: 'event_msg', timestamp: new Date().toISOString(), payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 35 } } } }),
+  ];
+  const incompleteLine = JSON.stringify({ type: 'event_msg', timestamp: new Date().toISOString(), payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 60 } } } });
+  writeFileSync(chunkFile, chunkLines.join('\n') + '\n' + incompleteLine.slice(0, 24));
+  const chunkedEngine = new TokenRollupEngine({ baseDir: testDir, sessionsDir, readChunkBytes: 4096 });
+  chunkedEngine.enabled = true;
+  await chunkedEngine.scanFileIncremental(chunkFile);
+  const chunkDate = toShanghaiDate(Date.now());
+  assert.equal(chunkedEngine.data.days[chunkDate]['gemini-3.8-flash-high'], 25);
+  const committedOffset = chunkedEngine.data.files[chunkFile].offset;
+  assert.ok(committedOffset < statSync(chunkFile).size, 'partial JSONL line must remain uncommitted');
+  writeFileSync(chunkFile, incompleteLine.slice(24) + '\n', { flag: 'a' });
+  await chunkedEngine.scanFileIncremental(chunkFile);
+  assert.equal(chunkedEngine.data.days[chunkDate]['gemini-3.8-flash-high'], 50);
+  assert.equal(chunkedEngine.data.files[chunkFile].offset, statSync(chunkFile).size);
 
   console.log("✓ Token rollup engine tests passed!");
 } finally {

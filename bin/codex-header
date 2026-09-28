@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLUGIN_ROOT="${CODEX_USAGE_HEADER_HOME:-$HOME/.codex/plugins/codex-usage-header}"
+DEFAULT_PLUGIN_ROOT="$HOME/.codex/plugins/codex-usage-header"
+if [[ -f "$HOME/plugins/codex-usage-header/src/launcher.mjs" ]]; then
+  DEFAULT_PLUGIN_ROOT="$HOME/plugins/codex-usage-header"
+fi
+PLUGIN_ROOT="${CODEX_USAGE_HEADER_HOME:-$DEFAULT_PLUGIN_ROOT}"
 LAUNCHER="$PLUGIN_ROOT/src/launcher.mjs"
 NODE_BINARY="${CODEX_USAGE_HEADER_NODE:-}"
 

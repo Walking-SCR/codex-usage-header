@@ -29,6 +29,7 @@ export const TIMEZONE = 'Asia/Shanghai';
 export const MAX_DAYS_RETENTION = 32;
 export const ROLLING_SAVE_INTERVAL_MS = 60000;
 const TOKEN_FAMILY_ORDER = ['GPT', 'Gemini', 'GLM', 'DeepSeek', 'Claude', 'MiniMax', 'Other'];
+const dateKeyFormatters = new Map();
 export const DEFAULT_CLI_PROXY_URL = 'http://127.0.0.1:8317';
 export const GOOGLE_QUOTA_ENDPOINT = 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
 export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
@@ -55,13 +56,38 @@ export function getAntigravityCredentials() {
 }
 
 export function toShanghaiDate(timestamp) {
+  return toDateKey(timestamp, TIMEZONE);
+}
+
+export function toDateKey(timestamp, timezone = TIMEZONE) {
   const d = new Date(timestamp);
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(d);
+  let formatter = dateKeyFormatters.get(timezone);
+  if (!formatter) {
+    try {
+      formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      });
+    } catch {
+      timezone = TIMEZONE;
+      formatter = dateKeyFormatters.get(timezone) || new Intl.DateTimeFormat('en-CA', {
+        timeZone: TIMEZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      });
+    }
+    dateKeyFormatters.set(timezone, formatter);
+  }
+  return formatter.format(d);
+}
+
+export function shiftDateKey(dateKey, dayOffset) {
+  const [year, month, day] = String(dateKey).split('-').map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day + dayOffset));
+  return shifted.toISOString().slice(0, 10);
 }
 
 export function formatTokenCount(tokens, locale = 'en-US') {
@@ -127,6 +153,12 @@ export function formatGeminiCountdown(secondsRemaining) {
 
 function normalizeMatchText(str) {
   return String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function parseRecoveryTime(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value > 1e12 ? value : value * 1000;
+  const parsed = Date.parse(value || '');
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 export function matchGeminiStandardRow(groupName, bucketWindow) {
@@ -238,11 +270,14 @@ export class GeminiQuotaManager {
           const health = ['ACTIVE', 'READY', 'OK'].includes(status)
             ? getAccountHealth()
             : getAccountHealth({}, record);
-          const retryAt = Date.parse(record.next_retry_after || record.quota?.next_recover_at || '');
-          if (health.code === 'cooling' && Number.isFinite(retryAt) && retryAt <= now) continue;
+          const retryAt = parseRecoveryTime(record.next_retry_after || record.quota?.next_recover_at);
+          if (health.code === 'cooling' && retryAt && retryAt <= now) continue;
+          const healthWithRecovery = health.state === 'cooling' && retryAt
+            ? { ...health, recoveryAt: retryAt }
+            : health;
           const previous = healthByAccount.get(account.email);
           const severity = { healthy: 0, unknown: 1, cooling: 2, unavailable: 3 };
-          if (!previous || severity[health.state] >= severity[previous.state]) healthByAccount.set(account.email, health);
+          if (!previous || severity[health.state] >= severity[previous.state]) healthByAccount.set(account.email, healthWithRecovery);
         }
       }
     } catch { /* 状态文件可能在扫描过程中被 bridge 原子替换；下一轮再读 */ }
@@ -472,6 +507,26 @@ export class GeminiQuotaManager {
       label = email.split('@')[0] || email;
     } catch { /* 忽略解析异常 */ }
 
+    if (disabled) {
+      return {
+        id: filename,
+        email,
+        label,
+        priority,
+        disabled: true,
+        status: 'disabled',
+        rows: [
+          { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
+          { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
+          { label: 'Claude & GPT 5h', remainingPercent: null, countdown: null, unavailable: true },
+          { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true },
+        ],
+        fetchedAt: null,
+        stale: false,
+        error: null,
+      };
+    }
+
     try {
       const token = await this.getAccessTokenForFile(authFilePath);
       if (!token) throw new Error('Token unavailable');
@@ -542,9 +597,7 @@ export class GeminiQuotaManager {
         const authFiles = this.findAllAntigravityAuthFiles();
         if (authFiles.length === 0) throw new Error('Antigravity auth files not found');
 
-        const accountResults = await Promise.all(
-          authFiles.map(f => this.fetchQuotaForFile(f))
-        );
+        const accountResults = await mapWithConcurrency(authFiles, 2, f => this.fetchQuotaForFile(f));
 
         accountResults.sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
@@ -623,8 +676,10 @@ export class GeminiQuotaManager {
     const routingHealth = this.readRoutingHealth(this.cache.accounts || []);
     const accounts = (this.cache.accounts || []).map(acc => {
       const account = { ...acc, health: undefined, routingHealth: routingHealth.get(acc.email), rows: updateRows(acc.rows || []) };
-      const health = getAccountHealth(account, poolStatus?.accountMap?.[String(acc.email || '').toLowerCase()]);
-      return { ...account, health, error: acc.error ? health.code : null };
+      const rank = poolStatus?.accountMap?.[String(acc.email || '').toLowerCase()];
+      const health = getAccountHealth(account, rank);
+      const recoveryAt = account.routingHealth?.recoveryAt || rank?.recoveryAt || null;
+      return { ...account, health: recoveryAt ? { ...health, recoveryAt } : health, error: acc.error ? health.code : null };
     });
 
     accounts.sort((a, b) => (b.priority || 0) - (a.priority || 0));
@@ -648,6 +703,20 @@ export class GeminiQuotaManager {
   }
 }
 
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 export class TokenRollupEngine {
   constructor(options = {}) {
     this.baseDir = options.baseDir || join(homedir(), 'Library/Application Support/Codex Quota Header');
@@ -655,20 +724,31 @@ export class TokenRollupEngine {
     this.sessionsDir = options.sessionsDir || join(homedir(), '.codex/sessions');
     this.data = {
       schemaVersion: SCHEMA_VERSION,
-      timezone: TIMEZONE,
+      timezone: options.timezone || TIMEZONE,
       files: {},
       days: {},
       coverageStartedAt: null,
       earliestRecordedDate: null,
       historicalTotals: {},
+      backfillComplete: false,
     };
     this.status = 'idle';
     this.dirty = false;
     this.lastSavedAt = 0;
     this.backfillInProgress = false;
+    this.initialized = false;
+    this.scanPromise = null;
+    this.readChunkBytes = Math.max(4096, Number(options.readChunkBytes) || 256 * 1024);
+    this.timezone = options.timezone || TIMEZONE;
+    this.snapshotCache = null;
+    this.snapshotRevision = 0;
+    this.enabled = false;
   }
 
   init() {
+    if (this.initialized) return;
+    this.initialized = true;
+    this.enabled = true;
     this.load();
     if (Object.keys(this.data.days).length === 0) {
       this.status = 'building';
@@ -684,14 +764,22 @@ export class TokenRollupEngine {
     try {
       const raw = JSON.parse(readFileSync(this.storagePath, 'utf8'));
       if (raw.schemaVersion === SCHEMA_VERSION && raw.days && typeof raw.days === 'object') {
+        if (raw.timezone && raw.timezone !== this.timezone) {
+          this.data.timezone = this.timezone;
+          this.status = 'building';
+          return;
+        }
         this.data = {
           schemaVersion: SCHEMA_VERSION,
-          timezone: raw.timezone || TIMEZONE,
+          timezone: this.timezone,
           files: raw.files || {},
           days: raw.days || {},
           coverageStartedAt: raw.coverageStartedAt || null,
           earliestRecordedDate: raw.earliestRecordedDate || null,
           historicalTotals: raw.historicalTotals || {},
+          backfillComplete: typeof raw.backfillComplete === 'boolean'
+            ? raw.backfillComplete
+            : Object.keys(raw.days).length > 0,
         };
       }
     } catch {
@@ -728,13 +816,14 @@ export class TokenRollupEngine {
   }
 
   pruneOldDays() {
+    let changed = false;
     this.getEarliestDate();
     if (!this.data.historicalTotals) {
       this.data.historicalTotals = {};
     }
 
     const minTimestamp = Date.now() - (MAX_DAYS_RETENTION * 86400000);
-    const minDate = toShanghaiDate(minTimestamp);
+    const minDate = toDateKey(minTimestamp, this.timezone);
 
     for (const date of Object.keys(this.data.days)) {
       if (date < minDate) {
@@ -743,7 +832,27 @@ export class TokenRollupEngine {
         }
         delete this.data.days[date];
         this.dirty = true;
+        changed = true;
       }
+    }
+
+    if (this.data.files && typeof this.data.files === 'object') {
+      for (const [filePath, record] of Object.entries(this.data.files)) {
+        if (!existsSync(filePath)) {
+          delete this.data.files[filePath];
+          this.dirty = true;
+          continue;
+        }
+        const mtime = record?.mtime;
+        if (mtime && mtime < minTimestamp) {
+          delete this.data.files[filePath];
+          this.dirty = true;
+        }
+      }
+    }
+    if (changed) {
+      this.snapshotRevision += 1;
+      this.snapshotCache = null;
     }
   }
 
@@ -765,12 +874,14 @@ export class TokenRollupEngine {
           } else {
             const delta = total - fileRecord.lastTotal;
             if (delta > 0) {
-              const date = event.timestamp ? toShanghaiDate(event.timestamp) : dateFallback;
+              const date = event.timestamp ? toDateKey(event.timestamp, this.timezone) : dateFallback;
               const model = fileRecord.currentModel || 'unknown';
               if (!this.data.days[date]) this.data.days[date] = {};
               this.data.days[date][model] = (this.data.days[date][model] || 0) + delta;
               fileRecord.lastTotal = total;
               this.dirty = true;
+              this.snapshotRevision += 1;
+              this.snapshotCache = null;
             } else if (delta < 0) {
               fileRecord.lastTotal = total;
             }
@@ -780,7 +891,8 @@ export class TokenRollupEngine {
     } catch { /* 忽略损坏的日志行 */ }
   }
 
-  scanFileIncremental(filePath) {
+  async scanFileIncremental(filePath) {
+    if (!this.enabled) return;
     let stat;
     try {
       stat = statSync(filePath);
@@ -796,38 +908,51 @@ export class TokenRollupEngine {
         offset: 0,
         lastTotal: undefined,
         currentModel: 'unknown',
+        mtime: stat.mtimeMs,
       };
       this.data.files[filePath] = record;
+    } else {
+      record.mtime = stat.mtimeMs;
     }
 
     if (stat.size <= record.offset) return;
 
-    const dateFallback = toShanghaiDate(stat.mtimeMs || Date.now());
+    const dateFallback = toDateKey(stat.mtimeMs || Date.now(), this.timezone);
     let fd;
     try {
       fd = openSync(filePath, 'r');
-      const bytesToRead = stat.size - record.offset;
-      const buf = Buffer.alloc(bytesToRead);
-      const bytesRead = readSync(fd, buf, 0, bytesToRead, record.offset);
-      closeSync(fd);
-
-      const content = buf.toString('utf8', 0, bytesRead);
-      const lines = content.split('\n');
-
-      let validBytesLength = bytesRead;
-      if (!content.endsWith('\n')) {
-        const lastIncomplete = lines.pop();
-        validBytesLength -= Buffer.byteLength(lastIncomplete, 'utf8');
+      const buffer = Buffer.allocUnsafe(this.readChunkBytes);
+      const fileEnd = stat.size;
+      let pending = Buffer.alloc(0);
+      let readPosition = record.offset;
+      while (readPosition < fileEnd) {
+        if (!this.enabled) break;
+        const bytesToRead = Math.min(this.readChunkBytes, fileEnd - readPosition);
+        const bytesRead = readSync(fd, buffer, 0, bytesToRead, readPosition);
+        if (bytesRead <= 0) break;
+        readPosition += bytesRead;
+        const chunk = pending.length
+          ? Buffer.concat([pending, buffer.subarray(0, bytesRead)])
+          : buffer.subarray(0, bytesRead);
+        let lineStart = 0;
+        for (let i = 0; i < chunk.length; i++) {
+          if (chunk[i] !== 0x0a) continue;
+          this.processLine(chunk.toString('utf8', lineStart, i), record, dateFallback);
+          lineStart = i + 1;
+        }
+        pending = Buffer.from(chunk.subarray(lineStart));
+        record.offset += lineStart;
+        if (pending.length > 4 * 1024 * 1024) {
+          // Avoid unbounded growth on malformed/non-JSONL input; skip to the next chunk boundary.
+          record.offset += pending.length;
+          pending = Buffer.alloc(0);
+        }
+        await new Promise(resolve => setImmediate(resolve));
       }
-
-      for (const line of lines) {
-        this.processLine(line, record, dateFallback);
-      }
-      record.offset += validBytesLength;
     } catch {
-      if (fd !== undefined) {
-        try { closeSync(fd); } catch { /* 忽略关闭异常 */ }
-      }
+      // 保留已提交到完整换行处的偏移，下轮重读未完成尾行。
+    } finally {
+      if (fd !== undefined) try { closeSync(fd); } catch { /* 忽略关闭异常 */ }
     }
   }
 
@@ -848,7 +973,7 @@ export class TokenRollupEngine {
       // 2. 检查最近 7 天的日期子目录，发现新创建的会话
       const targetDays = new Set();
       for (let i = 0; i < 7; i++) {
-        const dateStr = toShanghaiDate(Date.now() - (i * 86400000));
+        const dateStr = shiftDateKey(toDateKey(Date.now(), this.timezone), -i);
         targetDays.add(dateStr.replace(/-/g, '/'));
       }
 
@@ -910,43 +1035,71 @@ export class TokenRollupEngine {
       for (let i = 0; i < files.length; i += chunkSize) {
         const batch = files.slice(i, i + chunkSize);
         for (const file of batch) {
-          this.scanFileIncremental(file);
+          if (!this.enabled) break;
+          await this.scanFileIncremental(file);
         }
+        if (!this.enabled) break;
         await new Promise(r => setImmediate(r));
       }
 
       this.pruneOldDays();
+      this.data.backfillComplete = this.enabled;
+      this.dirty = true;
+      this.snapshotRevision += 1;
+      this.snapshotCache = null;
       this.save(true);
-      this.status = 'ready';
+      this.status = this.enabled ? 'ready' : 'disabled';
     } catch {
-      this.status = 'error';
+      this.status = this.enabled ? 'error' : 'disabled';
     } finally {
       this.backfillInProgress = false;
     }
   }
 
   scanIncremental() {
-    if (this.backfillInProgress) return;
-    try {
+    if (!this.enabled) return Promise.resolve(false);
+    if (this.backfillInProgress) return Promise.resolve(false);
+    if (this.scanPromise) return this.scanPromise;
+    this.scanPromise = (async () => {
+      const startRevision = this.snapshotRevision;
+      try {
       const files = this.collectSessionFiles(true);
       for (const file of files) {
-        this.scanFileIncremental(file);
+        await this.scanFileIncremental(file);
       }
       this.pruneOldDays();
       this.save(false);
       this.status = 'ready';
-    } catch {
-      this.status = 'ready';
+      } catch {
+        this.status = 'ready';
+      }
+      return this.snapshotRevision !== startRevision;
+    })().finally(() => { this.scanPromise = null; });
+    return this.scanPromise;
+  }
+
+  setEnabled(enabled) {
+    const next = Boolean(enabled);
+    const wasEnabled = this.enabled;
+    this.enabled = next;
+    if (!next) {
+      this.status = 'disabled';
+      return;
+    }
+    if (!this.initialized) this.init();
+    else if (!wasEnabled) {
+      this.status = Object.keys(this.data.days).length ? 'ready' : 'building';
+      if (!this.data.backfillComplete) this.runBackfillWorker().catch(() => {});
+      else this.scanIncremental();
     }
   }
 
   calculateRollup() {
-    const todayDate = toShanghaiDate(Date.now());
+    const todayDate = toDateKey(Date.now(), this.timezone);
     const getDates = (count) => {
       const dates = [];
-      for (let i = 0; i < count; i++) {
-        dates.push(toShanghaiDate(Date.now() - (i * 86400000)));
-      }
+      const today = toDateKey(Date.now(), this.timezone);
+      for (let i = 0; i < count; i++) dates.push(shiftDateKey(today, -i));
       return new Set(dates);
     };
 
@@ -1043,15 +1196,21 @@ export class TokenRollupEngine {
   }
 
   getSnapshot() {
+    const today = toDateKey(Date.now(), this.timezone);
+    const cacheKey = `${this.snapshotRevision}:${today}:${this.status}`;
+    if (this.snapshotCache?.key === cacheKey) return this.snapshotCache.value;
     const ranges = this.calculateRollup();
-    return {
+    const value = {
       status: this.status,
       selectedRange: 'today',
       ranges,
       coverageStartedAt: this.data.coverageStartedAt,
       earliestRecordedDate: this.getEarliestDate(),
       error: null,
+      timezone: this.timezone,
     };
+    this.snapshotCache = { key: cacheKey, value };
+    return value;
   }
 }
 
@@ -1062,33 +1221,80 @@ export class ExtendedUsageCoordinator {
       ...(options.gemini || {}),
       enableDynamicPriority: Boolean(this.settings.enableDynamicPriority),
     });
-    this.tokenEngine = new TokenRollupEngine(options.tokens || {});
+    this.tokenEngine = new TokenRollupEngine({ timezone: this.settings.timezone || TIMEZONE, ...(options.tokens || {}) });
+    this.initialized = { tokens: false, gemini: false };
   }
 
   updateSettings(settings = {}) {
     this.settings = settings;
+    if (settings.timezone && settings.timezone !== this.tokenEngine.timezone) {
+      this.tokenEngine.timezone = settings.timezone;
+      this.tokenEngine.data = {
+        schemaVersion: SCHEMA_VERSION,
+        timezone: settings.timezone,
+        files: {}, days: {}, coverageStartedAt: null,
+        earliestRecordedDate: null, historicalTotals: {}, backfillComplete: false,
+      };
+      this.tokenEngine.snapshotRevision += 1;
+      this.tokenEngine.snapshotCache = null;
+      this.tokenEngine.dirty = true;
+      this.tokenEngine.save(true);
+      this.tokenEngine.initialized = false;
+      this.initialized.tokens = false;
+    }
     if (this.geminiManager) {
       this.geminiManager.enableDynamicPriority = Boolean(settings.enableDynamicPriority);
     }
+    const shouldRunGemini = Boolean(settings.enableGoogleAiPro || settings.enableDynamicPriority);
+    this.tokenEngine.setEnabled(Boolean(settings.enableTokenUsage));
+    if (settings.enableTokenUsage) this.initialized.tokens = true;
+    if (shouldRunGemini) this.initGemini();
   }
 
   init() {
-    this.tokenEngine.init();
+    if (this.settings.enableTokenUsage) this.initTokens();
+    if (this.settings.enableGoogleAiPro || this.settings.enableDynamicPriority) this.initGemini();
+  }
+
+  initTokens() {
+    if (this.initialized.tokens) return;
+    this.initialized.tokens = true;
+    this.tokenEngine.setEnabled(true);
+  }
+
+  initGemini() {
+    if (this.initialized.gemini) return;
+    this.initialized.gemini = true;
     this.geminiManager.fetchQuota().catch(() => {});
   }
 
   async refreshGemini() {
+    if (!(this.settings.enableGoogleAiPro || this.settings.enableDynamicPriority)) return null;
+    this.initGemini();
     return this.geminiManager.fetchQuota();
   }
 
   scanTokensIncremental() {
-    this.tokenEngine.scanIncremental();
+    if (!this.settings.enableTokenUsage) return Promise.resolve(false);
+    this.initTokens();
+    return this.tokenEngine.scanIncremental();
   }
 
   getSnapshot() {
+    const geminiEnabled = Boolean(this.settings.enableGoogleAiPro || this.settings.enableDynamicPriority);
+    const tokensEnabled = Boolean(this.settings.enableTokenUsage);
     return {
-      antigravity: this.geminiManager.getSnapshot(),
-      tokens: this.tokenEngine.getSnapshot(),
+      antigravity: geminiEnabled ? this.geminiManager.getSnapshot() : disabledGeminiSnapshot(),
+      tokens: tokensEnabled ? this.tokenEngine.getSnapshot() : disabledTokenSnapshot(),
+      timezone: this.tokenEngine.timezone,
     };
   }
+}
+
+function disabledGeminiSnapshot() {
+  return { status: 'disabled', plan: 'Gemini AI Pro', selectedAccount: null, accounts: [], rows: [], fetchedAt: null, stale: false, error: null, enableDynamicPriority: false, poolStatus: null };
+}
+
+function disabledTokenSnapshot() {
+  return { status: 'disabled', selectedRange: 'today', ranges: null, coverageStartedAt: null, earliestRecordedDate: null, error: null };
 }

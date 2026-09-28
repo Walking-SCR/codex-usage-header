@@ -14,6 +14,7 @@
   const POPOVER_CLASS = 'codex-usage-popover-v24';
   const POPOVER_ID = 'codex-usage-details-v24';
   const SETTINGS_KEY = 'codexQuotaHeader.settings.v1';
+  const COMMAND_BINDING_NAME = 'codexUsageHeaderCommandV1';
   const LEGACY_COMPONENTS = [
     'codex-usage-header', 'codex-usage-header-v2', 'codex-usage-header-v3',
     'codex-usage-header-v4', 'codex-usage-header-v5', 'codex-usage-header-v6',
@@ -26,7 +27,7 @@
   ];
   const CONFIG = {
     debounceMs: 5000,
-    refreshTimeoutMs: 8000,
+    refreshTimeoutMs: 25000,
     minimumSpinMs: 650,
     popoverGap: 8,
     viewportInset: 12,
@@ -107,6 +108,8 @@
   };
   let vouchersLoading = false;
   let extendedUsageState = {
+    rebalanceState: 'idle',
+    copyStatus: 'idle',
     antigravity: {
       status: 'idle',
       plan: null,
@@ -138,6 +141,10 @@
     },
   };
   let failoverSwitching = false;
+  let failoverTimeoutTimer = null;
+  let rebalanceRequestId = null;
+  let rebalanceFeedbackTimer = null;
+  let copyStatusTimer = null;
   let lastManualRefresh = 0;
   let tokenModelMenuOpen = false;
   let currentMode = 'full';
@@ -154,6 +161,7 @@
   let refreshSettleTimer = null;
   let resizeObserver = null;
   let mountObserver = null;
+  let rootThemeObserver = null;
   let mountTimer = null;
   let healthTimer = null;
   let layoutFrame = null;
@@ -178,7 +186,7 @@
   const I18N = {
     'zh-CN': {
       title: '用量额度',
-      subtitle: '合理AI协作，人员负责思考，AI负责执行',
+      subtitle: '合理AI协作，人负责思考，AI负责执行',
       usageTitle: '使用额度',
       details: 'Codex 用量额度详情',
       toggleDetails: '展开或收起用量详情',
@@ -203,6 +211,18 @@
       usageErrorProtocol: 'Codex 额度接口版本不兼容，兼容模式仍读取失败',
       usageErrorServer: 'Codex App Server 暂时不可用，正在自动重连',
       usageErrorUnknown: 'Codex 额度读取失败，稍后将自动重试',
+      cachedStatus: '缓存数据',
+      serviceIssue: '服务暂不可用',
+      reorder: '重排',
+      reordering: '正在重排…',
+      reordered: '已重排',
+      reorderFailed: '重排失败',
+      coolingUntil: '冷却至',
+      quotaExhaustedFive: '5小时额度已用尽',
+      quotaExhaustedWeekly: '7天额度已用尽',
+      copySummary: '复制用量简报',
+      copiedSummary: '已复制',
+      copyFailed: '复制失败',
       refresh: '刷新额度',
       refreshing: '正在刷新额度',
       refreshFailed: '更新失败，当前显示上次数据',
@@ -279,6 +299,18 @@
       usageErrorProtocol: 'Codex quota protocol mismatch. Compatibility fallback also failed.',
       usageErrorServer: 'Codex App Server is temporarily unavailable. Reconnecting automatically.',
       usageErrorUnknown: 'Codex quota request failed. It will retry automatically.',
+      cachedStatus: 'Cached data',
+      serviceIssue: 'Service unavailable',
+      reorder: 'Reorder',
+      reordering: 'Reordering…',
+      reordered: 'Reordered',
+      reorderFailed: 'Reorder failed',
+      coolingUntil: 'Cooling until',
+      quotaExhaustedFive: '5-hour quota exhausted',
+      quotaExhaustedWeekly: '7-day quota exhausted',
+      copySummary: 'Copy usage summary',
+      copiedSummary: 'Copied',
+      copyFailed: 'Copy failed',
       refresh: 'Refresh quota',
       refreshing: 'Refreshing quota',
       refreshFailed: 'Refresh failed, showing previous data',
@@ -335,6 +367,123 @@
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[char]));
 
+  function staleIndicatorText() {
+    const anti = extendedUsageState.antigravity || {};
+    const tokens = extendedUsageState.tokens || {};
+    const issue = usageState.status === 'error' || Boolean(usageState.error)
+      || anti.status === 'error' || Boolean(anti.stale) || tokens.status === 'error';
+    if (!issue) return '';
+    const cached = usageState.status === 'ready' || Boolean(anti.fetchedAt)
+      || Boolean(tokens.ranges?.today || tokens.ranges?.days7 || tokens.ranges?.days30);
+    return t(cached ? 'cachedStatus' : 'serviceIssue');
+  }
+
+  function isDarkAppearance() {
+    const root = document.documentElement;
+    const declared = root.dataset.theme || root.dataset.colorScheme
+      || (root.classList.contains('dark') ? 'dark' : root.classList.contains('light') ? 'light' : '');
+    return declared ? declared.toLowerCase() === 'dark'
+      : window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
+  function displayTimeZone() {
+    if (extendedUsageState.timezone) return extendedUsageState.timezone;
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'; }
+    catch { return 'Asia/Shanghai'; }
+  }
+
+  function formatRecoveryTime(timestamp) {
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+    return formatDate(Math.floor(timestamp / 1000), true);
+  }
+
+  function buildTokenSummary() {
+    const tokens = extendedUsageState.tokens || {};
+    const rangeName = ({ today: t('today'), days7: t('days7'), days30: t('days30'), allTime: t('allTime') })[tokens.selectedRange] || t('today');
+    const range = tokens.ranges?.[tokens.selectedRange || 'today'];
+    if (!range) return `${t('tokenUsage')} · ${rangeName}\n${t('noData')}`;
+    const lines = [`${t('tokenUsage')} · ${rangeName}`, `${t('total')}: ${formatExtendedTokenCount(range.total, settings.locale === 'zh-CN')}`];
+    for (const family of range.items || []) {
+      lines.push(`${tokenFamilyLabel(family, settings.locale === 'zh-CN')}: ${formatExtendedTokenCount(family.tokens, settings.locale === 'zh-CN')} (${family.percent || '—'})`);
+      for (const model of family.models || []) {
+        lines.push(`  - ${model.id}: ${formatExtendedTokenCount(model.tokens, settings.locale === 'zh-CN')} (${model.percent || '—'})`);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  async function copyTextToClipboard(text) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* 尝试 Electron / WebView 兼容回退。 */ }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch { copied = false; }
+    textarea.remove();
+    return copied;
+  }
+
+  async function copyTokenSummary() {
+    const copyStatus = await copyTextToClipboard(buildTokenSummary()) ? 'success' : 'error';
+    extendedUsageState.copyStatus = copyStatus;
+    if (copyStatusTimer) clearTimeout(copyStatusTimer);
+    const button = popover?.querySelector('.quota-token-copy-btn');
+    if (button) {
+      button.dataset.state = copyStatus;
+      button.setAttribute('aria-label', t(copyStatus === 'success' ? 'copiedSummary' : 'copyFailed'));
+      button.title = t(copyStatus === 'success' ? 'copiedSummary' : 'copyFailed');
+      const label = button.querySelector('.quota-token-copy-label');
+      if (label) label.textContent = t(copyStatus === 'success' ? 'copiedSummary' : 'copyFailed');
+    }
+    copyStatusTimer = setTimeout(() => {
+      extendedUsageState.copyStatus = 'idle';
+      const current = popover?.querySelector('.quota-token-copy-btn');
+      if (current) {
+        current.dataset.state = 'idle';
+        current.setAttribute('aria-label', t('copySummary'));
+        current.title = t('copySummary');
+        const label = current.querySelector('.quota-token-copy-label');
+        if (label) label.textContent = t('copySummary');
+      }
+      copyStatusTimer = null;
+    }, 1800);
+  }
+
+  function finishRebalanceFeedback(state, commandId = null) {
+    if (commandId && commandId !== rebalanceRequestId) return false;
+    if (rebalanceFeedbackTimer) clearTimeout(rebalanceFeedbackTimer);
+    rebalanceFeedbackTimer = null;
+    extendedUsageState.rebalanceState = state;
+    if (popover?.classList.contains('is-visible')) {
+      renderPopover();
+      positionPopover();
+    }
+    if (state === 'success' || state === 'error') {
+      rebalanceFeedbackTimer = setTimeout(() => {
+        extendedUsageState.rebalanceState = 'idle';
+        rebalanceRequestId = null;
+        rebalanceFeedbackTimer = null;
+        if (popover?.classList.contains('is-visible')) renderPopover();
+      }, 2200);
+    }
+    return true;
+  }
+
+  function applyCommandAck(ack = {}) {
+    if (ack.kind !== 'rebalance' || ack.id !== rebalanceRequestId) return false;
+    finishRebalanceFeedback(ack.success ? 'success' : 'error', ack.id);
+    return true;
+  }
+
   function persistSettings() {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* 尽力保存，失败时忽略 */ }
   }
@@ -348,6 +497,17 @@
     return Boolean(rangeData?.items?.some(item => item.key === model && item.tokens > 0));
   }
 
+  function emitNativeMessage(message) {
+    const binding = window[COMMAND_BINDING_NAME];
+    if (typeof binding !== 'function') return false;
+    try {
+      binding(JSON.stringify(message));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function emitCommand(kind, payload = {}, manual = false) {
     const id = 'cmd-' + Date.now() + '-' + (++commandCounter);
     const cmd = { id, kind, payload, manual, createdAt: Date.now() };
@@ -355,8 +515,17 @@
       window.__codexUsageHeaderCommands__ = [];
     }
     window.__codexUsageHeaderCommands__.push(cmd);
+    if (window.__codexUsageHeaderCommands__.length > 128) window.__codexUsageHeaderCommands__.shift();
     window.__codexUsageHeaderCommand__ = cmd;
+    emitNativeMessage({ type: 'command', command: cmd });
     return id;
+  }
+
+  function emitLifecycle(resync = false) {
+    const message = { type: 'lifecycle', visible: !document.hidden, resync: Boolean(resync) };
+    if (emitNativeMessage(message)) return true;
+    if (resync && !window.__codexUsageHeaderCommand__) requestUsage();
+    return false;
   }
 
   function getQuotaColor(remaining) {
@@ -400,16 +569,37 @@
   function formatDate(timestamp, includeDate = false) {
     if (!Number.isFinite(timestamp) || timestamp <= 0) return '--:--';
     const date = new Date(timestamp * 1000);
+    const timeZone = displayTimeZone();
+    const dayOptions = { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' };
+    const todayKey = new Intl.DateTimeFormat('en-CA', dayOptions).format(new Date());
+    const dateKey = new Intl.DateTimeFormat('en-CA', dayOptions).format(date);
+    const dateOptions = { timeZone, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false };
+    const timeOptions = { timeZone, hour: '2-digit', minute: '2-digit', hour12: false };
     if (settings.locale === 'zh-CN') {
-      if (!includeDate && date.toDateString() === new Date().toDateString()) {
-        return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+      if (!includeDate && dateKey === todayKey) {
+        return new Intl.DateTimeFormat('zh-CN', timeOptions).format(date);
       }
-      return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+      return new Intl.DateTimeFormat('zh-CN', dateOptions).format(date);
     }
-    if (!includeDate && date.toDateString() === new Date().toDateString()) {
-      return new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+    if (!includeDate && dateKey === todayKey) {
+      return new Intl.DateTimeFormat('en-US', timeOptions).format(date);
     }
-    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+    return new Intl.DateTimeFormat('en-US', dateOptions).format(date);
+  }
+
+  function formatTimeZoneName(timestamp) {
+    try {
+      const parts = new Intl.DateTimeFormat(settings.locale === 'zh-CN' ? 'zh-CN' : 'en-US', {
+        timeZone: displayTimeZone(), timeZoneName: 'short', hour: '2-digit',
+      }).formatToParts(new Date(timestamp * 1000));
+      return parts.find(part => part.type === 'timeZoneName')?.value || '';
+    } catch { return ''; }
+  }
+
+  function parseRecoveryTime(value) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value > 1e12 ? value : value * 1000;
+    const parsed = Date.parse(value || '');
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
   function isWeeklyExhausted(window) {
@@ -731,6 +921,8 @@
     popover.setAttribute('role', 'dialog');
     popover.setAttribute('aria-modal', 'false');
     popover.setAttribute('aria-hidden', 'true');
+    popover.setAttribute('aria-label', t('details'));
+    popover.tabIndex = -1;
     popover.addEventListener('pointerenter', () => {
       if (popoverHideTimer) clearTimeout(popoverHideTimer);
     });
@@ -752,6 +944,7 @@
     popover.addEventListener('click', event => {
       const path = event.composedPath();
       const refresh = path.find(node => node?.classList?.contains('card-refresh'));
+      const copySummary = path.find(node => node?.classList?.contains('quota-token-copy-btn'));
       const language = path.find(node => node?.classList?.contains('language-toggle'));
       const rangeTab = path.find(node => node?.classList?.contains('quota-extension-range-tab'));
       const modelButton = path.find(node => node?.classList?.contains('quota-extension-model-button'));
@@ -766,10 +959,21 @@
         positionPopover();
         return;
       }
+      if (copySummary) {
+        copyTokenSummary().catch(() => {});
+        return;
+      }
       const failoverBtn = path.find(node => node?.classList?.contains('failover-toggle-btn') || node?.closest?.('.failover-toggle-btn'));
       if (failoverBtn) {
         if (failoverSwitching) return;
         failoverSwitching = true;
+        if (failoverTimeoutTimer) clearTimeout(failoverTimeoutTimer);
+        failoverTimeoutTimer = setTimeout(() => {
+          failoverSwitching = false;
+          failoverTimeoutTimer = null;
+          renderPopover();
+          positionPopover();
+        }, 15000);
         emitCommand('toggleFailoverMode', {});
         renderPopover();
         positionPopover();
@@ -783,12 +987,13 @@
       }
       if (moduleToggle) toggleUsageModule(moduleToggle.dataset.module);
       else if (rebalanceBtn) {
-        rebalanceBtn.classList.add('is-loading');
-        emitCommand('rebalance', {}, true);
-        setTimeout(() => {
-          rebalanceBtn.classList.remove('is-loading');
-          requestUsage({ manual: true });
-        }, 1200);
+        if (extendedUsageState.rebalanceState === 'loading') return;
+        extendedUsageState.rebalanceState = 'loading';
+        rebalanceRequestId = emitCommand('rebalance', {}, true);
+        if (rebalanceFeedbackTimer) clearTimeout(rebalanceFeedbackTimer);
+        rebalanceFeedbackTimer = setTimeout(() => finishRebalanceFeedback('error'), 15000);
+        renderPopover();
+        positionPopover();
       }
       else if (refresh && refreshState !== 'loading') requestUsage({ manual: true });
       else if (language) {
@@ -907,7 +1112,7 @@
     else popoverShowTimer = setTimeout(open, 100);
   }
 
-  function hidePopover(force = false) {
+  function hidePopover(force = false, restoreFocus = false) {
     if (!force && popoverState === 'pinned') return;
     if (!force) {
       const popRect = popover?.getBoundingClientRect();
@@ -926,15 +1131,17 @@
     popover?.setAttribute('aria-hidden', 'true');
     updateExpanded(false);
     renderHost();
+    if (restoreFocus) requestAnimationFrame(() => host?.shadowRoot?.querySelector('.details-trigger')?.focus({ preventScroll: true }));
   }
 
-  function togglePopoverFromCapsule() {
+  function togglePopoverFromCapsule({ keyboard = false } = {}) {
     if (popoverState !== 'closed') {
       suppressHoverUntilLeave = true;
-      hidePopover(true);
+      hidePopover(true, true);
     } else {
       suppressHoverUntilLeave = false;
       showPopover({ immediate: true, pinned: true });
+      if (keyboard) requestAnimationFrame(() => popover?.querySelector('.language-toggle')?.focus({ preventScroll: true }));
     }
   }
 
@@ -1334,12 +1541,16 @@
       }
 
       const chartSvg = designIcon('tokenChart', 'section-icon');
+      const copySvg = '<svg class="quota-token-copy-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5" y="2.5" width="8.5" height="10.5" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M3.5 5.5H3a1 1 0 0 0-1 1V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+      const tokenCopyStatus = extendedUsageState.copyStatus || 'idle';
+      const copyButton = '<button type="button" class="quota-token-copy-btn" data-state="' + tokenCopyStatus + '" aria-label="' + esc(t(tokenCopyStatus === 'success' ? 'copiedSummary' : tokenCopyStatus === 'error' ? 'copyFailed' : 'copySummary')) + '" title="' + esc(t(tokenCopyStatus === 'success' ? 'copiedSummary' : tokenCopyStatus === 'error' ? 'copyFailed' : 'copySummary')) + '">' + copySvg + '<span class="quota-token-copy-label">' + esc(tokenCopyStatus === 'success' ? t('copiedSummary') : tokenCopyStatus === 'error' ? t('copyFailed') : t('copySummary')) + '</span></button>';
 
       tokenSection = '<div class="card-section quota-extension-section" data-section="tokens">'
         + '<div class="quota-extension-header has-rows">'
         + '<div class="quota-extension-title-wrap">'
         + chartSvg
         + '<span class="quota-extension-title">' + esc(t('tokenUsage')) + '</span>'
+        + copyButton
         + '</div>'
         + '<div class="quota-token-controls">' + rangeTabs + modelSelectorMarkup + '</div>'
         + '</div>'
@@ -1360,7 +1571,12 @@
     const activeRows = activeAccount.rows || anti.rows || [];
     const enableDynamic = Boolean(anti.enableDynamicPriority && anti.poolStatus?.available);
     const poolStatus = anti.poolStatus || {};
-    const accountHealth = acc => getAccountHealth(acc, poolStatus.accountMap?.[String(acc.email || '').toLowerCase()]);
+    const accountHealth = acc => {
+      const health = getAccountHealth(acc, poolStatus.accountMap?.[String(acc.email || '').toLowerCase()]);
+      const recoveryAt = acc?.health?.recoveryAt || acc?.routingHealth?.recoveryAt
+        || poolStatus.accountMap?.[String(acc?.email || '').toLowerCase()]?.recoveryAt;
+      return recoveryAt ? { ...health, recoveryAt } : health;
+    };
 
     let accountTabsHtml = '';
     if (accounts.length > 0) {
@@ -1377,7 +1593,8 @@
             const norm = (acc.email || '').toLowerCase();
             const info = poolStatus.accountMap?.[norm];
             const primaryEmail = String(poolStatus.primaryAccount || '').toLowerCase();
-            const isInUse = info?.status === 'COOLING'
+            const notRoutable = ['COOLING', 'FIVE_HOUR_EXHAUSTED', 'WEEKLY_EXHAUSTED', 'BLOCKED'].includes(info?.status);
+            const isInUse = notRoutable
               ? false
               : primaryEmail
                 ? norm === primaryEmail
@@ -1385,8 +1602,20 @@
             if (isInUse) {
               statusForAccess = isZh ? '使用中' : 'In Use';
               if (health.state !== 'unavailable') tabLabel = '<span class="quota-tab-dot" aria-hidden="true"></span>' + tabLabel;
+            } else if (info?.status === 'FIVE_HOUR_EXHAUSTED') {
+              statusForAccess = t('quotaExhaustedFive');
+              const recoveryAt = acc.health?.recoveryAt || info.recoveryAt;
+              if (recoveryAt) statusForAccess += ' · ' + t('coolingUntil') + ' ' + formatRecoveryTime(recoveryAt);
+              tabLabel += ' · ' + (isZh ? '5h用尽' : '5h exhausted');
+            } else if (info?.status === 'WEEKLY_EXHAUSTED') {
+              statusForAccess = t('quotaExhaustedWeekly');
+              const recoveryAt = acc.health?.recoveryAt || info.recoveryAt;
+              if (recoveryAt) statusForAccess += ' · ' + t('coolingUntil') + ' ' + formatRecoveryTime(recoveryAt);
+              tabLabel += ' · ' + (isZh ? '7d用尽' : '7d exhausted');
             } else if (info?.status === 'COOLING') {
               statusForAccess = isZh ? '冷却中' : 'Cooling';
+              const recoveryAt = acc.health?.recoveryAt || info.recoveryAt;
+              statusForAccess += recoveryAt ? ' · ' + t('coolingUntil') + ' ' + formatRecoveryTime(recoveryAt) : '';
               tabLabel += ' · ❄ ' + (isZh ? '冷却' : 'Cooling');
             } else {
               statusForAccess = isZh ? ('备选' + fallbackIndex) : ('Backup ' + fallbackIndex);
@@ -1395,7 +1624,12 @@
             }
           }
           if (health.state === 'unavailable') tabLabel = '<span class="quota-tab-dot is-error" aria-hidden="true"></span>' + tabLabel;
-          if (health.state !== 'healthy') statusForAccess = (health.state === 'unavailable' ? (isZh ? '暂不可用' : 'Unavailable') : statusForAccess) + ' · ' + (isZh ? health.zh : health.en);
+          if (health.state !== 'healthy') {
+            statusForAccess = (health.state === 'unavailable' ? (isZh ? '暂不可用' : 'Unavailable') : statusForAccess) + ' · ' + (isZh ? health.zh : health.en);
+            if (health.state === 'cooling' && health.recoveryAt) {
+              statusForAccess += ' · ' + t('coolingUntil') + ' ' + formatRecoveryTime(health.recoveryAt);
+            }
+          }
           const accountDescription = displayName + (statusForAccess ? ' · ' + statusForAccess : '');
           const rawTitle = (settings.maskAccountNames ? maskAccountName(acc.email) : acc.email) || displayName;
           const tabTitle = rawTitle + (statusForAccess ? ' · ' + statusForAccess : '');
@@ -1407,7 +1641,7 @@
     }
 
     let queueBackupIndex = 1;
-    const primaryEmail = String(poolStatus.primaryAccount || poolStatus.rankings?.[0]?.email || '').toLowerCase();
+    const primaryEmail = String(poolStatus.primaryAccount || '').toLowerCase();
     const queueLabels = (Array.isArray(poolStatus.rankings) ? poolStatus.rankings : []).map((rank, index) => {
       const email = String(rank.email || '').trim().toLowerCase();
       const account = accounts.find(item => String(item.email || '').trim().toLowerCase() === email);
@@ -1416,8 +1650,17 @@
       const health = accountHealth(account || { email: rank.email });
       let state;
       if (health.state === 'unavailable') state = isZh ? '暂不可用' : 'Unavailable';
-      else if (rank.status === 'COOLING') state = isZh ? '冷却中' : 'Cooling';
-      else if (email === primaryEmail || index === 0) state = isZh ? '使用中' : 'In Use';
+      else if (rank.status === 'FIVE_HOUR_EXHAUSTED') {
+        const recoveryAt = account?.health?.recoveryAt || rank.recoveryAt;
+        state = t('quotaExhaustedFive') + (recoveryAt ? ' · ' + t('coolingUntil') + ' ' + formatRecoveryTime(recoveryAt) : '');
+      } else if (rank.status === 'WEEKLY_EXHAUSTED') {
+        const recoveryAt = account?.health?.recoveryAt || rank.recoveryAt;
+        state = t('quotaExhaustedWeekly') + (recoveryAt ? ' · ' + t('coolingUntil') + ' ' + formatRecoveryTime(recoveryAt) : '');
+      } else if (rank.status === 'COOLING') {
+        const recoveryAt = account?.health?.recoveryAt || rank.recoveryAt;
+        state = (isZh ? '冷却中' : 'Cooling') + (recoveryAt ? ' · ' + t('coolingUntil') + ' ' + formatRecoveryTime(recoveryAt) : '');
+      }
+      else if (primaryEmail && email === primaryEmail) state = isZh ? '使用中' : 'In Use';
       else {
         state = isZh ? ('备选' + queueBackupIndex) : ('Backup ' + queueBackupIndex);
         queueBackupIndex++;
@@ -1442,19 +1685,28 @@
     const poolWarning = unassignedAuthError
       ? (isZh ? '代理当前没有可调用的登录凭证，但错误未指明具体账号；请检查登录授权状态。' : 'The proxy has no usable login credentials, but the error does not identify an account. Check login authorization.')
       : '';
+    const priorityRules = isZh
+      ? '排序规则：7天重置剩余时间优先；周窗口相同时优先即将重置的5小时额度；5小时耗尽的账号跳过。'
+      : 'Priority: earliest weekly reset first; when weekly windows tie, prefer an imminent 5-hour reset; skip accounts with exhausted 5-hour quota.';
     const rebalanceDescription = isZh
-      ? '重排。队列顺序：' + queueText + '。调度规则：优先临近重置 · Pro 高配额优先。' + healthDescription + poolWarning
-      : 'Reorder. Queue: ' + queueText + '. Rules: imminent reset first · Pro tier priority. ' + healthDescription + poolWarning;
+      ? '重排。队列顺序：' + queueText + '。' + priorityRules + healthDescription + poolWarning
+      : 'Reorder. Queue: ' + queueText + '. ' + priorityRules + ' ' + healthDescription + poolWarning;
+    const currentRebalanceState = extendedUsageState.rebalanceState || 'idle';
+    const rebalanceLabel = t(currentRebalanceState === 'loading' ? 'reordering' : currentRebalanceState === 'success' ? 'reordered' : currentRebalanceState === 'error' ? 'reorderFailed' : 'reorder');
+    const rebalanceIcon = currentRebalanceState === 'loading'
+      ? designIcon('refresh', 'rebalance-feedback-icon')
+      : '<span class="rebalance-feedback-icon" aria-hidden="true">' + (currentRebalanceState === 'success' ? '✓' : currentRebalanceState === 'error' ? '!' : '↻') + '</span>';
     const rebalanceButtonHtml = accounts.length > 1 && enableDynamic
       ? '<div class="quota-rebalance-wrap">'
-        + '<button type="button" class="quota-rebalance-pill-btn" aria-label="' + esc(rebalanceDescription) + '" aria-describedby="quota-rebalance-tooltip">'
-        + '<span>' + esc(isZh ? '重排' : 'Reorder') + '</span>'
+        + '<button type="button" class="quota-rebalance-pill-btn' + (currentRebalanceState === 'loading' ? ' is-loading' : '') + '" aria-label="' + esc(rebalanceLabel + '。' + rebalanceDescription) + '" aria-describedby="quota-rebalance-tooltip" aria-live="polite">'
+        + rebalanceIcon
+        + '<span>' + esc(rebalanceLabel) + '</span>'
         + '</button>'
         + '</div>'
       : '';
     const rebalanceTooltipHtml = accounts.length > 1 && enableDynamic
       ? '<div id="quota-rebalance-tooltip" class="quota-rebalance-tooltip" role="tooltip">'
-        + (isZh ? '排队顺序：' + esc(queueText) + '<br/>调度规则：优先临近重置 · Pro 高配额优先' : 'Queue: ' + esc(queueText) + '<br/>Rules: Imminent reset first · Pro tier priority')
+        + (isZh ? '排队顺序：' + esc(queueText) + '<br/>' + esc(priorityRules) : 'Queue: ' + esc(queueText) + '<br/>' + esc(priorityRules))
         + healthNotesHtml
         + (poolWarning ? '<div class="quota-account-health-notes">' + esc(poolWarning) + '</div>' : '')
         + '</div>'
@@ -1524,6 +1776,7 @@
 
   function popoverMarkup(dark) {
     const isZh = settings.locale === 'zh-CN';
+    const staleText = staleIndicatorText();
     const p = usageState.primary;
     const s = usageState.secondary;
     const showFiveHours = usageState.showFiveHours !== false;
@@ -1549,8 +1802,8 @@
           ? usageState.resetCreditDetails.map(item => {
             const expiry = item.expiresAt
               ? settings.locale === 'zh-CN'
-                ? t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone') + ' ' + t('expiresSuffix')
-                : t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + t('timezone')
+                ? t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + formatTimeZoneName(item.expiresAt) + ' ' + t('expiresSuffix')
+                : t('expiresOn') + ' ' + formatDate(item.expiresAt, true) + ' ' + formatTimeZoneName(item.expiresAt)
               : t('noResetDetails');
             return '<div class="credit-detail">'
               + designIcon('lightning', 'coupon-lightning')
@@ -1621,6 +1874,7 @@
       '.popover-title-group{display:flex;flex-direction:column;gap:3px}',
       '.popover-title{font-size:18px;font-weight:750;letter-spacing:-.3px;line-height:1.2}',
       '.popover-subtitle{font-size:11.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';line-height:1.3;white-space:nowrap}',
+      '.connection-status{display:inline-flex;align-items:center;gap:5px;margin-top:3px;font-size:10.5px;color:' + (dark ? '#FFB340' : '#A85D00') + '}.connection-status::before{content:"";width:6px;height:6px;border-radius:50%;background:#FF9500}',
       '.popover-actions{display:flex;align-items:center;gap:8px}',
       '.language-toggle,.card-refresh{height:28px;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';cursor:pointer;font:600 11.5px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;transition:all .15s ease}',
       '.language-toggle{padding:0 8px;display:inline-flex;align-items:center;justify-content:center;gap:2px;user-select:none}',
@@ -1695,6 +1949,10 @@
       '.quota-extension-header.has-rows{margin-bottom:10px}',
       '.quota-extension-title-wrap{display:flex;align-items:center;gap:8px}',
       '.quota-extension-title{font-size:13.5px;font-weight:700;letter-spacing:-.1px;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.quota-token-copy-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 6px;border:0;border-radius:6px;background:transparent;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';font:500 10.5px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;cursor:pointer;transition:background .15s ease,color .15s ease}',
+      '.quota-token-copy-btn:hover,.quota-token-copy-btn:focus-visible{background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.04)') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
+      '.quota-token-copy-btn[data-state="success"]{color:#34C759}.quota-token-copy-btn[data-state="error"]{color:#FF3B30}',
+      '@media(prefers-reduced-motion:reduce){.quota-token-copy-btn,.quota-rebalance-pill-btn{transition:none}}',
       '.quota-extension-header-actions{display:flex;align-items:center;gap:6px}',
       '.quota-extension-account-tabs{display:inline-flex;align-items:center;gap:2px;background:' + (dark ? 'rgba(255,255,255,.08)' : '#F1F3F5') + ';padding:2px;border-radius:999px}',
       '.quota-extension-account-tab{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';border-radius:999px;padding:3px 12px;font-size:11.5px;font-weight:500;cursor:pointer;transition:all .15s ease;white-space:nowrap}',
@@ -1707,7 +1965,8 @@
       '.quota-rebalance-pill-btn{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:12px;border:1px solid ' + (dark ? 'rgba(255,255,255,.15)' : 'rgba(0,0,0,.1)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : '#FFFFFF') + ';color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';font-size:11px;font-weight:500;cursor:pointer;transition:all .15s ease;box-shadow:0 1px 2px rgba(0,0,0,.04)}',
       '.quota-rebalance-pill-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : '#F5F5F7') + ';border-color:' + (dark ? 'rgba(255,255,255,.25)' : 'rgba(0,0,0,.18)') + '}',
       '.quota-rebalance-pill-btn:active{transform:scale(0.96)}',
-      '.quota-rebalance-pill-btn.is-loading svg{animation:quota-spin .8s linear infinite}',
+      '.quota-rebalance-pill-btn .rebalance-feedback-icon{display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;font-weight:700}',
+      '.quota-rebalance-pill-btn.is-loading .rebalance-feedback-icon svg{animation:quota-spin .8s linear infinite}',
       '.quota-extension-header:hover + .quota-rebalance-tooltip,.quota-extension-header:focus-within + .quota-rebalance-tooltip,.quota-rebalance-tooltip:hover{display:block}',
       '.quota-rebalance-tooltip{display:none;position:static;width:100%;max-width:100%;margin:0 0 7px;transform:none;opacity:1;visibility:visible;transition:none;background:' + (dark ? 'rgba(30,30,30,.96)' : 'rgba(255,255,255,.96)') + ';backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)') + ';border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.15);padding:8px 12px;font-size:11px;line-height:1.5;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';white-space:normal;overflow-wrap:anywhere;pointer-events:auto;z-index:auto}',
       '@keyframes quota-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}',
@@ -1769,6 +2028,7 @@
       + '<div class="popover-title-group">'
       + '<div class="popover-title">' + esc(t('title')) + '</div>'
       + '<div class="popover-subtitle">' + esc(t('subtitle')) + '</div>'
+      + (staleText ? '<div class="connection-status" role="status">' + esc(staleText) + '</div>' : '')
       + errorNote
       + '</div>'
       + '</div>'
@@ -1794,10 +2054,12 @@
   function renderPopover() {
     const target = ensurePopover();
     const previousScroll = target.querySelector('.popover-shell')?.scrollTop || 0;
-    const dark = document.documentElement.classList.contains('dark') || window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const previousFocusIndex = [...target.querySelectorAll('button,[tabindex]')].indexOf(document.activeElement);
+    const dark = isDarkAppearance();
     target.innerHTML = popoverMarkup(dark);
     const shell = target.querySelector('.popover-shell');
     if (shell) shell.scrollTop = previousScroll;
+    if (previousFocusIndex >= 0) target.querySelectorAll('button,[tabindex]')[previousFocusIndex]?.focus({ preventScroll: true });
   }
 
   function baseModeForWidth(width) {
@@ -1829,7 +2091,7 @@
     const header = element.closest('header') || element.closest('[data-app-shell-header-toolbar="true"]') || element.closest('[role="toolbar"]') || document.querySelector('header');
     const headerRect = visibleRect(header);
     const actionGroup = element.parentElement;
-    const newChat = element.dataset?.placement === 'new-chat';
+    const newChat = element.dataset?.placement === 'new-chat' || element.dataset?.placement === 'new-chat-right';
     const chat = element.dataset?.placement === 'chat';
 
     if (chat) {
@@ -1891,7 +2153,9 @@
   function renderHost() {
     if (!host) return;
     host.dataset.mode = currentMode;
-    const dark = document.documentElement.classList.contains('dark') || window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const statusText = staleIndicatorText();
+    host.dataset.stale = String(Boolean(statusText));
+    const dark = isDarkAppearance();
     const p = usageState.primary;
     const s = usageState.secondary;
     const showFiveHours = usageState.showFiveHours !== false;
@@ -1906,18 +2170,20 @@
     const pieLabel = showFiveHours ? '5h' : '7d';
     const pPie = ' style="--remaining:' + (p?.remainingPercent || 0) + '%;color:' + pColor + '"';
     const sPie = ' style="--remaining:' + (s?.remainingPercent || 0) + '%;color:' + sColor + '"';
+    const pMini = p ? '<span class="mini-pie"' + pPie + ' aria-hidden="true"></span>' : '<span class="mini-pie-empty" aria-hidden="true">—</span>';
+    const sMini = s ? '<span class="mini-pie"' + sPie + ' aria-hidden="true"></span>' : '<span class="mini-pie-empty" aria-hidden="true">—</span>';
     const detailsOpen = popoverState !== 'closed';
     let content;
     if (!showFiveHours && currentMode === 'nano') {
-      content = '<span class="label">' + pieLabel + '</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
+      content = '<span class="label">' + pieLabel + '</span>' + sMini;
     } else if (currentMode === 'nano') {
-      content = '<span class="label">5h</span><span class="mini-pie"' + pPie + ' aria-hidden="true"></span>';
+      content = '<span class="label">5h</span>' + pMini;
     } else if (!showFiveHours && currentMode === 'minimal') {
-      content = '<span class="label">7d</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
+      content = '<span class="label">7d</span>' + sMini;
     } else if (!showFiveHours) {
       content = '<span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
     } else if (currentMode === 'minimal') {
-      content = '<span class="label">5h</span><span class="mini-pie"' + pPie + ' aria-hidden="true"></span><span class="divider"></span><span class="label">7d</span><span class="mini-pie"' + sPie + ' aria-hidden="true"></span>';
+      content = '<span class="label">5h</span>' + pMini + '<span class="divider"></span><span class="label">7d</span>' + sMini;
     } else if (currentMode === 'compact') {
       content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value" style="color:' + pColorText + '">' + pValue + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + '</span>';
     } else {
@@ -1927,6 +2193,7 @@
       *{box-sizing:border-box}
       :host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}
       :host([data-space-hidden="true"]){display:none!important}
+      :host([data-stale="true"])::after{content:"";position:absolute;right:29px;top:2px;width:6px;height:6px;border-radius:50%;background:#FF9500;box-shadow:0 0 0 1px ${dark ? 'rgba(25,25,27,.9)' : 'rgba(255,255,255,.9)'};pointer-events:none}
       .capsule{height:34px;min-width:0;padding:0 0 0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:0;color:${dark ? '#F5F5F7' : '#1D1D1F'};background:${dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)'};border:1px solid ${dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)'};box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}
       .details-trigger{height:32px;padding:0 8px 0 0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
       .details-trigger:focus-visible,.capsule-toggle:focus-visible{outline:2px solid ${dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)'};outline-offset:-2px}
@@ -1939,6 +2206,7 @@
       .track{flex:none;width:70px;height:12px;overflow:hidden;border-radius:999px;background:${CONFIG.colors.track}}
       .fill{display:block;height:100%;border-radius:999px;transition:width .3s ease,background .3s ease}
       .mini-pie{width:16px;height:16px;display:inline-block;border-radius:50%;background:conic-gradient(currentColor 0 var(--remaining), ${CONFIG.colors.track} var(--remaining) 100%);transform:rotate(-90deg)}
+      .mini-pie-empty{width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;color:${CONFIG.colors.muted};font-size:12px;font-weight:600}
       .value{flex:none;font-size:12px;font-weight:560;letter-spacing:-.1px;font-variant-numeric:tabular-nums}
       .primary-countdown{min-width:0}
       .divider{flex:none;width:1px;height:16px;margin:0;background:${dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)'}}
@@ -1946,7 +2214,7 @@
       .capsule.is-refreshing .value{animation:quota-number-shimmer .75s ease-in-out infinite}
     </style>`
       + '<div class="capsule' + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
-      + '<button class="details-trigger" type="button" aria-label="' + esc(t('details')) + '" aria-describedby="' + POPOVER_ID + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button>'
+      + '<button class="details-trigger" type="button" aria-label="' + esc(t('details') + (statusText ? ' · ' + statusText : '')) + '" title="' + esc(statusText) + '" aria-describedby="' + POPOVER_ID + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button>'
       + '<span class="capsule-separator" aria-hidden="true"></span>'
       + '<button class="capsule-toggle" type="button" aria-label="' + esc(t('toggleDetails')) + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">'
       + designIcon('chevronDown', 'capsule-arrow' + (detailsOpen ? ' is-expanded' : ''))
@@ -1958,7 +2226,8 @@
     if (!host) return;
     const available = measureAvailableWidth(host);
     const next = resolveMode(available);
-    const spaceHidden = host.dataset.placement === 'chat' && available < 64;
+    const isChatPlacement = host.dataset.placement === 'chat' || host.dataset.placement === 'thread';
+    const spaceHidden = isChatPlacement && available < 64;
     const spaceHiddenChanged = host.dataset.spaceHidden !== String(spaceHidden);
     host.dataset.spaceHidden = String(spaceHidden);
     host.dataset.mode = currentMode;
@@ -2017,39 +2286,49 @@
     host.addEventListener('click', event => {
       const path = event.composedPath();
       if (!path.some(node => node?.classList?.contains('details-trigger') || node?.classList?.contains('capsule-toggle'))) return;
-      togglePopoverFromCapsule();
+      if (event.detail === 0) togglePopoverFromCapsule({ keyboard: true });
+      else togglePopoverFromCapsule();
     }, true);
     host.addEventListener('keydown', event => {
       if (event.key === 'Escape') {
         suppressHoverUntilLeave = true;
-        hidePopover(true);
+        hidePopover(true, true);
       }
       if ((event.key === 'Enter' || event.key === ' ') && event.composedPath().some(node => node?.classList?.contains('details-trigger') || node?.classList?.contains('capsule-toggle'))) {
         event.preventDefault();
-        togglePopoverFromCapsule();
+        togglePopoverFromCapsule({ keyboard: true });
       }
     }, true);
 
-    // 坐标兜底：如果 Electron 将物理指针事件路由到拖拽区域，
-    // 而不是影子按钮，文档级 mousemove 仍可识别组件的可见边界。
+    // 坐标兜底：合并同一帧内的高频指针事件，并只保留 pointer 事件。
+    let pointerMoveFrame = 0;
+    let queuedPointerMove = null;
     const handleDocumentPointerMove = event => {
       lastPointerX = event.clientX;
       lastPointerY = event.clientY;
-      const rect = host.getBoundingClientRect();
-      const inside = event.clientX >= rect.left && event.clientX <= rect.right
-        && event.clientY >= rect.top && event.clientY <= rect.bottom;
-      const popRect = popover?.getBoundingClientRect();
-      const insidePopover = popRect && event.clientX >= popRect.left && event.clientX <= popRect.right
-        && event.clientY >= popRect.top && event.clientY <= popRect.bottom;
-      if (inside || insidePopover) {
-        if (popoverHideTimer) clearTimeout(popoverHideTimer);
-        popoverHideTimer = null;
-      }
-      if (inside && !suppressHoverUntilLeave) showPopover();
-      else if (!insidePopover && popoverState !== 'pinned') scheduleHidePopover();
+      queuedPointerMove = { x: event.clientX, y: event.clientY, path: event.composedPath() };
+      if (pointerMoveFrame) return;
+      pointerMoveFrame = requestAnimationFrame(() => {
+        pointerMoveFrame = 0;
+        const point = queuedPointerMove;
+        queuedPointerMove = null;
+        if (!point || !host?.isConnected) return;
+        const inEventPath = point.path.includes(host);
+        const rect = inEventPath ? null : host.getBoundingClientRect();
+        const inside = inEventPath || (rect && point.x >= rect.left && point.x <= rect.right
+          && point.y >= rect.top && point.y <= rect.bottom);
+        const popRect = popoverState !== 'closed' ? popover?.getBoundingClientRect() : null;
+        const insidePopover = popRect && point.x >= popRect.left && point.x <= popRect.right
+          && point.y >= popRect.top && point.y <= popRect.bottom;
+        if (inside || insidePopover) {
+          if (popoverHideTimer) clearTimeout(popoverHideTimer);
+          popoverHideTimer = null;
+        }
+        if (inside && !suppressHoverUntilLeave) showPopover();
+        else if (!insidePopover && popoverState !== 'pinned') scheduleHidePopover();
+      });
     };
     on(document, 'pointermove', handleDocumentPointerMove, true);
-    on(document, 'mousemove', handleDocumentPointerMove, true);
   }
 
   function bindResizeObserver() {
@@ -2088,7 +2367,12 @@
     /^(?:新聊天|新建聊天|开启新聊天|创建新聊天|新会话|新建会话|新标签页|新建标签页|新标签|新建标签|打开新标签页|new\s*chat|create\s*(?:new\s*)?chat|open\s*new\s*chat|start\s*new\s*chat|new\s*tab|create\s*(?:new\s*)?tab|open\s*new\s*tab|add\s*tab|new\s*conversation)(?:\s*[\(（][^\)）]+[\)）])?$/i,
     /^[+＋]$/,
   ];
+  const EMPTY_CHAT_TITLE_RE = /^(?:ChatGPT|Codex|新聊天|新建聊天|New Chat|New Conversation)$/i;
   const SHARE_ACTION_RE = /^分享$|^share$/i;
+
+  function isEmptyChatSurface(doc) {
+    return EMPTY_CHAT_TITLE_RE.test(String(doc?.title || '').trim());
+  }
 
   function isNewChatAction(button) {
     if (!button) return false;
@@ -2099,6 +2383,27 @@
     const testId = button.getAttribute('data-testid') || '';
     if (/^(?:new-chat|create-(?:new-)?chat|new-tab|add-tab)(?:-button)?$/i.test(testId)) return true;
     return false;
+  }
+
+  function resolveEndSlotNewChatPoint(button) {
+    const header = button?.closest?.('header');
+    const slot = button?.closest?.('[data-app-shell-header-slot="end"]');
+    const headerRect = visibleRect(header);
+    const slotRect = visibleRect(slot);
+    if (!header || !slot || !headerRect || !slotRect || headerRect.width < 400 || headerRect.height > 80) return null;
+
+    // 新版 App Shell 将 [+] 放在固定的 end slot；组件必须进入其内层 action row。
+    // 若作为 header 的同级 flex 项，header 与 end slot 各自的 auto margin 会平分空白，
+    // 把胶囊推回顶栏中间（而不是截图要求的右侧红框区域）。
+    let reference = button;
+    while (reference?.parentElement && reference.parentElement !== slot) {
+      const parent = reference.parentElement;
+      if (getComputedStyle(parent).display === 'inline-flex') {
+        return { header, toolbar: slot, container: parent, reference, placement: 'new-chat-right' };
+      }
+      reference = parent;
+    }
+    return null;
   }
 
   // 校验原生按钮所在顶栏，兼容新版的 display:contents 包装及无 header 的显式工具栏。
@@ -2189,6 +2494,18 @@
     // 按水平从右至左排序，优先匹配顶栏右侧的操作按钮
     const rightwardButtons = [...buttons].sort((a, b) => (visibleRect(b)?.left || 0) - (visibleRect(a)?.left || 0));
 
+    // 首页/空白新聊天也可能保留「聊天操作」按钮；此时应优先锚定最右侧的新建 [+]，
+    // 否则通用对话操作会抢先命中，让组件停在操作区左侧而不是 [+] 左侧。
+    if (isEmptyChatSurface(doc)) {
+      for (const button of rightwardButtons) {
+        if (!isNewChatAction(button)) continue;
+        const endSlotPoint = resolveEndSlotNewChatPoint(button);
+        if (endSlotPoint) return endSlotPoint;
+        const point = validateActionAnchor(button, true);
+        if (point) return point;
+      }
+    }
+
     // Tier 1：对话页顶栏。遍历全部同名候选并逐个校验，
     // 侧栏里的同名按钮（不在 <header> 内）会被跳过。
     for (const button of rightwardButtons) {
@@ -2246,31 +2563,48 @@
     const existing = document.querySelector(HOST_TAG);
     if (!point) return false;
     if (existing?.isConnected) {
+      const wasHost = host;
       host = existing;
+      let changed = false;
       const needsMove = existing.parentElement !== point.container
         || (point.reference ? existing.nextElementSibling !== point.reference : existing.parentElement.lastElementChild !== existing);
       if (needsMove) {
         if (point.reference) point.container.insertBefore(existing, point.reference);
         else point.container.appendChild(existing);
+        changed = true;
       }
+      const previousPlacement = existing.dataset.placement;
       existing.dataset.placement = point.placement;
-      if (point.placement === 'new-chat') {
+      if (point.placement === 'new-chat-right') {
+        existing.style.setProperty('margin-left', '0px');
+        existing.style.setProperty('margin-right', '16px');
+      } else if (point.placement === 'new-chat') {
         existing.style.setProperty('margin-left', 'auto');
         existing.style.setProperty('margin-right', '16px');
       } else {
         existing.style.removeProperty('margin-left');
         existing.style.setProperty('margin-right', '0px');
       }
-      if (!existing.shadowRoot) existing.attachShadow({ mode: 'open' });
+      if (!existing.shadowRoot) {
+        existing.attachShadow({ mode: 'open' });
+        changed = true;
+      }
+      if (previousPlacement !== point.placement) changed = true;
       bindHostEvents();
-      renderHost();
-      bindResizeObserver();
-      updateMode();
+      if (changed) {
+        renderHost();
+        if (wasHost !== existing || !resizeObserver) bindResizeObserver();
+        updateMode();
+        if (popover?.classList.contains('is-visible')) requestAnimationFrame(positionPopover);
+      }
       return true;
     }
     host = document.createElement(HOST_TAG);
     host.dataset.placement = point.placement;
-    if (point.placement === 'new-chat') {
+    if (point.placement === 'new-chat-right') {
+      host.style.setProperty('margin-left', '0px');
+      host.style.setProperty('margin-right', '16px');
+    } else if (point.placement === 'new-chat') {
       host.style.setProperty('margin-left', 'auto');
       host.style.setProperty('margin-right', '16px');
     } else {
@@ -2324,17 +2658,35 @@
         || host.nextElementSibling !== point.reference || host.dataset.placement !== point.placement))) ensureMounted();
     });
     mountObserver.observe(document.documentElement, { childList: true, subtree: true });
+    rootThemeObserver?.disconnect();
+    rootThemeObserver = new MutationObserver(() => {
+      renderHost();
+      if (popover?.classList.contains('is-visible')) {
+        renderPopover();
+        positionPopover();
+      }
+    });
+    rootThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-color-scheme'] });
+    const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+    on(systemTheme, 'change', () => {
+      if (document.documentElement.classList.contains('dark') || document.documentElement.classList.contains('light')) return;
+      renderHost();
+      if (popover?.classList.contains('is-visible')) renderPopover();
+    });
     if (healthTimer) clearInterval(healthTimer);
-    healthTimer = setInterval(() => { suppressLegacyInstances(); ensureMounted(); }, 3000);
+    healthTimer = document.hidden ? null : setInterval(() => { suppressLegacyInstances(); ensureMounted(); }, 3000);
   }
 
   window.__codexUsageHeaderRemount = ensureMounted;
   window.__codexUsageHeaderSetUsage__ = applyUsagePayload;
   window.__codexUsageHeaderSetRefreshError__ = applyRefreshError;
   window.__codexUsageHeaderSetUsageError__ = applyUsageError;
+  window.__codexUsageHeaderSetCommandAck__ = applyCommandAck;
 
   function applyExtendedUsagePayload(payload) {
     if (!payload || typeof payload !== 'object') return;
+    const previousStatus = staleIndicatorText();
+    if (typeof payload.timezone === 'string' && payload.timezone) extendedUsageState.timezone = payload.timezone;
     if (payload.antigravity && typeof payload.antigravity === 'object') {
       extendedUsageState.antigravity = {
         ...extendedUsageState.antigravity,
@@ -2346,6 +2698,10 @@
         ...extendedUsageState.failover,
         ...payload.failover,
       };
+      if (failoverTimeoutTimer) {
+        clearTimeout(failoverTimeoutTimer);
+        failoverTimeoutTimer = null;
+      }
       failoverSwitching = false;
     }
     if (payload.tokens && typeof payload.tokens === 'object') {
@@ -2366,6 +2722,7 @@
         tokenModelMenuOpen = false;
       }
     }
+    if (staleIndicatorText() !== previousStatus) renderHost();
     if (popover && popover.classList.contains('is-visible')) {
       renderPopover();
       positionPopover();
@@ -2373,11 +2730,18 @@
   }
 
   window.__codexUsageHeaderSetExtendedUsage__ = applyExtendedUsagePayload;
+  window.__codexUsageHeaderSetCommandAck__ = applyCommandAck;
   // 完整 teardown：清理全部定时器、document/window 监听器与 DOM，
   // 再由新版本判断内容哈希决定是否重装。重复注入不得叠加组件。
   window.__codexUsageHeaderTeardown__ = () => {
     if (mountTimer) clearTimeout(mountTimer);
     mountTimer = null;
+    if (failoverTimeoutTimer) clearTimeout(failoverTimeoutTimer);
+    failoverTimeoutTimer = null;
+    if (rebalanceFeedbackTimer) clearTimeout(rebalanceFeedbackTimer);
+    rebalanceFeedbackTimer = null;
+    if (copyStatusTimer) clearTimeout(copyStatusTimer);
+    copyStatusTimer = null;
     if (healthTimer) clearInterval(healthTimer);
     healthTimer = null;
     if (countdownTimer) clearInterval(countdownTimer);
@@ -2388,6 +2752,8 @@
     offAllTrackedListeners();
     mountObserver?.disconnect();
     mountObserver = null;
+    rootThemeObserver?.disconnect();
+    rootThemeObserver = null;
     resizeObserver?.disconnect();
     resizeObserver = null;
     document.querySelector(HOST_TAG)?.remove();
@@ -2430,6 +2796,16 @@
   on(document, 'keydown', event => {
     const modelButton = popover?.querySelector('.quota-extension-model-button');
     const modelOptions = [...(popover?.querySelectorAll('.quota-extension-model-option') || [])];
+    const foldToggle = event.target?.closest?.('.token-folded-toggle');
+    if ((event.key === 'Enter' || event.key === ' ') && foldToggle && popover?.contains(foldToggle)) {
+      event.preventDefault();
+      const expanding = !extendedUsageState.tokens.otherModelsExpanded;
+      extendedUsageState.tokens.otherModelsExpanded = expanding;
+      renderPopover();
+      positionPopover();
+      requestAnimationFrame(() => popover?.querySelector(expanding ? '.token-collapse-btn' : '.token-folded-toggle')?.focus({ preventScroll: true }));
+      return;
+    }
     if (tokenModelMenuOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       const currentIndex = modelOptions.indexOf(document.activeElement);
       if (document.activeElement === modelButton || currentIndex >= 0) {
@@ -2449,12 +2825,30 @@
       event.preventDefault();
       event.stopPropagation();
     } else if (event.key === 'Escape') {
-      hidePopover(true);
+      hidePopover(true, true);
     }
   }, true);
   on(window, 'resize', () => { updateMode(); positionPopover(); });
   on(window, 'scroll', positionPopover, true);
-  on(window, 'focus', () => { if (!window.__codexUsageHeaderCommand__) requestUsage(); });
+  on(document, 'visibilitychange', () => {
+    if (document.hidden) {
+      if (countdownTimer) clearInterval(countdownTimer);
+      countdownTimer = null;
+      if (healthTimer) clearInterval(healthTimer);
+      healthTimer = null;
+    } else {
+      updateCountdowns();
+      if (!countdownTimer) countdownTimer = setInterval(updateCountdowns, 60000);
+      if (!healthTimer) healthTimer = setInterval(() => { suppressLegacyInstances(); ensureMounted(); }, 3000);
+    }
+    emitLifecycle(!document.hidden);
+  });
+  on(window, 'focus', () => {
+    updateCountdowns();
+    if (!document.hidden && !countdownTimer) countdownTimer = setInterval(updateCountdowns, 60000);
+    if (!document.hidden && !healthTimer) healthTimer = setInterval(() => { suppressLegacyInstances(); ensureMounted(); }, 3000);
+    emitLifecycle(true);
+  });
   on(window, 'storage', event => { if (event.key === SETTINGS_KEY) { settings = safeSettings(); renderAll(); } });
 
   if (document.readyState === 'loading') {
@@ -2463,7 +2857,7 @@
     initObserver();
     requestUsage();
   }
-  countdownTimer = setInterval(updateCountdowns, 1000);
+  if (!document.hidden) countdownTimer = setInterval(updateCountdowns, 60000);
 
   window.__codexUsageHeaderInstalled__ = RUNTIME_VERSION;
   window.__codexUsageHeaderContentHash__ = CONTENT_HASH;

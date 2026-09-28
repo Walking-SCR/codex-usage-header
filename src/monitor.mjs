@@ -10,12 +10,16 @@ import { AppServerClient } from './account-client.mjs';
 import { ExtendedUsageCoordinator } from './extended-usage.mjs';
 import { triggerRebalance } from './dynamic-priority-adapter.mjs';
 import { readFailoverStatus, triggerToggleFailoverMode } from './failover-mode-adapter.mjs';
-import { evaluateInTarget, fetchCdpTargets, launchAndInject, selectUsageTargets } from './launcher.mjs';
+import { evaluateInTarget, fetchCdpTargets, launchAndInject, selectUsageTargets, subscribeToCdpBinding } from './launcher.mjs';
 import { acquireMonitorLock, releaseMonitorLock, monitorCodeHash, MONITOR_LOCK_PATH } from './monitor-lock.mjs';
 
 const DEFAULT_CDP_PORT = 9229;
-const POLL_MS = 750;
+const TARGET_DISCOVERY_RETRY_MS = 2000;
 const IDLE_REFRESH_MS = 180000;
+const ACTIVE_TARGET_POLL_MS = 5000;
+const IDLE_TARGET_POLL_MS = 15000;
+const COMMAND_BINDING_NAME = 'codexUsageHeaderCommandV1';
+const MAX_NATIVE_COMMANDS = 256;
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SETTINGS_PATH = join(process.env.HOME || tmpdir(), 'Library/Application Support/Codex Quota Header/settings.json');
 
@@ -41,6 +45,7 @@ function readSettings() {
     const value = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'));
     return {
       refreshIntervalSeconds: Number(value.refreshIntervalSeconds) === 60 ? 60 : 30,
+      timezone: isValidTimeZone(value.timezone) ? value.timezone : 'Asia/Shanghai',
       enableGoogleAiPro: Boolean(value.enableGoogleAiPro),
       enableTokenUsage: Boolean(value.enableTokenUsage),
       enableResetCredits: Boolean(value.enableResetCredits),
@@ -50,6 +55,7 @@ function readSettings() {
   } catch {
     return {
       refreshIntervalSeconds: 30,
+      timezone: 'Asia/Shanghai',
       enableGoogleAiPro: false,
       enableTokenUsage: false,
       enableResetCredits: false,
@@ -64,11 +70,18 @@ function persistSettings(settings) {
   writeFileSync(SETTINGS_PATH, JSON.stringify({
     schemaVersion: 1,
     refreshIntervalSeconds: settings.refreshIntervalSeconds,
+    timezone: settings.timezone || 'Asia/Shanghai',
     enableGoogleAiPro: Boolean(settings.enableGoogleAiPro),
     enableTokenUsage: Boolean(settings.enableTokenUsage),
     enableResetCredits: Boolean(settings.enableResetCredits),
     enableDynamicPriority: Boolean(settings.enableDynamicPriority),
   }, null, 2));
+}
+
+function isValidTimeZone(value) {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: value }).format(); return true; }
+  catch { return false; }
 }
 
 async function inspectTarget(target) {
@@ -117,15 +130,80 @@ async function pushExtendedUsage(target, payload) {
     `window.__codexUsageHeaderSetExtendedUsage__?.(${serialized})`);
 }
 
+async function pushCommandAck(target, ack) {
+  const serialized = JSON.stringify(ack).replace(/</g, '\\u003c');
+  await evaluateInTarget(target.webSocketDebuggerUrl,
+    `window.__codexUsageHeaderSetCommandAck__?.(${serialized})`);
+}
+
+export function parseNativeCommand(payload, target) {
+  if (typeof payload !== 'string' || Buffer.byteLength(payload, 'utf8') > 16 * 1024) return null;
+  let message;
+  try { message = JSON.parse(payload); } catch { return null; }
+  if (message?.type === 'lifecycle') {
+    return {
+      kind: 'lifecycle',
+      visible: message.visible === true,
+      resync: message.resync === true,
+      target,
+    };
+  }
+  const command = message?.type === 'command' ? message.command : null;
+  if (!command || typeof command !== 'object'
+    || typeof command.id !== 'string' || command.id.length > 128
+    || !['settings', 'refresh', 'rebalance', 'toggleFailoverMode'].includes(command.kind)) return null;
+  return {
+    id: command.id,
+    kind: command.kind,
+    payload: command.payload && typeof command.payload === 'object' ? command.payload : {},
+    manual: command.manual === true,
+    createdAt: Number(command.createdAt) || Date.now(),
+    target,
+  };
+}
+
 async function run(cdpPort) {
   if (!acquireLock()) return;
   const settings = readSettings();
   let notificationPending = false;
+  let wakeMonitorWait = null;
+  let monitorWakeRequested = false;
+  const notifyMonitor = () => {
+    const wake = wakeMonitorWait;
+    wakeMonitorWait = null;
+    if (wake) wake();
+    else monitorWakeRequested = true;
+  };
   const client = new AppServerClient({
     onNotification: message => {
-      if (message.method === 'account/rateLimits/updated') notificationPending = true;
+      if (message.method === 'account/rateLimits/updated') {
+        notificationPending = true;
+        notifyMonitor();
+      }
     },
   });
+  const bindingSubscriptions = new Map();
+  const visibleByTarget = new Map();
+  const pendingNativeCommands = [];
+  const waitForMonitor = milliseconds => {
+    if (monitorWakeRequested) {
+      monitorWakeRequested = false;
+      return Promise.resolve();
+    }
+    return new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      monitorWakeRequested = false;
+      clearTimeout(timer);
+      if (wakeMonitorWait === finish) wakeMonitorWait = null;
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    wakeMonitorWait = finish;
+    });
+  };
   try {
     mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
     await launchAndInject(cdpPort, { launchIfNeeded: true });
@@ -136,13 +214,48 @@ async function run(cdpPort) {
     let lastExpiredAutoRefresh = 0;
     let extendedRevision = 0;
     const deliveredExtendedRevision = new Map();
-    let lastAccountHealthSignature = '';
+    let lastExtendedSignature = '';
+    let cachedExtendedSnapshot = null;
+    let lastExtendedSnapshotAt = 0;
+    let snapshotBuiltForRevision = -1;
+    let tokenScanInFlight = null;
+    let geminiRefreshInFlight = null;
     let nextRefreshAt = 0;
-    let payload = null;
     let revision = 0;
     let inFlight = null;
-    const deliveredRevision = new Map();
+    let inFlightContext = null;
+    const completedUsageResults = [];
     const seenCommands = new Set();
+    const enqueueNativeMessage = (target, payload) => {
+      const item = parseNativeCommand(payload, target);
+      if (!item) return;
+      if (pendingNativeCommands.length >= MAX_NATIVE_COMMANDS) pendingNativeCommands.shift();
+      pendingNativeCommands.push(item);
+      notifyMonitor();
+    };
+    const bindTarget = async target => {
+      const key = target.id || target.webSocketDebuggerUrl;
+      if (bindingSubscriptions.has(key)) return;
+      let connected = true;
+      const unsubscribe = await subscribeToCdpBinding(
+        target.webSocketDebuggerUrl,
+        COMMAND_BINDING_NAME,
+        params => {
+          if (params?.disconnected) {
+            connected = false;
+            const current = bindingSubscriptions.get(key);
+            bindingSubscriptions.delete(key);
+            visibleByTarget.delete(key);
+            current?.();
+            notifyMonitor();
+            return;
+          }
+          if (params?.name === COMMAND_BINDING_NAME) enqueueNativeMessage(target, params.payload);
+        },
+      );
+      if (connected) bindingSubscriptions.set(key, unsubscribe);
+      else unsubscribe();
+    };
     // P2：命令去重缓存上限 2000，超限时淘汰最早的 500 条，防止长期运行无界增长
     const rememberCommand = id => {
       seenCommands.add(id);
@@ -155,13 +268,53 @@ async function run(cdpPort) {
         }
       }
     };
+    const beginUsageRead = (manualRequests, refreshMs, shouldRefreshAgain) => {
+      if (inFlight) {
+        for (const command of manualRequests) {
+          inFlightContext?.manualIds.set(command.target.id || command.target.webSocketDebuggerUrl, command.id);
+        }
+        if (shouldRefreshAgain && inFlightContext) inFlightContext.refreshAgain = true;
+        return;
+      }
+      const context = { manualIds: new Map(), refreshMs, refreshAgain: Boolean(shouldRefreshAgain) };
+      for (const command of manualRequests) {
+        context.manualIds.set(command.target.id || command.target.webSocketDebuggerUrl, command.id);
+      }
+      inFlightContext = context;
+      nextRefreshAt = Date.now() + refreshMs;
+      const request = client.readRateLimits({ excludeResetCreditDetails: !settings.enableResetCredits });
+      inFlight = request;
+      request.then(value => {
+        if (inFlight !== request) return;
+        completedUsageResults.push({ value, context, fetchedAt: Date.now() });
+        inFlight = null;
+        inFlightContext = null;
+        nextRefreshAt = Date.now() + (context.refreshAgain ? 0 : context.refreshMs);
+        notifyMonitor();
+      }, error => {
+        if (inFlight !== request) return;
+        completedUsageResults.push({ error, context, fetchedAt: Date.now() });
+        inFlight = null;
+        inFlightContext = null;
+        nextRefreshAt = Date.now() + (context.refreshAgain ? 0 : 5000);
+        notifyMonitor();
+      });
+    };
     // 保持单个所有者运行，并由 CDP 目标列表驱动可用性判断。
     // 这里执行同步进程扫描可能阻塞事件循环，使渲染器命令得不到处理，
     // 从而导致手动刷新看起来没有响应。
     while (true) {
       let targets;
-      try { targets = selectUsageTargets(await fetchCdpTargets(cdpPort)); } catch { await sleep(POLL_MS); continue; }
-      if (targets.length === 0) { await sleep(POLL_MS); continue; }
+      try { targets = selectUsageTargets(await fetchCdpTargets(cdpPort)); } catch { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
+      if (targets.length === 0) { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
+      const activeTargetKeys = new Set(targets.map(target => target.id || target.webSocketDebuggerUrl));
+      for (const [key, unsubscribe] of bindingSubscriptions) {
+        if (activeTargetKeys.has(key)) continue;
+        unsubscribe();
+        bindingSubscriptions.delete(key);
+        visibleByTarget.delete(key);
+      }
+      await Promise.all(targets.map(target => bindTarget(target).catch(() => {})));
       let inspections = await Promise.all(targets.map(async target => {
         try { return { target, state: await inspectTarget(target) }; } catch { return null; }
       }));
@@ -177,6 +330,28 @@ async function run(cdpPort) {
         } catch { /* 目标可能正处于路由切换过程中 */ }
       }
       const commands = valid.flatMap(item => (item.state.commands || (item.state.command ? [item.state.command] : [])).map(cmd => ({ ...cmd, target: item.target })));
+      const nativeCommands = pendingNativeCommands.splice(0);
+      let lifecycleResync = false;
+      for (const item of nativeCommands.filter(command => command.kind === 'lifecycle')) {
+        const key = item.target.id || item.target.webSocketDebuggerUrl;
+        visibleByTarget.set(key, item.visible);
+        if (item.resync) lifecycleResync = true;
+      }
+      for (const item of valid) {
+        const key = item.target.id || item.target.webSocketDebuggerUrl;
+        visibleByTarget.set(key, !item.state.hidden);
+      }
+      commands.push(...nativeCommands.filter(command => command.kind !== 'lifecycle'));
+      const uniqueCommands = new Map();
+      for (const command of commands) {
+        if (command?.id) uniqueCommands.set(command.id, command);
+      }
+      commands.splice(0, commands.length, ...uniqueCommands.values());
+      if (lifecycleResync) {
+        nextRefreshAt = 0;
+        nextTokensAt = 0;
+        nextGeminiAt = 0;
+      }
       for (const command of commands) {
         if (command.kind !== 'settings' || !command.id || seenCommands.has(command.id)) continue;
         const seconds = Number(command.payload?.refreshIntervalSeconds);
@@ -207,6 +382,8 @@ async function run(cdpPort) {
           nextGeminiAt = 0;
         }
         persistSettings(settings);
+        extendedCoordinator.updateSettings(settings);
+        extendedRevision += 1;
         rememberCommand(command.id);
         nextRefreshAt = 0;
       }
@@ -224,104 +401,130 @@ async function run(cdpPort) {
       const rebalanceCommands = commands.filter(command => command.kind === 'rebalance' && command.id && !seenCommands.has(command.id));
       for (const command of rebalanceCommands) {
         rememberCommand(command.id);
-        try {
-          await triggerRebalance();
-        } catch { /* 忽略重平衡异常 */ }
+        triggerRebalance().then(async result => {
+          await pushCommandAck(command.target, {
+            id: command.id,
+            kind: 'rebalance',
+            success: Boolean(result?.ok),
+          }).catch(() => {});
+          extendedRevision += 1;
+          notifyMonitor();
+        }).catch(async () => {
+          await pushCommandAck(command.target, { id: command.id, kind: 'rebalance', success: false }).catch(() => {});
+          extendedRevision += 1;
+          notifyMonitor();
+        });
         nextGeminiAt = 0;
       }
       const refreshCommands = commands.filter(command => command.kind === 'refresh' && command.id && !seenCommands.has(command.id));
       for (const command of refreshCommands) rememberCommand(command.id);
       const manualRequests = refreshCommands.filter(command => command.manual);
-      const anyVisible = valid.some(item => !item.state.hidden);
+      const anyVisible = valid.some(item => visibleByTarget.get(item.target.id || item.target.webSocketDebuggerUrl) !== false);
       const tokensIntervalMs = anyVisible ? 30000 : 180000;
       const geminiIntervalMs = anyVisible ? 180000 : 600000;
       const refreshMs = anyVisible ? settings.refreshIntervalSeconds * 1000 : IDLE_REFRESH_MS;
 
-      if (Date.now() >= nextTokensAt) {
-        extendedCoordinator.scanTokensIncremental();
-        extendedRevision += 1;
+      if (settings.enableTokenUsage && Date.now() >= nextTokensAt && !tokenScanInFlight) {
         nextTokensAt = Date.now() + tokensIntervalMs;
+        tokenScanInFlight = extendedCoordinator.scanTokensIncremental()
+          .then(changed => { if (changed) extendedRevision += 1; })
+          .catch(() => {})
+          .finally(() => { tokenScanInFlight = null; });
       }
 
-      if (Date.now() >= nextGeminiAt) {
+      const geminiEnabled = Boolean(settings.enableGoogleAiPro || settings.enableDynamicPriority);
+      if (geminiEnabled && Date.now() >= nextGeminiAt && !geminiRefreshInFlight) {
         nextGeminiAt = Date.now() + geminiIntervalMs;
-        extendedCoordinator.refreshGemini().then(() => {
+        geminiRefreshInFlight = extendedCoordinator.refreshGemini().then(() => {
           extendedRevision += 1;
-        }).catch(() => {});
+        }).catch(() => {}).finally(() => { geminiRefreshInFlight = null; });
       }
 
-      const currentAnti = extendedCoordinator.getSnapshot()?.antigravity;
-      const nowSec = Math.floor(Date.now() / 1000);
-      const hasExpiredReset = (currentAnti?.accounts || []).some(acc =>
-        (acc.rows || []).some(r => !r.unavailable && r.resetTime && r.resetTime <= nowSec)
-      );
-      if (hasExpiredReset && Date.now() - lastExpiredAutoRefresh > 10000) {
-        lastExpiredAutoRefresh = Date.now();
-        try {
-          await extendedCoordinator.refreshGemini();
-          extendedRevision += 1;
-        } catch {}
+      if (geminiEnabled) {
+        const currentAnti = extendedCoordinator.getSnapshot()?.antigravity;
+        const nowSec = Math.floor(Date.now() / 1000);
+        const hasExpiredReset = (currentAnti?.accounts || []).some(acc =>
+          (acc.rows || []).some(r => !r.unavailable && r.resetTime && r.resetTime <= nowSec)
+        );
+        if (hasExpiredReset && Date.now() - lastExpiredAutoRefresh > 30000 && !geminiRefreshInFlight) {
+          lastExpiredAutoRefresh = Date.now();
+          geminiRefreshInFlight = extendedCoordinator.refreshGemini()
+            .then(() => { extendedRevision += 1; })
+            .catch(() => {})
+            .finally(() => { geminiRefreshInFlight = null; });
+        }
       }
 
       if (refreshCommands.length > 0) {
-        extendedCoordinator.scanTokensIncremental();
-        try {
-          await extendedCoordinator.refreshGemini();
-        } catch {}
-        extendedRevision += 1;
-      }
-
-      const shouldRefresh = Date.now() >= nextRefreshAt || notificationPending || refreshCommands.length > 0;
-      let refreshed = false;
-      let refreshError = null;
-      if (shouldRefresh) {
-        notificationPending = false;
-        if (!inFlight) inFlight = client.readRateLimits({ excludeResetCreditDetails: !settings.enableResetCredits }).finally(() => { inFlight = null; });
-        try {
-          payload = await inFlight;
-          revision += 1;
-          refreshed = true;
-          nextRefreshAt = Date.now() + refreshMs;
-        } catch (error) {
-          refreshError = error;
-          nextRefreshAt = Date.now() + 5000;
+        if (settings.enableTokenUsage && !tokenScanInFlight) {
+          tokenScanInFlight = extendedCoordinator.scanTokensIncremental()
+            .then(changed => { if (changed) extendedRevision += 1; })
+            .catch(() => {})
+            .finally(() => { tokenScanInFlight = null; });
+        }
+        if (geminiEnabled && !geminiRefreshInFlight) {
+          geminiRefreshInFlight = extendedCoordinator.refreshGemini()
+            .then(() => { extendedRevision += 1; })
+            .catch(() => {})
+            .finally(() => { geminiRefreshInFlight = null; });
         }
       }
-      if (refreshError) {
-        const diagnostics = JSON.stringify(client.getDiagnostics()).replace(/</g, '\\u003c');
-        const errorInfo = classifyUsageError(refreshError);
-        // 不记录上游错误正文，避免错误数据中的凭据或验证链接落盘。
-        await Promise.all(valid.map(async item => {
-          const manual = manualRequests.find(command => command.target === item.target);
-          await evaluateInTarget(item.target.webSocketDebuggerUrl, `window.__codexUsageHeaderAppServerDiagnostics__ = ${diagnostics}`);
-          await pushUsageError(item.target, errorInfo, { requestId: manual?.id || null, fetchedAt: Date.now() });
-        }).map(promise => promise.catch(() => {})));
+
+      const shouldRefresh = Date.now() >= nextRefreshAt || notificationPending || refreshCommands.length > 0 || lifecycleResync;
+      const refreshAgain = notificationPending || lifecycleResync;
+      if (shouldRefresh) {
+        notificationPending = false;
+        beginUsageRead(manualRequests, refreshMs, refreshAgain);
       }
-      if (payload && !refreshError) {
+      for (const result of completedUsageResults.splice(0)) {
+        revision += result.error ? 0 : 1;
+        const serializedDiagnostics = JSON.stringify(client.getDiagnostics()).replace(/</g, '\\u003c');
         await Promise.all(valid.map(async item => {
           const key = item.target.id || item.target.webSocketDebuggerUrl;
-          if (!refreshed && deliveredRevision.get(key) === revision) return;
-          const manual = manualRequests.find(command => command.target === item.target);
-          await pushUsage(item.target, payload, {
-            requestId: manual?.id || null,
-            fetchedAt: Date.now(),
+          const requestId = result.context.manualIds.get(key) || null;
+          if (result.error) {
+            const errorInfo = classifyUsageError(result.error);
+            await evaluateInTarget(item.target.webSocketDebuggerUrl, `window.__codexUsageHeaderAppServerDiagnostics__ = ${serializedDiagnostics}`);
+            await pushUsageError(item.target, errorInfo, { requestId, fetchedAt: result.fetchedAt });
+            return;
+          }
+          await pushUsage(item.target, result.value, {
+            requestId,
+            fetchedAt: result.fetchedAt,
             revision,
             appServer: client.getDiagnostics(),
           });
-          deliveredRevision.set(key, revision);
         }).map(promise => promise.catch(() => {})));
       }
 
-      const extendedSnapshot = extendedCoordinator.getSnapshot();
-      extendedSnapshot.failover = readFailoverStatus();
-      const accountHealthSignature = JSON.stringify([
-        extendedSnapshot.antigravity.poolStatus?.primaryAccount || null,
-        (extendedSnapshot.antigravity.accounts || []).map(account => [account.id, account.health?.code || 'ok']),
-      ]);
-      if (accountHealthSignature !== lastAccountHealthSignature) {
-        lastAccountHealthSignature = accountHealthSignature;
-        extendedRevision += 1;
+      if (!cachedExtendedSnapshot
+        || snapshotBuiltForRevision !== extendedRevision
+        || Date.now() - lastExtendedSnapshotAt >= 1500) {
+        const nextSnapshot = extendedCoordinator.getSnapshot();
+        nextSnapshot.failover = readFailoverStatus();
+        const extendedSignature = JSON.stringify({
+          failover: [nextSnapshot.failover?.mode, nextSnapshot.failover?.lifecycle_state, nextSnapshot.failover?.external_model],
+          pool: nextSnapshot.antigravity.poolStatus?.primaryAccount || null,
+          accounts: (nextSnapshot.antigravity.accounts || []).map(account => [
+            account.id,
+            account.status,
+            account.health?.code || 'ok',
+            (account.rows || []).map(row => [row.label, row.remainingPercent, row.resetTime, row.unavailable]),
+          ]),
+          tokens: [nextSnapshot.tokens.status, ...['today', 'days7', 'days30', 'allTime'].map(range => {
+            const value = nextSnapshot.tokens.ranges?.[range];
+            return [range, value?.total, (value?.items || []).map(item => [item.key, item.tokens, (item.models || []).map(model => [model.id, model.tokens])])];
+          })],
+        });
+        if (extendedSignature !== lastExtendedSignature) {
+          lastExtendedSignature = extendedSignature;
+          extendedRevision += 1;
+        }
+        cachedExtendedSnapshot = nextSnapshot;
+        lastExtendedSnapshotAt = Date.now();
+        snapshotBuiltForRevision = extendedRevision;
       }
+      const extendedSnapshot = cachedExtendedSnapshot;
       await Promise.all(valid.map(async item => {
         const key = item.target.id || item.target.webSocketDebuggerUrl;
         if (deliveredExtendedRevision.get(key) === extendedRevision) return;
@@ -329,9 +532,12 @@ async function run(cdpPort) {
         deliveredExtendedRevision.set(key, extendedRevision);
       }).map(promise => promise.catch(() => {})));
 
-      await sleep(POLL_MS);
+      await waitForMonitor(anyVisible ? ACTIVE_TARGET_POLL_MS : IDLE_TARGET_POLL_MS);
     }
   } finally {
+    notifyMonitor();
+    for (const unsubscribe of bindingSubscriptions.values()) unsubscribe();
+    bindingSubscriptions.clear();
     client.close();
     releaseLock();
   }

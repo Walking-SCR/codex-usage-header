@@ -7,7 +7,7 @@
  * 3. 切换完成后，触发打开【Codex Quota Header】APP，确保应用携带 CDP 端口启动并完成插件挂载
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -27,6 +27,8 @@ const DEFAULT_APP_PATH = join(
   'Applications/Codex Quota Header.app'
 );
 
+const statusCache = new Map();
+
 /**
  * 轻量读取当前模型切换模式与生命周期状态
  */
@@ -44,16 +46,22 @@ export function readFailoverStatus(options = {}) {
   };
 
   if (!existsSync(statePath)) {
+    statusCache.delete(statePath);
     return fallback;
   }
 
   try {
+    const stat = statSync(statePath);
+    const cached = statusCache.get(statePath);
+    if (cached && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      return cached.value;
+    }
     const raw = readFileSync(statePath, 'utf8');
     const data = JSON.parse(raw);
     const mode = (data.mode === 'external' || data.effective_mode === 'external') ? 'external' : 'openai';
     const lifecycle_state = data.lifecycle_state || data.state_machine || (mode === 'external' ? 'EXTERNAL_ACTIVE' : 'OPENAI_ACTIVE');
 
-    return {
+    const value = {
       available: true,
       mode,
       lifecycle_state,
@@ -62,6 +70,8 @@ export function readFailoverStatus(options = {}) {
       resets_at_iso: data.resets_at_iso || data.last_analysis?.expected_recovery_at_iso || null,
       last_checked_at: data.last_checked_at || null,
     };
+    statusCache.set(statePath, { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, value });
+    return value;
   } catch {
     return fallback;
   }

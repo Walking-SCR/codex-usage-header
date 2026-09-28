@@ -3,8 +3,22 @@
  > 为 Codex / ChatGPT 桌面客户端打造的原生质感顶栏用量看板，额度与重置倒计时一目了然。
  
  ![界面预览](assets/overview.png)
- 
- ---
+
+---
+
+## 更新说明（2026-09-28）
+
+本次更新将本地插件最新实现同步到 GitHub，并替换为当前界面截图。相较 GitHub `main` 原版本，主要变化如下：
+
+- **配额与多账号调度**：统一顶栏、详情卡片和新对话页显示；7 天额度耗尽时 5 小时有效额度归零；账号排权先按 7 天重置剩余时间从短到长，同值再比较 5 小时重置时间，5 小时额度耗尽的账号排在可用账号之后。插件展示和 `codex-autoheal-bridge` Skill 使用同一排序规则。
+- **卡片和交互**：支持中英切换同步更新顶栏与卡片、模块快捷开关、重置券余额与到期信息、多账号状态和冷却时间、重排反馈、Token 用量简报复制，以及点击 / 悬停展开和键盘操作。
+- **Token 用量统计**：提供今天、近 7 日、近 30 日和累计视图；本地增量扫描、分片处理和历史汇总，按配置时区分日，默认 `Asia/Shanghai`，时区更改后从本机日志重建。
+- **稳定性与资源调度**：CDP 原生命令事件减少交互等待；查询与日志扫描异步运行；隐藏窗口时降低后台刷新并暂停渲染器倒计时和挂载检查；减少重复 UI 重绘和指针事件处理，并在页面重载、会话切换后恢复挂载。
+- **客户端兼容与启动**：增强新旧 Codex App Server 定位、错误分类和监控交接；启动器优先使用已配置的当前源码目录，降低源码、安装副本和运行版本不一致的风险。
+
+**已知限制**：切换 OpenAI / 外部路由目前仍调用 Bridge 的 `--restart` 流程，可能重启 Codex 并启动 `Codex Quota Header.app`，不是无缝热切换。切换前请保存进行中的工作；会话恢复取决于 Bridge 与客户端行为。
+
+---
  
  ## 痛点与由来
  
@@ -42,7 +56,7 @@
 ### 4. Google AI Pro 额度模块（动态排权联动 & 悬浮自适应气泡）
 针对多模型协作生态，详情卡片配备高扩展性的 **Google AI Pro** 配额模块：
 - **顶栏星芒快捷开关**：点击标题行上方与模块图标对齐的星芒按钮，可直接显示 / 隐藏 Google AI Pro。关闭时不发起任何代理轮询，0 资源开销；
-- **动态排权与自愈机制联动**：无缝对接 `codex-autoheal-bridge` Skill。第一优先级优先调度最临近配额重置的账号（临界窗口内充分利用），第二优先级保障高可用额度与会员等级；
+- **动态排权与自愈机制联动**：无缝对接 `codex-autoheal-bridge` Skill。可用账号先按 7 天额度重置剩余时间由短到长排序；周重置时间相同时，再优先 5 小时窗口即将重置的账号；5 小时额度为 0 的账号降到所有可用账号之后，套餐等级仅用于后续平局。点击“重排”会应用 Skill 中同一规则；
 - **账号状态可视化体系**：主选账号标记为蓝底绿点「使用中」，备选账号标记为「备选X」，额度耗尽或冷却账号标记为「❄ 冷却」；
 - **纯文本「重排」悬浮气泡**：精简为无图标的纯文本胶囊按钮，**仅在鼠标悬停到“重排”按钮时才浮现说明气泡，离开立即隐藏**；气泡采用绝对定位脱离文档流，宽度随内容自适应包裹，并配备精准指向按钮的指示小箭头，**绝对不推动下方用量进度条与卡片高度**；
 - **Claude 用量折叠 / 展开**：标题右侧箭头只收起/展开 Claude 用量行，Gemini 5h / 7d 始终保留；行标题显示为“Claude”，避免重复出现 “Claude & GPT” 名称；
@@ -77,7 +91,7 @@
 ### 11. 顶栏与模式切换体验优化
 - **首页 / 新聊天页**：用量胶囊应靠右显示，并位于原生新建聊天（`+`）按钮左侧；无法识别原生按钮时，回退到顶栏右对齐布局。
 - **用量卡片标题行**：模式切换按钮紧邻刷新按钮左侧，尺寸为 `32 × 32px`（比原有 `36 × 36px` 缩小 4px）。
-- **仍待完善的模式切换行为**：预期切换路由时保留当前桌面会话，不因切换命令关闭客户端，也不额外弹出 `Codex Quota Header.app`。当前实现仍调用 `quota_failover.py toggle --apply --restart`，并在命令回调后延迟启动 `Codex Quota Header.app`；因此这项行为与预期有差距。后续需确认 Bridge 是否支持不重启客户端的热切换；若必须重启，也应明确、可靠地恢复原客户端会话，并避免无条件打开额外启动器。
+- **模式切换限制**：切换会调用 `quota_failover.py toggle --apply --restart`，并在命令回调后延迟启动 `Codex Quota Header.app`。这不是无缝热切换，可能重启桌面客户端；执行前请保存工作。
 
 ---
  
@@ -216,9 +230,11 @@ codex-header --status
 | Antigravity OAuth 账号 | `~/.cli-proxy-api/antigravity-*.json` | 由 bridge 登录流程生成；不要手工写入或提交 |
 | CLIProxyAPI 配置 | `~/.cli-proxy-api/config.yaml` | 可包含本机 `remote-management.secret-key`，必须保护权限 |
 | Model Bridge 客户端凭证 | `~/.config/codex-cli-model-bridge/codex-model-router.mjs` 或环境变量 | 仅用于 OAuth 自动刷新 |
-| 插件开关 | `~/Library/Application Support/Codex Quota Header/settings.json` | 保存 Google / Token 模块是否启用 |
+| 插件开关 | `~/Library/Application Support/Codex Quota Header/settings.json` | 保存 Google / Token 模块、刷新频率和时区；`timezone` 默认为 `Asia/Shanghai`，设置 IANA 时区后重启监控生效 |
 | Token 本地汇总 | `~/Library/Application Support/Codex Quota Header/token-rollup.json` | 仅本机增量汇总，不上传网络 |
 | Codex 会话日志 | `~/.codex/sessions` | Token 统计的本地数据源；缺少该目录时只影响 Token 统计 |
+
+`settings.json` 的 `timezone` 接受 IANA 时区名（例如 `America/Los_Angeles`），默认 `Asia/Shanghai`。时区改变后需重启监控；Token 日汇总会按新时区从本地会话日志重建一次，旧时区的统计不会与新时区混合。日历范围按当地日期递进，兼容夏令时切换。
 
 ### Google 模块故障排查
 

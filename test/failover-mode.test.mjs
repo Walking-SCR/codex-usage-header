@@ -48,6 +48,14 @@ try {
   assert.equal(openaiStatus.mode, 'openai');
   assert.equal(openaiStatus.lifecycle_state, 'OPENAI_ACTIVE');
 
+  // 4. Verify signature sensitivity to failover mode changes
+  const sign = (status) => JSON.stringify([
+    status?.mode || 'openai',
+    status?.lifecycle_state || 'OPENAI_ACTIVE',
+    status?.external_model || null,
+  ]);
+  assert.notEqual(sign(openaiStatus), sign(externalStatus), 'Failover mode changes must alter the state signature');
+
 } finally {
   rmSync(testDir, { recursive: true, force: true });
 }

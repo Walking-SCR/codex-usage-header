@@ -8,7 +8,7 @@
  * 4. 彻底移除「自动排权」标签，界面清爽透气
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -17,6 +17,13 @@ import { getAccountHealth } from './account-health.mjs';
 const DEFAULT_AUTH_DIR = join(homedir(), '.cli-proxy-api');
 const QUOTA_SNAPSHOT_NAME = 'quota-snapshot.json';
 const POOL_STATUS_NAME = 'pool-status.json';
+const poolStatusCache = new Map();
+
+function parseRecoveryTime(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value > 1e12 ? value : value * 1000;
+  const parsed = Date.parse(value || '');
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
 
 /**
  * 导出用量插件抓取到的各账号指标至共享快照
@@ -41,6 +48,11 @@ export function exportQuotaSnapshot(accounts = [], options = {}) {
 
     const gem5h = rows.find(r => r && (r.label === 'Gemini 5h' || r.window === '5h'));
     const gem7d = rows.find(r => r && (r.label === 'Gemini 7d' || r.window === '7d'));
+    const resetAtSeconds = row => {
+      const value = Number(row?.resetTime ?? row?.reset_time);
+      if (Number.isFinite(value) && value > 0) return value > 1e12 ? Math.floor(value / 1000) : Math.floor(value);
+      return null;
+    };
 
     snapshot.accounts[email] = {
       tier: acc.tier || 'standard-tier',
@@ -48,8 +60,10 @@ export function exportQuotaSnapshot(accounts = [], options = {}) {
       status: acc.status || 'active',
       gemini5hRemaining: Number.isFinite(gem5h?.remainingPercent) ? gem5h.remainingPercent : null,
       gemini5hResetSeconds: Number.isFinite(gem5h?.secondsRemaining) ? gem5h.secondsRemaining : null,
+      gemini5hResetAt: resetAtSeconds(gem5h),
       gemini7dRemaining: Number.isFinite(gem7d?.remainingPercent) ? gem7d.remainingPercent : null,
       gemini7dResetSeconds: Number.isFinite(gem7d?.secondsRemaining) ? gem7d.secondsRemaining : null,
+      gemini7dResetAt: resetAtSeconds(gem7d),
     };
   }
 
@@ -86,19 +100,31 @@ export function readPoolStatus(options = {}) {
   };
 
   if (!existsSync(statusPath)) {
+    poolStatusCache.delete(statusPath);
     return fallback;
   }
 
   try {
+    const stat = statSync(statusPath);
+    const cached = poolStatusCache.get(statusPath);
+    if (cached && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      return cached.value;
+    }
     const raw = readFileSync(statusPath, 'utf8');
     const data = JSON.parse(raw);
     const rankings = (Array.isArray(data.rankings) ? data.rankings : [])
       .filter(item => item && typeof item.email === 'string')
       .map(item => {
         const health = getAccountHealth({}, item);
+        const retryAt = parseRecoveryTime(item.next_retry_after || item.quota?.next_recover_at);
+        const status = String(item.status || '').toUpperCase();
         return { email: item.email.trim(), priority: Number(item.priority) || 0,
-          status: String(item.status || '').toUpperCase(), reason: health.code, httpStatus: health.httpStatus };
+          status, reason: health.code, httpStatus: health.httpStatus,
+          recoveryAt: health.state === 'cooling' || status === 'FIVE_HOUR_EXHAUSTED' || status === 'WEEKLY_EXHAUSTED' ? retryAt : null };
       });
+    const primaryAccount = Object.prototype.hasOwnProperty.call(data, 'primaryAccount')
+      ? data.primaryAccount
+      : (rankings[0]?.email || null);
     const accountMap = {};
 
     let fallbackIndex = 1;
@@ -107,9 +133,13 @@ export function readPoolStatus(options = {}) {
       if (item && item.email) {
         const norm = item.email.toLowerCase();
         let rankLabel = '';
-        if (item.status === 'COOLING') {
+        if (item.status === 'FIVE_HOUR_EXHAUSTED') {
+          rankLabel = '5h用尽';
+        } else if (item.status === 'WEEKLY_EXHAUSTED') {
+          rankLabel = '7d用尽';
+        } else if (item.status === 'COOLING') {
           rankLabel = '❄ 冷却';
-        } else if (i === 0) {
+        } else if (item.email.toLowerCase() === String(primaryAccount || '').toLowerCase()) {
           rankLabel = '使用中';
         } else {
           rankLabel = `备选${fallbackIndex}`;
@@ -119,19 +149,21 @@ export function readPoolStatus(options = {}) {
         accountMap[norm] = {
           ...item,
           rankLabel,
-          isPrimary: i === 0,
+          isPrimary: item.email.toLowerCase() === String(primaryAccount || '').toLowerCase(),
         };
       }
     }
 
-    return {
+    const value = {
       available: true,
       updatedAt: data.updatedAt || null,
       mode: data.mode || 'auto',
-      primaryAccount: data.primaryAccount || (rankings[0]?.email || null),
+      primaryAccount,
       rankings,
       accountMap,
     };
+    poolStatusCache.set(statusPath, { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, value });
+    return value;
   } catch {
     return fallback;
   }
@@ -177,12 +209,12 @@ export function formatAccountTabHtml(rawLabel, email, poolStatus = {}, isSelecte
   }
 
   const primaryEmail = String(poolStatus.primaryAccount || '').trim().toLowerCase();
-  const isInUse = info.status === 'COOLING'
+  const isInUse = ['COOLING', 'FIVE_HOUR_EXHAUSTED', 'WEEKLY_EXHAUSTED', 'BLOCKED'].includes(info.status)
     ? false
     : primaryEmail
       ? norm === primaryEmail
       : Boolean(info.isPrimary || info.rankLabel === '使用中');
-  let tag = isInUse ? '' : (info.status === 'COOLING' ? '❄ 冷却' : info.rankLabel);
+  let tag = isInUse ? '' : (info.status === 'COOLING' ? '❄ 冷却' : info.status === 'FIVE_HOUR_EXHAUSTED' ? '5h用尽' : info.status === 'WEEKLY_EXHAUSTED' ? '7d用尽' : info.rankLabel);
   if (/^备选(\d+)$/.test(tag || '')) tag = tag.replace(/^备选(\d+)$/, '备$1');
 
   const rankTag = tag ? ` · ${tag}` : '';
@@ -198,16 +230,25 @@ export function formatAccountTabHtml(rawLabel, email, poolStatus = {}, isSelecte
  * 生成「重排」按钮及其悬停 Tooltip 内容
  */
 export function renderRebalanceButton(poolStatus = {}) {
-  let tooltipText = '排队顺序：按临近重置与可用配额智能调度\n调度规则：优先临近重置 · Pro 高配额优先';
+  let tooltipText = '排序规则：先按 7 天额度重置剩余时间从短到长；周窗口相同时，优先 5 小时即将重置。5 小时耗尽的账号排在可用账号之后。';
 
   if (poolStatus.available && Array.isArray(poolStatus.rankings) && poolStatus.rankings.length > 0) {
-    const queueList = poolStatus.rankings.map((r, idx) => {
+    let backupIndex = 1;
+    const queueList = poolStatus.rankings.map(r => {
       const name = r.email ? r.email.split('@')[0] : r.email;
-      const statusLabel = r.status === 'COOLING' ? '冷却中' : (idx === 0 ? '使用中' : `备选${idx}`);
-      return `${name} (${statusLabel})`;
+      const isPrimary = Boolean(poolStatus.primaryAccount) && r.email.toLowerCase() === poolStatus.primaryAccount.toLowerCase();
+      const statusLabel = r.status === 'FIVE_HOUR_EXHAUSTED'
+        ? '5h用尽'
+        : r.status === 'WEEKLY_EXHAUSTED'
+          ? '7d用尽'
+          : r.status === 'COOLING'
+            ? '冷却中'
+            : (isPrimary ? '使用中' : `备选${backupIndex++}`);
+      const reset = r.reset ? ` · ${r.reset}` : '';
+      return `${name} (${statusLabel}${reset})`;
     }).join(' → ');
 
-    tooltipText = `排队顺序：${queueList}\n调度规则：优先临近重置 (1h21m) · Pro 高配额优先`;
+    tooltipText = `排队顺序：${queueList}\n排序规则：先按 7 天额度重置剩余时间从短到长；周窗口相同时，优先 5 小时即将重置。5 小时耗尽的账号排在可用账号之后。`;
   }
 
   const accessibleLabel = `重排。${tooltipText}`.replace(/"/g, '&quot;');

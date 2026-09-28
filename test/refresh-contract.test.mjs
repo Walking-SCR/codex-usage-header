@@ -13,6 +13,11 @@ const renderer = readFileSync(join(rootDir, 'src', 'injected.js'), 'utf8');
 assert.match(monitor, /kind === 'refresh'/);
 assert.match(monitor, /refreshIntervalSeconds/);
 assert.match(monitor, /account\/rateLimits\/updated/);
+assert.match(monitor, /const beginUsageRead =/);
+assert.match(monitor, /completedUsageResults\.push/);
+assert.match(monitor, /request\.then\(value =>/);
+assert.match(monitor, /inFlightContext\?\.manualIds\.set/);
+assert.match(monitor, /notifyMonitor\(\)/);
 assert.match(monitor, /!item\.state\.mounted/);
 assert.match(monitor, /launchAndInject\(cdpPort, \{ launchIfNeeded: false \}\)/);
 assert.match(client, /account\/rateLimits\/read/);
@@ -21,6 +26,7 @@ assert.match(renderer, /refreshTimeoutMs/);
 assert.match(renderer, /refreshState === 'loading'/);
 assert.match(renderer, /metadata\.requestId === refreshRequestId/);
 assert.match(renderer, /card-refresh/);
+assert.match(renderer, /refreshTimeoutMs: 25000/);
 assert.doesNotMatch(renderer, /class="refresh-btn/);
 
 // 执行生产错误处理函数：首读失败结束加载，已有快照失败不清空数值。
@@ -46,6 +52,6 @@ assert.equal(cached.usageState.primary.remainingPercent, 62);
 assert.equal(cached.usageState.status, 'ready');
 assert.equal(cached.usageState.error, 'usageErrorTimeout');
 assert.equal(cached.settled, null, '其他刷新请求的错误不得结束当前请求');
-assert.match(monitor, /payload && !refreshError/, '同一轮读取失败不得立即用旧 payload 清除错误');
+assert.doesNotMatch(monitor, /payload && !refreshError/, '旧快照不得在异步读取失败后被当作本次成功结果重推');
 
 console.log('✓ Single-owner manual refresh contract passed!');
