@@ -446,7 +446,7 @@ async function run(cdpPort) {
         const hasExpiredReset = (currentAnti?.accounts || []).some(acc =>
           (acc.rows || []).some(r => !r.unavailable && r.resetTime && r.resetTime <= nowSec)
         );
-        if (hasExpiredReset && Date.now() - lastExpiredAutoRefresh > 30000 && !geminiRefreshInFlight) {
+        if (hasExpiredReset && Date.now() - lastExpiredAutoRefresh > 8000 && !geminiRefreshInFlight) {
           lastExpiredAutoRefresh = Date.now();
           geminiRefreshInFlight = extendedCoordinator.refreshGemini()
             .then(() => { extendedRevision += 1; })

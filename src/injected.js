@@ -740,7 +740,9 @@
     if (!normalized) return false;
     usageState = normalized;
     renderAll();
-    if (refreshState === 'loading' && metadata.requestId === refreshRequestId) settleRefresh('success');
+    if (refreshState === 'loading' && (metadata.requestId === refreshRequestId || !metadata.requestId)) {
+      settleRefresh('success');
+    }
     return true;
   }
 
@@ -1181,7 +1183,11 @@
     }
     const now = Math.floor(Date.now() / 1000);
     if (row.resetTime <= now) {
-      return t('syncing');
+      const pastSeconds = now - row.resetTime;
+      if (pastSeconds <= 15) {
+        return t('syncing');
+      }
+      return isZh ? (row.countdown?.zh || t('imminent')) : (row.countdown?.en || t('imminent'));
     }
     let secondsRemaining = Math.max(0, row.resetTime - now);
     if (row.label && row.label.includes('5h')) {
