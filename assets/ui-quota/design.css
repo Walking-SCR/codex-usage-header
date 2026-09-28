@@ -240,8 +240,8 @@
 .quota-dashboard .quota-extension-range-tabs{width:auto;padding:2px}
 .quota-dashboard .quota-extension-range-tab{font-size:10px;padding:4px 8px}
 .quota-dashboard .quota-token-controls{display:flex;align-items:center;justify-content:flex-end;gap:4px;min-width:0;margin-left:auto}
-.quota-dashboard .quota-extension-token-table{grid-template-columns:130px minmax(0,1fr);gap:12px;margin-top:6px;align-items:center}
-.quota-dashboard .token-summary-col{display:flex;flex-direction:column;align-items:center;justify-content:center;width:130px;min-width:130px}
+.quota-dashboard .quota-extension-token-table{grid-template-columns:136px minmax(0,1fr);gap:12px;margin-top:6px;align-items:center}
+.quota-dashboard .token-summary-col{display:flex;flex-direction:column;align-items:center;justify-content:center;width:136px;min-width:136px}
 .quota-dashboard .token-donut{width:116px;height:116px;padding:0}
 .quota-dashboard .token-donut-center{inset:14px}
 .quota-dashboard .token-summary-number{font-size:16px;font-weight:700;line-height:1.15}
@@ -447,14 +447,20 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  padding: 3px 10px;
-  margin-bottom: 8px;
+  gap: 3px;
+  padding: 2px 8px;
+  margin-bottom: 7px;
   border-radius: 999px;
   background: rgba(0, 122, 255, 0.06);
   border: 1px solid rgba(0, 122, 255, 0.12);
-  font-size: 11px;
-  line-height: 1;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.quota-dashboard .token-global-stat-label,
+.quota-dashboard .token-global-stat-value {
+  white-space: nowrap;
 }
 .quota-dashboard .token-global-stat-label {
   color: var(--quota-muted);
@@ -470,14 +476,16 @@
 }
 
 .quota-dashboard .token-donut-badge {
-  margin-top: 4px;
-  font-size: 10px;
+  margin-top: 3px;
+  font-size: 9.5px;
   font-weight: 600;
   color: var(--quota-blue);
   background: rgba(0, 122, 255, 0.08);
-  padding: 2px 6px;
+  padding: 1px 6px;
   border-radius: 5px;
-  line-height: 1.2;
+  line-height: 1.25;
+  white-space: nowrap;
+  max-width: 90%;
 }
 
 .quota-dashboard .single-model-hero-card {
@@ -695,7 +703,7 @@
   .quota-dashboard .usage-section .row{grid-template-columns:24px 48px minmax(45px,1fr) minmax(46px,auto) minmax(90px,auto);gap:5px;padding:4px 6px}
   .quota-dashboard .credit-details{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
   .quota-dashboard .quota-extension-row{grid-template-columns:minmax(85px,120px) minmax(40px,1fr) 34px minmax(72px,90px);gap:4px}
-  .quota-dashboard .quota-extension-token-table{grid-template-columns:130px minmax(0,1fr);gap:12px}
+  .quota-dashboard .quota-extension-token-table{grid-template-columns:136px minmax(0,1fr);gap:12px}
   .quota-dashboard .token-donut{width:116px;height:116px;padding:0}
   .quota-dashboard .token-donut-center{inset:14px}
   .quota-dashboard .token-models-col{padding-left:12px}
