@@ -1587,7 +1587,8 @@
     let accountTabsHtml = '';
     if (accounts.length > 0) {
       let fallbackIndex = 1;
-      accountTabsHtml = '<div class="quota-extension-account-tabs">'
+      const isFewAccounts = accounts.length < 3;
+      accountTabsHtml = '<div class="quota-extension-account-tabs' + (isFewAccounts ? ' is-adaptive-few' : '') + '" data-account-count="' + accounts.length + '">'
         + accounts.map((acc, idx) => {
           const isSelected = (acc.email === activeAccount.email);
           const rawLabel = acc.label || (acc.email ? acc.email.split('@')[0] : '') || (isZh ? ('账号' + (idx + 1)) : ('Account ' + (idx + 1)));

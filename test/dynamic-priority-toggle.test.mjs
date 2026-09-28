@@ -110,3 +110,17 @@ test('formatAccountTabHtml renders correct labels and styling in dynamic mode', 
   const plainTab = formatAccountTabHtml('mancyliao001', 'mancyliao001@gmail.com', disabledStatus, true);
   assert.equal(plainTab, 'mancyliao001'); // 还原为纯账号名，无使用中与备选标记
 });
+
+test('Google AI Pro tabs adapt to account name length when account count < 3', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { join, dirname } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const injected = readFileSync(join(root, 'src/injected.js'), 'utf8');
+  const css = readFileSync(join(root, 'assets/ui-quota/design.css'), 'utf8');
+
+  assert.match(injected, /isFewAccounts\s*=\s*accounts\.length\s*<\s*3/);
+  assert.match(injected, /is-adaptive-few/);
+  assert.match(css, /\.quota-extension-account-tabs\.is-adaptive-few\{[^}]*width:fit-content/);
+});

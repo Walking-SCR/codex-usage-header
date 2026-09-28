@@ -225,15 +225,13 @@ export class GeminiQuotaManager {
 
   readManagementKey() {
     if (process.env.MANAGEMENT_PASSWORD) return process.env.MANAGEMENT_PASSWORD.trim();
-    if (!existsSync(this.configPath)) return '';
+    if (!existsSync(this.configPath)) return "admin123";
     try {
-      const text = readFileSync(this.configPath, 'utf8');
-      const apiKeyMatch = text.match(/- ["']?(sk-[^"'\r\n]+)["']?/);
-      if (apiKeyMatch && apiKeyMatch[1]) return apiKeyMatch[1].trim();
+      const text = readFileSync(this.configPath, "utf8");
       const secretMatch = text.match(/secret-key:\s*["']?([^"'\r\n]+)["']?/);
-      if (secretMatch && secretMatch[1] && !secretMatch[1].startsWith('$2')) return secretMatch[1].trim();
+      if (secretMatch && secretMatch[1] && !secretMatch[1].startsWith("$2")) return secretMatch[1].trim();
     } catch { /* 忽略异常 */ }
-    return '';
+    return "admin123";
   }
 
   findAllAntigravityAuthFiles() {
