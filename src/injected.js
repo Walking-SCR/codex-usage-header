@@ -2028,17 +2028,32 @@
     const moduleButton = (module, icon, label, active) =>
       '<button type="button" class="quota-icon-btn header-module-toggle' + (active ? ' is-active' : '') + '" data-module="' + module + '" aria-label="' + esc(label) + '" title="' + esc(label) + '" aria-pressed="' + active + '">'
       + designIcon(icon) + '</button>';
-    return '<style>' + css + (window.__codexUsageHeaderDesignCSS__ || '') + '</style>'
-      + '<div class="popover-shell quota-dashboard' + (dark ? ' is-dark' : '') + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
-      + '<div class="popover-header">'
-      + '<div class="popover-brand">' + designIcon('logo', 'brand-logo')
-      + '<div class="popover-title-group">'
-      + '<div class="popover-title">' + esc(t('title')) + '</div>'
-      + '<div class="popover-subtitle">' + esc(t('subtitle')) + '</div>'
-      + (staleText ? '<div class="connection-status" role="status">' + esc(staleText) + '</div>' : '')
-      + errorNote
-      + '</div>'
-      + '</div>'
+      let combinedStatusText = '';
+      if (staleText && usageState.error) {
+        combinedStatusText = staleText + ' · ' + usageState.error;
+      } else if (staleText) {
+        combinedStatusText = staleText;
+      } else if (usageState.error) {
+        combinedStatusText = usageState.error;
+      }
+
+      const statusBannerHtml = combinedStatusText
+        ? '<div class="popover-status-row connection-status" role="status">'
+          + '<span class="status-dot"></span>'
+          + '<span class="status-text">' + esc(combinedStatusText) + '</span>'
+          + '</div>'
+        : '';
+
+      return '<style>' + css + (window.__codexUsageHeaderDesignCSS__ || '') + '</style>'
+        + '<div class="popover-shell quota-dashboard' + (dark ? ' is-dark' : '') + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
+        + '<div class="popover-header">'
+        + '<div class="popover-brand">' + designIcon('logo', 'brand-logo')
+        + '<div class="popover-title-group">'
+        + '<div class="popover-title">' + esc(t('title')) + '</div>'
+        + '<div class="popover-subtitle">' + esc(t('subtitle')) + '</div>'
+        + statusBannerHtml
+        + '</div>'
+        + '</div>'
       + '<div class="popover-actions">'
       + '<button class="language-toggle" aria-label="' + esc(t('locale')) + '">'
       + '<span class="lang-opt' + (isZh ? ' is-active' : '') + '" data-lang="zh-CN">中</span>'
@@ -2196,11 +2211,15 @@
     } else {
       content = '<span class="label">5h</span><span class="track"><span class="fill" style="width:' + (p?.remainingPercent || 0) + '%;background:' + pColor + '"></span></span><span class="value primary-countdown" style="color:' + pColorText + '">' + pValue + (weeklyExhausted ? '' : ' · ' + (p ? formatDuration(p.secondsRemaining, 5 * 3600) : '—')) + '</span><span class="divider"></span><span class="label">7d</span><span class="track"><span class="fill" style="width:' + (s?.remainingPercent || 0) + '%;background:' + sColor + '"></span></span><span class="value" style="color:' + sColorText + '">' + sValue + weeklyResetText + '</span>';
     }
+    const staleDotHtml = statusText
+      ? '<span class="capsule-status-dot" aria-hidden="true" title="' + esc(statusText) + '"></span>'
+      : '';
     const style = `<style>
       *{box-sizing:border-box}
       :host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}
       :host([data-space-hidden="true"]){display:none!important}
-      :host([data-stale="true"])::after{content:"";position:absolute;right:29px;top:2px;width:6px;height:6px;border-radius:50%;background:#FF9500;box-shadow:0 0 0 1px ${dark ? 'rgba(25,25,27,.9)' : 'rgba(255,255,255,.9)'};pointer-events:none}
+      :host([data-stale="true"])::after{display:none}
+      .capsule-status-dot{width:6px;height:6px;border-radius:50%;background:#FF9500;box-shadow:0 0 0 1px ${dark ? 'rgba(25,25,27,.9)' : 'rgba(255,255,255,.9)'};flex:none;margin-left:5px;margin-right:1px}
       .capsule{height:34px;min-width:0;padding:0 0 0 9px;border-radius:999px;display:inline-flex;align-items:center;gap:0;color:${dark ? '#F5F5F7' : '#1D1D1F'};background:${dark ? 'rgba(40,40,42,.90)' : 'rgba(247,247,248,.94)'};border:1px solid ${dark ? 'rgba(255,255,255,.13)' : 'rgba(0,0,0,.07)'};box-shadow:0 1px 3px rgba(0,0,0,.07);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);-webkit-app-region:no-drag;white-space:nowrap;outline:none}
       .details-trigger{height:32px;padding:0 8px 0 0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
       .details-trigger:focus-visible,.capsule-toggle:focus-visible{outline:2px solid ${dark ? 'rgba(10,132,255,.72)' : 'rgba(0,122,255,.55)'};outline-offset:-2px}
@@ -2221,7 +2240,7 @@
       .capsule.is-refreshing .value{animation:quota-number-shimmer .75s ease-in-out infinite}
     </style>`
       + '<div class="capsule' + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
-      + '<button class="details-trigger" type="button" aria-label="' + esc(t('details') + (statusText ? ' · ' + statusText : '')) + '" title="' + esc(statusText) + '" aria-describedby="' + POPOVER_ID + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + '</button>'
+      + '<button class="details-trigger" type="button" aria-label="' + esc(t('details') + (statusText ? ' · ' + statusText : '')) + '" title="' + esc(statusText) + '" aria-describedby="' + POPOVER_ID + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + staleDotHtml + '</button>'
       + '<span class="capsule-separator" aria-hidden="true"></span>'
       + '<button class="capsule-toggle" type="button" aria-label="' + esc(t('toggleDetails')) + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">'
       + designIcon('chevronDown', 'capsule-arrow' + (detailsOpen ? ' is-expanded' : ''))

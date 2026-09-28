@@ -711,3 +711,35 @@
   .quota-dashboard .token-donut{width:116px;padding:17px}
   .quota-dashboard .token-models-col{padding:8px 0 0;border-left:0;border-top:1px solid var(--quota-line)}
 }
+
+/* 单行全状态展示 */
+.quota-dashboard .popover-status-row.connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #D97706;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.quota-dashboard .popover-status-row .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #FF9500;
+  flex-shrink: 0;
+}
+.quota-dashboard .popover-status-row .status-text {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quota-dashboard.is-dark .popover-status-row.connection-status {
+  color: #FBBF24;
+}
+.quota-dashboard.is-dark .popover-status-row .status-dot {
+  background: #F59E0B;
+}
