@@ -171,23 +171,8 @@
 }
 .quota-dashboard .popover-header{
   position:-webkit-sticky;position:sticky;top:0;z-index:50;
-  background:rgba(255,255,255,.96);
-  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
-  border:1px solid rgba(255,255,255,.85);
-  box-shadow:0 4px 16px rgba(70,126,180,.12);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
   min-height:0;flex-direction:row;align-items:center;gap:8px;padding:12px 14px;margin-bottom:10px;border-radius:14px;
-}
-.quota-dashboard .popover-header::before{
-  content:"";position:absolute;top:-12px;left:-14px;right:-14px;height:12px;
-  background:linear-gradient(145deg,#DCEEFF 0%,#F7FBFF 48%,#EAF5FF 100%);
-  border-top-left-radius:18px;border-top-right-radius:18px;pointer-events:none;
-}
-.quota-dashboard.is-dark .popover-header{
-  background:rgba(38,52,70,.96);border-color:#3A4B61;
-  box-shadow:0 4px 16px rgba(0,0,0,.25);
-}
-.quota-dashboard.is-dark .popover-header::before{
-  background:linear-gradient(145deg,#18283C,#1B2533 60%,#202F42);
 }
 .quota-dashboard .popover-brand{gap:10px}
 .quota-dashboard .brand-logo{width:36px;height:36px}
