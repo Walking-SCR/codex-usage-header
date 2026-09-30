@@ -437,7 +437,7 @@ export async function injectScriptIntoTarget(wsUrl, scriptCode) {
   return { ...probe, status };
 }
 
-export async function waitForTargets(port, timeoutMs = READY_TIMEOUT_MS) {
+export async function waitForTargets(port, timeoutMs = READY_TIMEOUT_MS, { checkExiting = false } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   let lastTargets = [];
@@ -448,6 +448,9 @@ export async function waitForTargets(port, timeoutMs = READY_TIMEOUT_MS) {
       if (targets.length > 0 && selectUsageTargets(targets).length > 0) return targets;
     } catch (error) {
       lastError = error;
+    }
+    if (checkExiting && !isDesktopAppRunning()) {
+      throw new Error('desktop_app_exited_during_wait');
     }
     await new Promise(resolve => setTimeout(resolve, 300));
   }
@@ -583,9 +586,18 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
       if (procInfo.hasCdpFlag) {
         // 应用已开启 CDP 调试参数正在运行或冷启动中，等待其调试端口就绪，绝不误判
         try {
-          targets = await waitForTargets(port, READY_TIMEOUT_MS);
-        } catch {
-          throw new Error('cdp_port_unreachable');
+          targets = await waitForTargets(port, READY_TIMEOUT_MS, { checkExiting: true });
+        } catch (waitErr) {
+          // 若等待超时或应用在等待过程中退出（处于切换模式重启退出阶段）
+          if (!isDesktopAppRunning() || waitErr?.message === 'desktop_app_exited_during_wait') {
+            if (!launchIfNeeded) throw new Error('cdp_unavailable');
+            const executable = locateExecutable();
+            console.log(`[Codex Quota Header] Target app was exiting and has terminated; relaunching on CDP port ${port}...`);
+            launchDesktopApp(executable, port);
+            targets = await waitForTargets(port);
+          } else {
+            throw new Error('cdp_port_unreachable');
+          }
         }
       } else {
         // 确实存在未带调试端口启动的旧进程

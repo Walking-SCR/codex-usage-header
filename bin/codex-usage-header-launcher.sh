@@ -130,6 +130,17 @@ else
     exit 0
   fi
   if [[ "$initial_rc" -ne 10 ]]; then
+    if [[ -n "$(desktop_pids)" ]]; then
+      wait_for_desktop_exit || true
+      if run_launcher "$@"; then
+        exit 0
+      fi
+    else
+      /bin/sleep 0.5
+      if run_launcher "$@"; then
+        exit 0
+      fi
+    fi
     show_launch_failure_dialog >/dev/null 2>&1 || true
     exit "$initial_rc"
   fi

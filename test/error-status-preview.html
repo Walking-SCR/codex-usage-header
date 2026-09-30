@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", Roboto, sans-serif;
+    background: #edf3fa;
+    padding: 32px 36px;
+    color: #1e293b;
+    -webkit-font-smoothing: antialiased;
+  }
+  .header-card {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+  }
+  .header-card h1 {
+    font-size: 19px;
+    font-weight: 700;
+    color: #0f172a;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .header-card p {
+    font-size: 13px;
+    color: #64748b;
+    margin-top: 6px;
+  }
+
+  .stage-box {
+    background: #ffffff;
+    border-radius: 18px;
+    padding: 24px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* 模拟顶栏 */
+  .mock-topbar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    padding: 10px 14px;
+    background: #f8fafc;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+  }
+
+  /* 顶栏胶囊样式 */
+  .capsule {
+    height: 34px;
+    padding: 0 0 0 9px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    background: rgba(247,247,248,0.96);
+    border: 1px solid rgba(0,0,0,0.08);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    font-size: 12px;
+  }
+  .details-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px 0 0;
+  }
+  .label { font-weight: 700; color: #1e293b; }
+  .track { width: 68px; height: 11px; background: rgba(120,120,128,0.16); border-radius: 999px; overflow: hidden; }
+  .fill { height: 100%; border-radius: 999px; background: #34c759; }
+  .val { font-weight: 600; color: #1e293b; }
+  .divider { width: 1px; height: 15px; background: rgba(0,0,0,0.12); margin: 0 2px; }
+
+  /* 红框 1：异常小圆点 */
+  .capsule-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #FF9500;
+    box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95);
+    flex: none;
+    margin-left: 5px;
+    margin-right: 2px;
+  }
+  .highlight-callout-1 {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10.5px;
+    color: #d97706;
+    font-weight: 600;
+    background: #fef3c7;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-left: 8px;
+  }
+
+  .capsule-separator { width: 1px; height: 16px; background: rgba(0,0,0,0.12); margin-right: 2px; }
+  .capsule-toggle { width: 28px; height: 32px; display: flex; align-items: center; justify-content: center; color: #64748b; }
+
+  /* 模拟下拉弹窗 */
+  .popover-card {
+    background: #ffffff;
+    border: 1px solid #dbe6f1;
+    border-radius: 18px;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.08);
+    padding: 16px 20px;
+    max-width: 590px;
+  }
+  .popover-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+  .popover-brand {
+    display: flex;
+    gap: 12px;
+  }
+  .brand-logo {
+    width: 38px;
+    height: 38px;
+    background: linear-gradient(135deg, #007aff, #3b82f6);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 20px;
+  }
+  .popover-title-group {
+    display: flex;
+    flex-direction: column;
+  }
+  .popover-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  .popover-subtitle {
+    font-size: 12px;
+    color: #64748b;
+    margin-top: 2px;
+  }
+
+  /* 红框 2：单行全状态与文案展示 */
+  .popover-status-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 5px;
+    font-size: 11px;
+    color: #d97706;
+    white-space: nowrap;
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #f59e0b;
+    flex-shrink: 0;
+  }
+  .status-text {
+    font-weight: 600;
+  }
+  .highlight-badge-2 {
+    font-size: 10px;
+    background: #fee2e2;
+    color: #b91c1c;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 700;
+    margin-left: 6px;
+  }
+
+  .popover-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .mock-btn {
+    height: 32px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    color: #475569;
+    display: flex;
+    align-items: center;
+  }
+  .mock-icon-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #007aff;
+  }
+</style>
+</head>
+<body>
+
+  <div class="header-card">
+    <h1>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#007aff" stroke-width="2.5">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+      </svg>
+      异常状态透出优化效果实机验证
+    </h1>
+    <p>1. 顶栏胶囊末尾异常点 ｜ 2. 弹窗副标题下方单行展示完所有异常状态与文案</p>
+  </div>
+
+  <div class="stage-box">
+
+    <!-- 1. 上方胶囊（红框 1 位置） -->
+    <div>
+      <div style="font-size: 13px; font-weight: 700; margin-bottom: 8px; color: #334155;">
+        【红框 1 落地】常驻顶栏胶囊（出现刷新异常/缓存降级时）
+      </div>
+      <div class="mock-topbar">
+        <div class="capsule">
+          <div class="details-trigger">
+            <span class="label">5h</span>
+            <div class="track"><div class="fill" style="width: 82%;"></div></div>
+            <span class="val">82% · 3h8min</span>
+            <div class="divider"></div>
+            <span class="label">7d</span>
+            <div class="track"><div class="fill" style="width: 60%;"></div></div>
+            <span class="val">60%</span>
+            <!-- 异常点：内联紧跟在 7d 百分比后面 -->
+            <span class="capsule-status-dot"></span>
+          </div>
+          <span class="capsule-separator"></span>
+          <span class="capsule-toggle">⌃</span>
+        </div>
+        <div class="highlight-callout-1">← 红框 1：胶囊内联异常圆点（60%与箭头之间，无异常自动隐藏）</div>
+      </div>
+    </div>
+
+    <!-- 2. 下拉弹窗头部（红框 2 位置） -->
+    <div>
+      <div style="font-size: 13px; font-weight: 700; margin-bottom: 8px; color: #334155;">
+        【红框 2 落地】下拉展示卡片（副标题下方单行完整展示）
+      </div>
+      <div class="popover-card">
+        <div class="popover-header">
+          <div class="popover-brand">
+            <div class="brand-logo">🗄️</div>
+            <div class="popover-title-group">
+              <div class="popover-title">用量额度</div>
+              <div class="popover-subtitle">合理AI协作，人员负责思考，AI负责执行</div>
+              <!-- 红框 2：单行完整显示状态 + 分隔符 + 文案 -->
+              <div class="popover-status-row">
+                <span class="status-dot"></span>
+                <span class="status-text">缓存数据 · 刷新超时，请重试</span>
+                <span class="highlight-badge-2">← 红框 2：单行不换行，不撑高卡片</span>
+              </div>
+            </div>
+          </div>
+          <div class="popover-actions">
+            <div class="mock-btn">中 / EN</div>
+            <div class="mock-icon-btn">⚡</div>
+            <div class="mock-icon-btn">✦</div>
+            <div class="mock-icon-btn">📊</div>
+            <div class="mock-icon-btn">↻</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>

@@ -105,13 +105,17 @@ export function triggerToggleFailoverMode(options = {}) {
 
     execFile(
       pythonBin,
-      [scriptPath, 'toggle', '--apply', '--restart'],
-      { timeout: 20000 },
+      [scriptPath, 'toggle', '--apply', '--restart', '--no-watch'],
+      { timeout: 40000 },
       (error, stdout, stderr) => {
-        // 模式切换命令执行后关闭了 app，触发延迟打开【Codex Quota Header】APP 重新拉起并完成注入
-        setTimeout(() => {
-          launchCodexQuotaHeaderApp(options);
-        }, 1200);
+        // 模式切换命令若在脚本内部成功执行了 restart_codex，则无需重复唤醒；若未重启成功，做保底延迟拉起
+        const output = String(stdout || '');
+        const restartedInScript = output.includes('"codex_restarted": true');
+        if (error || !restartedInScript) {
+          setTimeout(() => {
+            launchCodexQuotaHeaderApp(options);
+          }, 1500);
+        }
 
         if (error) {
           return resolve({ ok: false, error: error.message, stderr: String(stderr || '') });

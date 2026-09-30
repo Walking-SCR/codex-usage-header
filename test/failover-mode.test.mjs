@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readFailoverStatus } from '../src/failover-mode-adapter.mjs';
+import { readFailoverStatus, triggerToggleFailoverMode } from '../src/failover-mode-adapter.mjs';
 
 console.log('Testing: Failover Mode Adapter contract...');
 
@@ -55,6 +55,21 @@ try {
     status?.external_model || null,
   ]);
   assert.notEqual(sign(openaiStatus), sign(externalStatus), 'Failover mode changes must alter the state signature');
+
+  // 5. Verify triggerToggleFailoverMode passes --no-watch to prevent auto-revert when GPT quota is healthy
+  const mockScriptPath = join(testDir, 'mock_quota_failover.py');
+  writeFileSync(mockScriptPath, `#!/usr/bin/env python3
+import sys, json
+print(json.dumps({"ok": True, "codex_restarted": True, "args": sys.argv[1:]}))
+`);
+  const res = await triggerToggleFailoverMode({
+    scriptPath: mockScriptPath,
+    pythonBin: 'python3',
+  });
+  assert.equal(res.ok, true);
+  assert.ok(res.data.args.includes('--no-watch'), 'Must pass --no-watch to avoid auto-revert');
+  assert.ok(res.data.args.includes('--restart'), 'Must pass --restart for desktop lifecycle reload');
+  assert.ok(res.data.args.includes('toggle'), 'Must pass toggle subcommand');
 
 } finally {
   rmSync(testDir, { recursive: true, force: true });

@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", Roboto, sans-serif;
+    background: #edf3fa;
+    padding: 32px 36px;
+    color: #1e293b;
+    -webkit-font-smoothing: antialiased;
+  }
+  .header-card {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+  }
+  .header-card h1 {
+    font-size: 19px;
+    font-weight: 700;
+    color: #0f172a;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .header-card p {
+    font-size: 13px;
+    color: #64748b;
+    margin-top: 6px;
+  }
+
+  .compare-container {
+    display: flex;
+    gap: 24px;
+  }
+
+  .card-box {
+    flex: 1;
+    background: #ffffff;
+    border-radius: 18px;
+    padding: 20px 24px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+  }
+  .card-tag {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 6px;
+    margin-bottom: 16px;
+  }
+  .card-tag.before { background: #fee2e2; color: #b91c1c; }
+  .card-tag.after { background: #dcfce7; color: #15803d; }
+
+  /* 模拟真实表格网格 */
+  .table-grid {
+    display: grid;
+    grid-template-columns: 136px minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+  }
+
+  .summary-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 136px;
+  }
+
+  /* 修复前的换行情况 */
+  .global-stat-before {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px 8px;
+    margin-bottom: 8px;
+    border-radius: 999px;
+    background: rgba(0, 122, 255, 0.06);
+    border: 1px solid rgba(0, 122, 255, 0.12);
+    font-size: 11px;
+    width: 90px; /* 故意未设 nowrap 导致折行 */
+    line-height: 1.2;
+    text-align: center;
+    flex-wrap: wrap;
+  }
+
+  /* 修复后的单行胶囊 */
+  .global-stat-after {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 2px 8px;
+    margin-bottom: 7px;
+    border-radius: 999px;
+    background: rgba(0, 122, 255, 0.06);
+    border: 1px solid rgba(0, 122, 255, 0.12);
+    font-size: 10px;
+    line-height: 1.2;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .stat-label { color: #64748b; font-weight: 500; white-space: nowrap; }
+  .stat-val { color: #007aff; font-weight: 700; white-space: nowrap; margin-left: 2px; }
+
+  /* 圆环 */
+  .donut {
+    position: relative;
+    width: 116px;
+    height: 116px;
+    border-radius: 50%;
+    background: conic-gradient(#007aff 0% 44.3%, #e2e8f0 44.3% 100%);
+    box-shadow: 0 4px 16px rgba(0, 122, 255, 0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .donut-center {
+    position: absolute;
+    inset: 14px;
+    border-radius: 50%;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .num-lg { font-size: 16px; font-weight: 700; color: #0f172a; line-height: 1.15; }
+  .unit-sm { font-size: 10px; color: #64748b; margin-top: 2px; }
+
+  /* 修复前折行的徽标 */
+  .badge-before {
+    margin-top: 3px;
+    font-size: 9.5px;
+    font-weight: 600;
+    color: #007aff;
+    background: rgba(0, 122, 255, 0.08);
+    padding: 1px 6px;
+    border-radius: 5px;
+    line-height: 1.2;
+    width: 45px; /* 未设 nowrap 导致折行 */
+    text-align: center;
+  }
+
+  /* 修复后单行的徽标 */
+  .badge-after {
+    margin-top: 3px;
+    font-size: 9.5px;
+    font-weight: 600;
+    color: #007aff;
+    background: rgba(0, 122, 255, 0.08);
+    padding: 1px 6px;
+    border-radius: 5px;
+    line-height: 1.25;
+    white-space: nowrap;
+  }
+
+  /* 模拟右侧列表 */
+  .models-col {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 12px;
+    border-left: 1px solid #e2e8f0;
+  }
+  .row-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    gap: 8px;
+  }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #007aff; }
+  .bar-bg { flex: 1; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin: 0 4px; }
+  .bar-fill { height: 100%; background: #007aff; border-radius: 3px; }
+
+  .msg-banner {
+    margin-top: 16px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .msg-banner.before { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+  .msg-banner.after { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+</style>
+</head>
+<body>
+
+  <div class="header-card">
+    <h1>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#007aff" stroke-width="2.5">
+        <path d="M4 6h16M4 12h16M4 18h7"/>
+      </svg>
+      Token 饼图数据异常折行修复验证报告
+    </h1>
+    <p>深度修复顶部“累计总计/数字”被强制断行、饼图内“占总计/百分比”折行的布局缺陷，全量应用 white-space: nowrap 单行包裹约束。</p>
+  </div>
+
+  <div class="compare-container">
+
+    <!-- 修复前问题呈现 -->
+    <div class="card-box" style="border-left: 4px solid #ef4444;">
+      <span class="card-tag before">修复前（原折行问题）</span>
+      <div class="table-grid">
+        <div class="summary-col">
+          <div class="global-stat-before">
+            <span>累计总</span><span style="color: #007aff; font-weight: bold;">42.42</span>
+            <span>计</span><span style="color: #007aff; font-weight: bold;">亿</span>
+          </div>
+          <div class="donut">
+            <div class="donut-center">
+              <span class="num-lg">18.81亿</span>
+              <span class="unit-sm">GPT 用量</span>
+              <div class="badge-before">
+                <div>占总计</div>
+                <div>44.3%</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="models-col">
+          <div class="row-item">
+            <span><span class="dot"></span> gpt-6-luna</span>
+            <div class="bar-bg"><div class="bar-fill" style="width: 41%;"></div></div>
+            <span style="font-weight: 700;">7.71亿</span>
+          </div>
+          <div class="row-item">
+            <span><span class="dot"></span> gpt-5.6-luna</span>
+            <div class="bar-bg"><div class="bar-fill" style="width: 27%;"></div></div>
+            <span style="font-weight: 700;">5.17亿</span>
+          </div>
+        </div>
+      </div>
+      <div class="msg-banner before">
+        <strong>✕ 异常表现：</strong><br/>
+        1. 顶部胶囊未加 <code>nowrap</code>，“计”与“亿”被生硬折到第二行；<br/>
+        2. 饼图底部徽标“占总计 44.3%”被生硬截成上下两行。
+      </div>
+    </div>
+
+    <!-- 修复后：单行优雅呈现 -->
+    <div class="card-box" style="border-left: 4px solid #16a34a;">
+      <span class="card-tag after">修复后（单行规整排布）</span>
+      <div class="table-grid">
+        <div class="summary-col">
+          <div class="global-stat-after">
+            <span class="stat-label">累计总计</span>
+            <span class="stat-val">42.42亿</span>
+          </div>
+          <div class="donut">
+            <div class="donut-center">
+              <span class="num-lg">18.81亿</span>
+              <span class="unit-sm">GPT 用量</span>
+              <div class="badge-after">占总计 44.3%</div>
+            </div>
+          </div>
+        </div>
+        <div class="models-col">
+          <div class="row-item">
+            <span><span class="dot"></span> gpt-6-luna</span>
+            <div class="bar-bg"><div class="bar-fill" style="width: 41%;"></div></div>
+            <span style="font-weight: 700;">7.71亿</span>
+          </div>
+          <div class="row-item">
+            <span><span class="dot"></span> gpt-5.6-luna</span>
+            <div class="bar-bg"><div class="bar-fill" style="width: 27%;"></div></div>
+            <span style="font-weight: 700;">5.17亿</span>
+          </div>
+        </div>
+      </div>
+      <div class="msg-banner after">
+        <strong>✓ 优化成果：</strong><br/>
+        1. 顶部胶囊：<strong>“累计总计 42.42亿”</strong> 实测单行仅 101px，严格不折行；<br/>
+        2. 底部徽标：<strong>“占总计 44.3%”</strong> 实测单行仅 75px，稳坐内圆底部，排版极度清爽。
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>
