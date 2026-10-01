@@ -204,15 +204,59 @@ try {
   const recentFiles = engine.collectSessionFiles(true);
   assert.ok(recentFiles.includes(oldSessionFile), "跨天老会话文件必须被 recentOnly 收集增量扫描");
 
-  // 测试 pruneOldDays 自动清理超过 32 天未修改或已不存在的文件路径
+  // 测试 pruneOldDays 自动清理已不存在的文件路径，但对物理仍存在的文件坚决保留轻量游标以防重
   const nonExistentFile = join(sessionsDir, "non-existent-session.jsonl");
   const expiredFile = join(testDir, "expired-session.jsonl");
   writeFileSync(expiredFile, "{\"type\":\"session_meta\"}\n");
   engine.data.files[nonExistentFile] = { inode: 1001, offset: 0, mtime: Date.now() };
-  engine.data.files[expiredFile] = { inode: 1002, offset: 0, mtime: Date.now() - (35 * 86400000) };
+  engine.data.files[expiredFile] = { inode: 1002, offset: 25, mtime: Date.now() - (35 * 86400000) };
   engine.pruneOldDays();
   assert.equal(engine.data.files[nonExistentFile], undefined, "不存在的文件必须被 pruneOldDays 清理");
-  assert.equal(engine.data.files[expiredFile], undefined, "超过 32 天未更新的文件必须被 pruneOldDays 清理");
+  assert.ok(engine.data.files[expiredFile] !== undefined, "存在的文件即便超过 32 天也必须保留游标以防重");
+  assert.equal(engine.data.files[expiredFile].offset, 25, "历史游标 offset 必须完好保留");
+
+  // 跨 32 天回放防重复累加测试（核心 P0 验证：同一份旧日志两次处理后累计不能从 100 变成 200）
+  const replayEngine = new TokenRollupEngine({ baseDir: testDir, sessionsDir });
+  replayEngine.enabled = true;
+  const replayFile = join(testDir, 'replay-session.jsonl');
+  const oldTimestamp = new Date(Date.now() - 35 * 86400000).toISOString();
+  const replayContent = [
+    JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-5.6-sol' } }),
+    JSON.stringify({ type: 'event_msg', timestamp: oldTimestamp, payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 100 } } } }),
+    JSON.stringify({ type: 'event_msg', timestamp: oldTimestamp, payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 200 } } } }),
+  ].join('\n') + '\n';
+  writeFileSync(replayFile, replayContent);
+  await replayEngine.scanFileIncremental(replayFile);
+  const replayDayKey = toShanghaiDate(Date.now() - 35 * 86400000);
+  assert.equal(replayEngine.data.days[replayDayKey]?.['gpt-5.6-sol'], 100, '首次扫描应累计 100 tokens');
+
+  // 执行 pruneOldDays 淘汰超过 32 天的每日明细，转移到 historicalTotals
+  replayEngine.pruneOldDays();
+  assert.equal(replayEngine.data.days[replayDayKey], undefined, '超过 32 天的每日明细应被淘汰');
+  assert.equal(replayEngine.data.historicalTotals['gpt-5.6-sol'], 100, '淘汰的 100 tokens 应转移至 historicalTotals');
+  assert.ok(replayEngine.data.files[replayFile] !== undefined, '物理文件游标必须保留');
+
+  // 第二次扫描同一份旧文件（模拟重启或增量再扫），总 Token 绝不能重复累加变成 200
+  await replayEngine.scanFileIncremental(replayFile);
+  assert.equal(replayEngine.data.historicalTotals['gpt-5.6-sol'], 100, '历史累计数依然保持 100，不得重复累加至 200');
+  const rollupAfterReplay = replayEngine.calculateRollup();
+  assert.equal(rollupAfterReplay.allTime.total, 100, '全量累计必须严格为 100');
+
+  // 断点续传测试：启动时若 backfillComplete 为 false，即便已有部分 days 也必须恢复 backfill
+  const partialStorage = join(testDir, 'partial-rollup.json');
+  writeFileSync(partialStorage, JSON.stringify({
+    schemaVersion: 1,
+    timezone: 'Asia/Shanghai',
+    files: {},
+    days: { '2026-09-01': { 'gpt-5.6-sol': 500 } },
+    backfillComplete: false,
+  }));
+  const partialEngine = new TokenRollupEngine({ baseDir: testDir, sessionsDir, storagePath: partialStorage });
+  let backfillTriggered = false;
+  partialEngine.runBackfillWorker = async () => { backfillTriggered = true; };
+  partialEngine.init();
+  assert.equal(partialEngine.status, 'building', '回填未完成时状态必须为 building');
+  assert.equal(backfillTriggered, true, '已有部分 days 但 backfillComplete 为 false 时必须恢复回填');
 
   // 固定大小分块解析跨块多行数据，且不提交末尾未完成行的偏移
   const chunkFile = join(testDir, 'chunked-rollout.jsonl');

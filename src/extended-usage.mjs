@@ -18,7 +18,9 @@ import {
   closeSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, win32 } from 'node:path';
+
+export const crossBasename = (p) => win32.basename(String(p || ''));
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { exportQuotaSnapshot, readPoolStatus } from './dynamic-priority-adapter.mjs';
@@ -222,17 +224,18 @@ export class GeminiQuotaManager {
       error: null,
     };
     this.inFlight = null;
+    this.cdsFingerprintCache = new Map();
   }
 
   readManagementKey() {
     if (process.env.MANAGEMENT_PASSWORD) return process.env.MANAGEMENT_PASSWORD.trim();
-    if (!existsSync(this.configPath)) return "admin123";
+    if (!existsSync(this.configPath)) return null;
     try {
       const text = readFileSync(this.configPath, "utf8");
       const secretMatch = text.match(/secret-key:\s*["']?([^"'\r\n]+)["']?/);
       if (secretMatch && secretMatch[1] && !secretMatch[1].startsWith("$2")) return secretMatch[1].trim();
     } catch { /* 忽略异常 */ }
-    return "admin123";
+    return null;
   }
 
   findAllAntigravityAuthFiles() {
@@ -247,23 +250,50 @@ export class GeminiQuotaManager {
     }
   }
 
-  /** 只读本地调用冷却记录；最多每五秒扫描一次，不探测模型、不写入凭证。 */
+  /** 只读本地调用冷却记录；带指纹缓存与 O(1) 账号索引，最多每五秒扫描一次。 */
   readRoutingHealth(accounts, now = Date.now()) {
     if (this.routingHealthReadAt !== null && now - this.routingHealthReadAt < 5000) return this.routingHealthByAccount;
     this.routingHealthReadAt = now;
     const healthByAccount = new Map();
+
+    const accountMapById = new Map();
+    const accountMapByEmail = new Map();
+    for (const acc of accounts) {
+      if (acc.id) accountMapById.set(acc.id, acc);
+      if (acc.email) accountMapByEmail.set(String(acc.email).toLowerCase(), acc);
+    }
+
     try {
-      for (const name of readdirSync(this.authDir).filter(name => name.endsWith('.cds'))) {
+      const cdsNames = readdirSync(this.authDir).filter(name => name.endsWith('.cds'));
+      const activePaths = new Set(cdsNames.map(name => join(this.authDir, name)));
+
+      for (const cachedPath of this.cdsFingerprintCache.keys()) {
+        if (!activePaths.has(cachedPath)) this.cdsFingerprintCache.delete(cachedPath);
+      }
+
+      for (const name of cdsNames) {
         const path = join(this.authDir, name);
-        if (statSync(path).size > 2 * 1024 * 1024) continue;
+        let stat;
+        try { stat = statSync(path); } catch { continue; }
+        if (stat.size > 2 * 1024 * 1024) continue;
+
         let data;
-        try { data = JSON.parse(readFileSync(path, 'utf8')); } catch { continue; }
+        const cached = this.cdsFingerprintCache.get(path);
+        if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+          data = cached.data;
+        } else {
+          try {
+            data = JSON.parse(readFileSync(path, 'utf8'));
+            this.cdsFingerprintCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, data });
+          } catch { continue; }
+        }
+
         if (String(data.provider || '').toLowerCase() !== 'antigravity') continue;
         for (const record of Array.isArray(data.records) ? data.records : []) {
           if (!record || typeof record !== 'object') continue;
           const authId = String(record.auth_id || data.auth_id || name.replace(/\.cds$/, '.json')).trim();
-          const filename = authId.split(/[\\/]/).pop();
-          const account = accounts.find(account => account.id === filename || String(account.email || '').toLowerCase() === authId.toLowerCase());
+          const filename = crossBasename(authId);
+          const account = accountMapById.get(filename) || accountMapByEmail.get(authId.toLowerCase());
           if (!account) continue;
           const status = String(record.status || '').toUpperCase();
           const health = ['ACTIVE', 'READY', 'OK'].includes(status)
@@ -312,7 +342,14 @@ export class GeminiQuotaManager {
                 authData.access_token = parsed.access_token;
                 authData.expires_in = parsed.expires_in || 3599;
                 authData.expired = new Date(Date.now() + (authData.expires_in * 1000)).toISOString();
-                try { writeFileSync(authFilePath, JSON.stringify(authData, null, 2)); } catch { /* 忽略写回异常 */ }
+                try {
+                  const tmpPath = `${authFilePath}.tmp.${process.pid}`;
+                  writeFileSync(tmpPath, JSON.stringify(authData, null, 2), { mode: 0o600 });
+                  renameSync(tmpPath, authFilePath);
+                  if (process.platform !== 'win32') {
+                    try { chmodSync(authFilePath, 0o600); } catch { /* ignore */ }
+                  }
+                } catch { /* 忽略写回异常 */ }
                 return resolve(parsed.access_token);
               }
             }
@@ -492,7 +529,7 @@ export class GeminiQuotaManager {
   }
 
   async fetchQuotaForFile(authFilePath) {
-    const filename = authFilePath.split('/').pop();
+    const filename = crossBasename(authFilePath);
     let email = filename.replace(/^antigravity-/, '').replace(/\.json$/, '');
     let label = email.split('@')[0] || email;
     let priority = 0;
@@ -531,9 +568,14 @@ export class GeminiQuotaManager {
       if (!token) throw new Error('Token unavailable');
 
       let data;
-      try {
-        data = await this.fetchQuotaViaApiCall(token);
-      } catch {
+      const secretKey = this.readManagementKey();
+      if (secretKey) {
+        try {
+          data = await this.fetchQuotaViaApiCall(token);
+        } catch {
+          data = await this.fetchQuotaFromGoogle(token);
+        }
+      } else {
         data = await this.fetchQuotaFromGoogle(token);
       }
 
@@ -589,36 +631,49 @@ export class GeminiQuotaManager {
     }
   }
 
-  async fetchQuota() {
+  async fetchQuota(options = {}) {
     if (this.inFlight) return this.inFlight;
+    const targetAccount = typeof options === 'string' ? options : options?.targetAccount;
+
     this.inFlight = (async () => {
       try {
         const authFiles = this.findAllAntigravityAuthFiles();
         if (authFiles.length === 0) throw new Error('Antigravity auth files not found');
 
-        const accountResults = await mapWithConcurrency(authFiles, 2, f => this.fetchQuotaForFile(f));
+        if (targetAccount) {
+          const targetFile = authFiles.find(f => {
+            const base = crossBasename(f);
+            return base === targetAccount || base.includes(targetAccount);
+          });
+          if (targetFile) {
+            const singleRes = await this.fetchQuotaForFile(targetFile);
+            this.accountCaches.set(singleRes.email, singleRes);
+          }
+        } else {
+          const accountResults = await mapWithConcurrency(authFiles, 2, f => this.fetchQuotaForFile(f));
+          for (const acc of accountResults) {
+            this.accountCaches.set(acc.email, acc);
+          }
+        }
 
-        accountResults.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+        const accounts = [...this.accountCaches.values()];
+        accounts.sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
         if (this.enableDynamicPriority) {
           try {
-            exportQuotaSnapshot(accountResults, { authDir: this.authDir });
+            exportQuotaSnapshot(accounts, { authDir: this.authDir });
           } catch { /* 忽略导出快照异常 */ }
         }
 
-        for (const acc of accountResults) {
-          this.accountCaches.set(acc.email, acc);
-        }
-
-        const manualAccount = this.selectedAccount ? accountResults.find(a => a.email === this.selectedAccount) : null;
+        const manualAccount = this.selectedAccount ? accounts.find(a => a.email === this.selectedAccount) : null;
         const isManualValid = manualAccount && isAccountAvailable(manualAccount);
-        const active = (isManualValid ? manualAccount : accountResults.find(isAccountAvailable)) || accountResults[0];
+        const active = (isManualValid ? manualAccount : accounts.find(isAccountAvailable)) || accounts[0];
 
         this.cache = {
-          status: accountResults.some(a => a.status === 'ready') ? 'ready' : 'error',
+          status: accounts.some(a => a.status === 'ready') ? 'ready' : 'error',
           plan: 'Gemini AI Pro',
           selectedAccount: active?.email || null,
-          accounts: accountResults,
+          accounts,
           rows: active?.rows || [],
           fetchedAt: Date.now(),
           stale: active?.stale || false,
@@ -749,7 +804,7 @@ export class TokenRollupEngine {
     this.initialized = true;
     this.enabled = true;
     this.load();
-    if (Object.keys(this.data.days).length === 0) {
+    if (!this.data.backfillComplete || Object.keys(this.data.days).length === 0) {
       this.status = 'building';
       this.runBackfillWorker().catch(() => {});
     } else {
@@ -838,16 +893,11 @@ export class TokenRollupEngine {
     }
 
     if (this.data.files && typeof this.data.files === 'object') {
-      for (const [filePath, record] of Object.entries(this.data.files)) {
+      for (const filePath of Object.keys(this.data.files)) {
         if (!existsSync(filePath)) {
           delete this.data.files[filePath];
           this.dirty = true;
-          continue;
-        }
-        const mtime = record?.mtime;
-        if (mtime && mtime < minTimestamp) {
-          delete this.data.files[filePath];
-          this.dirty = true;
+          changed = true;
         }
       }
     }
@@ -897,8 +947,13 @@ export class TokenRollupEngine {
     let stat;
     try {
       stat = statSync(filePath);
-    } catch {
-      delete this.data.files[filePath];
+    } catch (err) {
+      if (err?.code === 'ENOENT' || !existsSync(filePath)) {
+        if (this.data.files[filePath]) {
+          delete this.data.files[filePath];
+          this.dirty = true;
+        }
+      }
       return;
     }
 
@@ -913,12 +968,14 @@ export class TokenRollupEngine {
         mtime: stat.mtimeMs,
       };
       this.data.files[filePath] = record;
+      this.dirty = true;
     } else {
       record.mtime = stat.mtimeMs;
     }
 
     if (stat.size <= record.offset) return;
 
+    const initialOffset = record.offset;
     const dateFallback = toDateKey(stat.mtimeMs || Date.now(), this.timezone);
     let fd;
     try {
@@ -954,6 +1011,9 @@ export class TokenRollupEngine {
     } catch {
       // 保留已提交到完整换行处的偏移，下轮重读未完成尾行。
     } finally {
+      if (record.offset !== initialOffset) {
+        this.dirty = true;
+      }
       if (fd !== undefined) try { closeSync(fd); } catch { /* 忽略关闭异常 */ }
     }
   }
@@ -1208,6 +1268,8 @@ export class TokenRollupEngine {
       ranges,
       coverageStartedAt: this.data.coverageStartedAt,
       earliestRecordedDate: this.getEarliestDate(),
+      backfillComplete: Boolean(this.data.backfillComplete),
+      fileCount: Object.keys(this.data.files || {}).length,
       error: null,
       timezone: this.timezone,
     };
@@ -1270,10 +1332,10 @@ export class ExtendedUsageCoordinator {
     this.geminiManager.fetchQuota().catch(() => {});
   }
 
-  async refreshGemini() {
+  async refreshGemini(targetAccount = null) {
     if (!(this.settings.enableGoogleAiPro || this.settings.enableDynamicPriority)) return null;
     this.initGemini();
-    return this.geminiManager.fetchQuota();
+    return this.geminiManager.fetchQuota({ targetAccount });
   }
 
   scanTokensIncremental() {

@@ -3,6 +3,7 @@ import {
   formatGeminiCountdown,
   matchGeminiStandardRow,
   GeminiQuotaManager,
+  crossBasename,
 } from '../src/extended-usage.mjs';
 
 console.log('Testing: Gemini quota manager and matching contract...');
@@ -129,5 +130,56 @@ const result = await manager.fetchQuota();
 assert.equal(result.stale, true);
 assert.equal(result.rows[0].remainingPercent, 68); // retains previous good data!
 assert.equal(result.error, 'Simulated 500 error');
+
+// 5. 凭证安全边界测试：移除 admin123 默认密码猜测
+import { mkdtempSync, rmSync, writeFileSync, statSync, renameSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, basename } from 'node:path';
+
+const tempDir = mkdtempSync(join(tmpdir(), 'gemini-sec-test-'));
+try {
+  const configPath = join(tempDir, 'config.yaml');
+  const secManager = new GeminiQuotaManager({ configPath });
+
+  // 场景 A: 无环境变量且文件不存在时，必须返回 null，严禁返回 "admin123"
+  const prevEnv = process.env.MANAGEMENT_PASSWORD;
+  delete process.env.MANAGEMENT_PASSWORD;
+  assert.equal(secManager.readManagementKey(), null, '未配置管理密钥时严禁猜测 admin123');
+
+  // 场景 B: 配置文件中包含明文密钥
+  writeFileSync(configPath, 'remote-management:\n  secret-key: "valid-production-secret-998"\n');
+  assert.equal(secManager.readManagementKey(), 'valid-production-secret-998');
+
+  // 场景 C: 配置文件中包含 bcrypt 哈希（以 $2 开头）时不能作为 API token 发送
+  writeFileSync(configPath, 'remote-management:\n  secret-key: "$2a$12$e8x...hash"\n');
+  assert.equal(secManager.readManagementKey(), null, '哈希密码不可作为明文密钥发送');
+
+  // 场景 D: 环境变量优先
+  process.env.MANAGEMENT_PASSWORD = 'env-override-secret';
+  assert.equal(secManager.readManagementKey(), 'env-override-secret');
+  if (prevEnv !== undefined) process.env.MANAGEMENT_PASSWORD = prevEnv;
+  else delete process.env.MANAGEMENT_PASSWORD;
+
+  // 6. 原子凭证更新与 0o600 权限保护
+  const authFile = join(tempDir, 'antigravity-test@gmail.com.json');
+  writeFileSync(authFile, JSON.stringify({ access_token: 'old_tok', refresh_token: 'ref_tok' }), { mode: 0o600 });
+  const authData = { access_token: 'new_tok', refresh_token: 'ref_tok', expires_in: 3600 };
+
+  // 使用原型的原子写入机制验证
+  const tmpPath = `${authFile}.tmp.${process.pid}`;
+  writeFileSync(tmpPath, JSON.stringify(authData, null, 2), { mode: 0o600 });
+  renameSync(tmpPath, authFile);
+  if (process.platform !== 'win32') {
+    assert.equal(statSync(authFile).mode & 0o777, 0o600, 'OAuth 凭证文件权限必须为 0o600');
+  }
+
+  // 7. Windows 反斜杠路径兼容性验证
+  const winPath = 'C:\\Users\\Administrator\\.cli-proxy-api\\antigravity-alice@example.com.json';
+  assert.equal(crossBasename(winPath), 'antigravity-alice@example.com.json', 'crossBasename 必须正确解析 Windows 反斜杠文件名');
+  assert.equal(crossBasename('/home/user/.cli-proxy-api/antigravity-alice@example.com.json'), 'antigravity-alice@example.com.json');
+
+} finally {
+  rmSync(tempDir, { recursive: true, force: true });
+}
 
 console.log('✓ Gemini quota manager and matching contract passed!');

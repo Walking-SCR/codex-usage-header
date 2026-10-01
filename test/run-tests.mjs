@@ -41,6 +41,7 @@
   'platform-paths.test.mjs',
   'windows-launcher.test.mjs',
   'win-probe.test.mjs',
+  'architectural-refactor.test.mjs',
 ];
 
 console.log('========================================================');

@@ -40,6 +40,33 @@ function logInfo(text) {
   console.log(`  \x1b[90m-\x1b[0m ${text}`);
 }
 
+export function evaluatePortBindingFromNetstat(netstatOutput, port = DEFAULT_PORT) {
+  if (!netstatOutput || typeof netstatOutput !== 'string') return 'UNKNOWN';
+  const lines = netstatOutput.split(/\r?\n/).filter(line => /\bLISTENING\b/i.test(line));
+  const localAddresses = [];
+  for (const line of lines) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      localAddresses.push(parts[1]);
+    }
+  }
+  const exactPortPattern = new RegExp(`:(?:${port})$`);
+  const matchedAddresses = localAddresses.filter(addr => exactPortPattern.test(addr));
+
+  if (matchedAddresses.length === 0) {
+    return 'UNKNOWN';
+  }
+  const boundToWildcard = matchedAddresses.some(addr => /^(?:0\.0\.0\.0|\[::\]|\*):/i.test(addr));
+  const boundToLoopback = matchedAddresses.some(addr => /^(?:127\.0\.0\.1|\[::1\]|localhost):/i.test(addr));
+
+  if (boundToWildcard) return 'FAIL';
+  if (boundToLoopback) {
+    const boundToOther = matchedAddresses.some(addr => !/^(?:127\.0\.0\.1|\[::1\]|localhost):/i.test(addr));
+    return boundToOther ? 'FAIL' : 'PASS';
+  }
+  return 'FAIL';
+}
+
 export async function runProbe(options = {}) {
   const port = options.port || DEFAULT_PORT;
   const report = {
@@ -171,6 +198,7 @@ export async function runProbe(options = {}) {
   logHeader(`P0 探针 4/6: CDP 端口连接与 127.0.0.1 本机回环绑定验证 (Port ${port})`);
   const cdpSecurity = {
     portOpen: false,
+    securityStatus: 'UNKNOWN',
     boundOnlyToLoopback: false,
     targetsFound: 0,
     targets: [],
@@ -188,31 +216,53 @@ export async function runProbe(options = {}) {
     if (isWin) {
       try {
         const netstatOutput = execFileSync('netstat.exe', ['-ano', '-p', 'TCP'], { encoding: 'utf8', timeout: 3000 });
-        const lines = netstatOutput.split(/\r?\n/).filter(line => line.includes(`:${port}`) && line.includes('LISTENING'));
-        const boundToWildcard = lines.some(line => line.includes(`0.0.0.0:${port}`) || line.includes(`[::]:${port}`));
-        const boundToLoopback = lines.some(line => line.includes(`127.0.0.1:${port}`) || line.includes(`[::1]:${port}`));
-        if (boundToLoopback && !boundToWildcard) {
+        const status = evaluatePortBindingFromNetstat(netstatOutput, port);
+        cdpSecurity.securityStatus = status;
+        if (status === 'PASS') {
           cdpSecurity.boundOnlyToLoopback = true;
-          logPass(`端口安全核验通过: 仅绑定 127.0.0.1 回环地址，未暴露于 0.0.0.0`);
-        } else if (boundToWildcard) {
+          logPass(`端口安全核验通过 [PASS]: 仅绑定 127.0.0.1 回环地址，未暴露于 0.0.0.0`);
+        } else if (status === 'FAIL') {
           cdpSecurity.boundOnlyToLoopback = false;
-          logFail(`严重安全告警: 调试端口绑定到了 0.0.0.0 或公网接口！`);
+          logFail(`严重安全告警 [FAIL]: 调试端口绑定到了 0.0.0.0 或公网接口！`);
         } else {
-          cdpSecurity.boundOnlyToLoopback = true;
-          logInfo('未直接检测到外网监听绑定');
+          cdpSecurity.boundOnlyToLoopback = false;
+          logWarn(`端口监听状态不确定 [UNKNOWN]: 未能严格匹配到 127.0.0.1 独占监听`);
         }
-      } catch {
-        cdpSecurity.boundOnlyToLoopback = true;
+      } catch (err) {
+        cdpSecurity.securityStatus = 'UNKNOWN';
+        cdpSecurity.boundOnlyToLoopback = false;
+        logWarn(`netstat 执行异常 [UNKNOWN]: ${err.message}`);
       }
     } else {
-      cdpSecurity.boundOnlyToLoopback = true;
+      try {
+        const lsofOutput = execFileSync('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8', timeout: 3000 });
+        const hasWildcard = lsofOutput.includes(`*:${port}`) || lsofOutput.includes(`0.0.0.0:${port}`);
+        const hasLoopback = lsofOutput.includes(`127.0.0.1:${port}`) || lsofOutput.includes(`localhost:${port}`);
+        if (hasLoopback && !hasWildcard) {
+          cdpSecurity.boundOnlyToLoopback = true;
+          cdpSecurity.securityStatus = 'PASS';
+          logPass('[非 Windows 环境] 端口仅绑定回环地址 [PASS]');
+        } else if (hasWildcard) {
+          cdpSecurity.boundOnlyToLoopback = false;
+          cdpSecurity.securityStatus = 'FAIL';
+          logFail('[非 Windows 环境] 端口绑定到了公网接口 [FAIL]');
+        } else {
+          cdpSecurity.boundOnlyToLoopback = false;
+          cdpSecurity.securityStatus = 'UNKNOWN';
+          logWarn('[非 Windows 环境] 端口绑定状态未知 [UNKNOWN]');
+        }
+      } catch {
+        cdpSecurity.boundOnlyToLoopback = false;
+        cdpSecurity.securityStatus = 'UNKNOWN';
+        logWarn('[非 Windows 环境] 无法通过 lsof 验证端口绑定 [UNKNOWN]');
+      }
     }
   } catch (error) {
     logWarn(`CDP 端口 ${port} 未连接或超时 (${error.message})`);
   }
 
   report.gates.cdpPortSecurity = {
-    pass: cdpSecurity.portOpen && cdpSecurity.boundOnlyToLoopback,
+    pass: cdpSecurity.portOpen && cdpSecurity.securityStatus === 'PASS',
     details: cdpSecurity,
   };
 
@@ -226,6 +276,8 @@ export async function runProbe(options = {}) {
     systemCaptionButtonsInDom: false,
     probeMounted: false,
     clickEventHandled: false,
+    nativeInputDispatched: false,
+    isTrustedClick: false,
     isWebviewTitlebar: false,
   };
 
@@ -236,67 +288,34 @@ export async function runProbe(options = {}) {
       if (fullTarget?.webSocketDebuggerUrl) {
         injectabilityDetails.targetUrl = fullTarget.url;
         try {
-          const domAnalysis = await evaluateCdpSnippet(fullTarget.webSocketDebuggerUrl, `
-            (() => {
-              const header = document.querySelector('header')
-                || document.querySelector('[data-app-shell-header-toolbar="true"]')
-                || document.querySelector('[role="toolbar"]')
-                || document.querySelector('nav');
-              const headerRect = header ? header.getBoundingClientRect() : null;
-
-              // 检测 Windows 系统按钮（最小化、最大化、关闭）是否位于 DOM 内部
-              const captionButtons = document.querySelectorAll('.caption-buttons, [data-caption-buttons], .window-controls, [data-window-controls]');
-
-              // 尝试创建临时探针元素挂载与事件触发
-              let probeSuccess = false;
-              let clickReceived = false;
-              try {
-                const probe = document.createElement('div');
-                probe.id = '__codex_p0_probe__';
-                probe.style.cssText = 'position:fixed;top:0;left:0;width:10px;height:10px;z-index:999999;opacity:0.01;pointer-events:auto;';
-                probe.addEventListener('click', () => { clickReceived = true; });
-                (header || document.body).appendChild(probe);
-                probeSuccess = Boolean(document.getElementById('__codex_p0_probe__'));
-                probe.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                probe.remove();
-              } catch {
-                probeSuccess = false;
-              }
-
-              return {
-                title: document.title,
-                url: location.href,
-                hasHeader: Boolean(header),
-                headerTag: header ? header.tagName.toLowerCase() : null,
-                headerRect: headerRect ? { width: headerRect.width, height: headerRect.height, top: headerRect.top, left: headerRect.left } : null,
-                captionButtonsInDom: captionButtons.length > 0,
-                probeSuccess,
-                clickReceived,
-              };
-            })()
-          `);
-
+          const interactionResult = await executeCdpInteractionProbe(fullTarget.webSocketDebuggerUrl, 5000);
           injectabilityDetails.hasDomDocument = true;
-          injectabilityDetails.headerElementFound = domAnalysis.hasHeader;
-          injectabilityDetails.headerTag = domAnalysis.headerTag;
-          injectabilityDetails.headerRect = domAnalysis.headerRect;
-          injectabilityDetails.systemCaptionButtonsInDom = domAnalysis.captionButtonsInDom;
-          injectabilityDetails.probeMounted = domAnalysis.probeSuccess;
-          injectabilityDetails.clickEventHandled = domAnalysis.clickReceived;
-          injectabilityDetails.isWebviewTitlebar = domAnalysis.hasHeader && domAnalysis.probeSuccess;
+          injectabilityDetails.headerElementFound = Boolean(interactionResult.hasHeader);
+          injectabilityDetails.headerTag = interactionResult.headerTag;
+          injectabilityDetails.headerRect = interactionResult.headerRect;
+          injectabilityDetails.systemCaptionButtonsInDom = Boolean(interactionResult.captionButtonsInDom);
+          injectabilityDetails.probeMounted = Boolean(interactionResult.probeSuccess);
+          injectabilityDetails.clickEventHandled = Boolean(interactionResult.clickReceived);
+          injectabilityDetails.nativeInputDispatched = Boolean(interactionResult.nativeDispatched);
+          injectabilityDetails.isTrustedClick = Boolean(interactionResult.isTrusted);
+          injectabilityDetails.isWebviewTitlebar = Boolean(interactionResult.hasHeader && interactionResult.probeSuccess && interactionResult.clickReceived);
 
-          logPass(`Webview DOM 文档连接成功: "${domAnalysis.title || 'Untitled'}"`);
-          if (domAnalysis.hasHeader) {
-            logPass(`找到可注入顶栏元素 <${domAnalysis.headerTag}>: 尺寸 ${Math.round(domAnalysis.headerRect.width)}x${Math.round(domAnalysis.headerRect.height)}px (top: ${Math.round(domAnalysis.headerRect.top)}px)`);
+          logPass(`Webview DOM 文档连接成功: "${interactionResult.title || 'Untitled'}"`);
+          if (interactionResult.hasHeader) {
+            logPass(`找到可注入顶栏元素 <${interactionResult.headerTag}>: 尺寸 ${Math.round(interactionResult.headerRect?.width || 0)}x${Math.round(interactionResult.headerRect?.height || 0)}px (top: ${Math.round(interactionResult.headerRect?.top || 0)}px)`);
           } else {
             logWarn('页面内未检测到标准 <header> 或工具栏节点');
           }
-          if (domAnalysis.probeSuccess && domAnalysis.clickReceived) {
-            logPass('动态探针节点挂载与合成点击事件绑定成功 (Runtime.evaluate 交互正常)');
+          if (interactionResult.clickReceived) {
+            if (interactionResult.isTrusted) {
+              logPass('原生 CDP 鼠标点击事件派发与捕获成功 (Input.dispatchMouseEvent, isTrusted: true)');
+            } else {
+              logPass('探针点击事件捕获成功 (合成事件兜底响应)');
+            }
           } else {
-            logWarn('动态探针节点挂载或点击事件未被响应');
+            logWarn('动态探针节点点击事件未被响应（可能被原生标题栏遮挡或事件吞没）');
           }
-          if (domAnalysis.captionButtonsInDom) {
+          if (interactionResult.captionButtonsInDom) {
             logInfo('系统窗口控制按钮位于 Web DOM 内部 (可测量真实 DOM 避让)');
           } else {
             logInfo('系统窗口控制按钮未在 DOM 内检测到（原生 DWM 标题栏模式）');
@@ -437,6 +456,179 @@ function fetchHttpJson(url, timeoutMs = 2000) {
     });
     req.on('error', reject);
     req.on('timeout', () => req.destroy(new Error('timeout')));
+  });
+}
+
+export function executeCdpInteractionProbe(wsUrl, timeoutMs = 6000) {
+  return new Promise((resolve, reject) => {
+    const WS = globalThis.WebSocket;
+    if (!WS) {
+      return reject(new Error('WebSocket is not available on globalThis in current Node runtime'));
+    }
+    const ws = new WS(wsUrl);
+    let nextId = 1;
+    const callbacks = new Map();
+
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch {}
+      reject(new Error('cdp_interaction_timeout'));
+    }, timeoutMs);
+
+    function sendCommand(method, params = {}) {
+      return new Promise((res, rej) => {
+        const id = nextId++;
+        callbacks.set(id, { resolve: res, reject: rej });
+        try {
+          ws.send(JSON.stringify({ id, method, params }));
+        } catch (err) {
+          callbacks.delete(id);
+          rej(err);
+        }
+      });
+    }
+
+    const onOpen = async () => {
+      try {
+        const step1Eval = await sendCommand('Runtime.evaluate', {
+          expression: `
+            (() => {
+              const header = document.querySelector('header')
+                || document.querySelector('[data-app-shell-header-toolbar="true"]')
+                || document.querySelector('[role="toolbar"]')
+                || document.querySelector('nav');
+              const headerRect = header ? header.getBoundingClientRect() : null;
+              const captionButtons = document.querySelectorAll('.caption-buttons, [data-caption-buttons], .window-controls, [data-window-controls]');
+
+              const old = document.getElementById('__codex_p0_probe__');
+              if (old) old.remove();
+
+              let probeSuccess = false;
+              let clickTarget = null;
+              try {
+                const probe = document.createElement('div');
+                probe.id = '__codex_p0_probe__';
+                const posX = headerRect && headerRect.width > 120 ? Math.round(headerRect.left + 80) : 40;
+                const posY = headerRect && headerRect.height > 20 ? Math.round(headerRect.top + Math.min(15, headerRect.height / 2)) : 15;
+                probe.style.cssText = 'position:fixed;top:' + posY + 'px;left:' + posX + 'px;width:16px;height:16px;z-index:2147483647;opacity:0.01;pointer-events:auto;background:red;';
+                window.__codex_p0_click_count = 0;
+                window.__codex_p0_last_event_is_trusted = false;
+                probe.addEventListener('click', (e) => {
+                  window.__codex_p0_click_count++;
+                  window.__codex_p0_last_event_is_trusted = Boolean(e.isTrusted);
+                });
+                (header || document.body).appendChild(probe);
+                const r = probe.getBoundingClientRect();
+                probeSuccess = Boolean(document.getElementById('__codex_p0_probe__'));
+                clickTarget = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+              } catch {
+                probeSuccess = false;
+              }
+
+              return {
+                title: document.title,
+                url: location.href,
+                hasHeader: Boolean(header),
+                headerTag: header ? header.tagName.toLowerCase() : null,
+                headerRect: headerRect ? { width: headerRect.width, height: headerRect.height, top: headerRect.top, left: headerRect.left } : null,
+                captionButtonsInDom: captionButtons.length > 0,
+                probeSuccess,
+                clickTarget,
+              };
+            })()
+          `,
+          awaitPromise: true,
+          returnByValue: true,
+        });
+
+        const initialData = step1Eval?.result?.value || {};
+        let nativeDispatched = false;
+
+        if (initialData.probeSuccess && initialData.clickTarget) {
+          try {
+            await sendCommand('Input.dispatchMouseEvent', {
+              type: 'mousePressed',
+              x: initialData.clickTarget.x,
+              y: initialData.clickTarget.y,
+              button: 'left',
+              clickCount: 1,
+            });
+            await sendCommand('Input.dispatchMouseEvent', {
+              type: 'mouseReleased',
+              x: initialData.clickTarget.x,
+              y: initialData.clickTarget.y,
+              button: 'left',
+              clickCount: 1,
+            });
+            nativeDispatched = true;
+          } catch {
+            nativeDispatched = false;
+          }
+        }
+
+        const step4Eval = await sendCommand('Runtime.evaluate', {
+          expression: `
+            (() => {
+              const probe = document.getElementById('__codex_p0_probe__');
+              const count = window.__codex_p0_click_count || 0;
+              const isTrusted = Boolean(window.__codex_p0_last_event_is_trusted);
+              if (probe) probe.remove();
+              delete window.__codex_p0_click_count;
+              delete window.__codex_p0_last_event_is_trusted;
+              return { clickReceived: count > 0, clickCount: count, isTrusted };
+            })()
+          `,
+          awaitPromise: true,
+          returnByValue: true,
+        });
+
+        const finalData = step4Eval?.result?.value || {};
+        clearTimeout(timer);
+        try { ws.close(); } catch {}
+        resolve({
+          ...initialData,
+          nativeDispatched,
+          clickReceived: Boolean(finalData.clickReceived),
+          clickCount: finalData.clickCount || 0,
+          isTrusted: Boolean(finalData.isTrusted),
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        try { ws.close(); } catch {}
+        reject(err);
+      }
+    };
+
+    const onMessage = data => {
+      try {
+        const raw = typeof data === 'string' ? data : (data?.data !== undefined ? data.data : data.toString('utf8'));
+        const parsed = JSON.parse(raw);
+        if (parsed.id && callbacks.has(parsed.id)) {
+          const cb = callbacks.get(parsed.id);
+          callbacks.delete(parsed.id);
+          if (parsed.error) cb.reject(new Error(JSON.stringify(parsed.error)));
+          else cb.resolve(parsed);
+        }
+      } catch {}
+    };
+
+    const onError = err => {
+      clearTimeout(timer);
+      reject(err);
+    };
+
+    if (typeof ws.addEventListener === 'function') {
+      ws.addEventListener('open', onOpen);
+      ws.addEventListener('message', onMessage);
+      ws.addEventListener('error', onError);
+    } else if (typeof ws.on === 'function') {
+      ws.on('open', onOpen);
+      ws.on('message', onMessage);
+      ws.on('error', onError);
+    } else {
+      ws.onopen = onOpen;
+      ws.onmessage = onMessage;
+      ws.onerror = onError;
+    }
   });
 }
 

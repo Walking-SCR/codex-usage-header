@@ -84,6 +84,70 @@ function isValidTimeZone(value) {
   catch { return false; }
 }
 
+export class ExpiredResetTracker {
+  constructor() {
+    this.accounts = new Map();
+  }
+
+  getEntry(email) {
+    let entry = this.accounts.get(email);
+    if (!entry) {
+      entry = { attempt: 0, nextRetryAt: 0, lastResetTime: null, lastError: null };
+      this.accounts.set(email, entry);
+    }
+    return entry;
+  }
+
+  checkAccount(account, nowMs = Date.now()) {
+    if (!account?.email) return false;
+    const nowSec = Math.floor(nowMs / 1000);
+    const expiredRows = (account.rows || []).filter(r => !r.unavailable && r.resetTime && r.resetTime <= nowSec);
+    if (expiredRows.length === 0) {
+      this.accounts.delete(account.email);
+      return false;
+    }
+
+    const entry = this.getEntry(account.email);
+    const earliestResetTime = Math.min(...expiredRows.map(r => r.resetTime));
+
+    if (entry.lastResetTime !== null && entry.lastResetTime !== earliestResetTime) {
+      entry.attempt = 0;
+      entry.nextRetryAt = 0;
+    }
+    entry.lastResetTime = earliestResetTime;
+
+    return nowMs >= entry.nextRetryAt;
+  }
+
+  recordResult(account, error, nowMs = Date.now()) {
+    if (!account?.email) return;
+    const entry = this.getEntry(account.email);
+    const nowSec = Math.floor(nowMs / 1000);
+    const stillExpired = (account.rows || []).some(r => !r.unavailable && r.resetTime && r.resetTime <= nowSec);
+
+    if (!stillExpired && !error) {
+      this.accounts.delete(account.email);
+      return;
+    }
+
+    entry.attempt += 1;
+    let delayMs = 8000;
+
+    if (error?.httpStatus === 429 || error?.code === 'rate_limited' || account.health?.code === 'rate_limited') {
+      entry.lastError = 'rate_limit';
+      delayMs = Math.min(300000, 30000 * Math.pow(2, entry.attempt - 1));
+    } else if (error?.code === 'timeout' || error?.message?.includes?.('timeout') || error?.code === 'ECONNRESET') {
+      entry.lastError = 'network';
+      delayMs = Math.min(120000, 10000 * Math.pow(2, entry.attempt - 1));
+    } else {
+      entry.lastError = 'unchanged_time';
+      delayMs = Math.min(120000, 8000 * Math.pow(2, entry.attempt - 1));
+    }
+
+    entry.nextRetryAt = nowMs + delayMs;
+  }
+}
+
 async function inspectTarget(target) {
   return evaluateInTarget(target.webSocketDebuggerUrl, `(() => {
     let commands = [];
@@ -209,9 +273,9 @@ async function run(cdpPort) {
     await launchAndInject(cdpPort, { launchIfNeeded: true });
     const extendedCoordinator = new ExtendedUsageCoordinator({ settings });
     extendedCoordinator.init();
+    const expiredResetTracker = new ExpiredResetTracker();
     let nextTokensAt = 0;
     let nextGeminiAt = 0;
-    let lastExpiredAutoRefresh = 0;
     let extendedRevision = 0;
     const deliveredExtendedRevision = new Map();
     let lastExtendedSignature = '';
@@ -390,12 +454,25 @@ async function run(cdpPort) {
       const failoverCommands = commands.filter(command => command.kind === 'toggleFailoverMode' && command.id && !seenCommands.has(command.id));
       for (const command of failoverCommands) {
         rememberCommand(command.id);
-        try {
-          await triggerToggleFailoverMode();
-        } catch { /* 忽略切换异常 */ }
-        nextGeminiAt = 0;
-        nextRefreshAt = 0;
-        extendedRevision += 1;
+        triggerToggleFailoverMode().then(async result => {
+          await pushCommandAck(command.target, {
+            id: command.id,
+            kind: 'toggleFailoverMode',
+            success: Boolean(result?.ok ?? true),
+          }).catch(() => {});
+          nextGeminiAt = 0;
+          nextRefreshAt = 0;
+          extendedRevision += 1;
+          notifyMonitor();
+        }).catch(async () => {
+          await pushCommandAck(command.target, {
+            id: command.id,
+            kind: 'toggleFailoverMode',
+            success: false,
+          }).catch(() => {});
+          extendedRevision += 1;
+          notifyMonitor();
+        });
       }
 
       const rebalanceCommands = commands.filter(command => command.kind === 'rebalance' && command.id && !seenCommands.has(command.id));
@@ -429,7 +506,10 @@ async function run(cdpPort) {
         tokenScanInFlight = extendedCoordinator.scanTokensIncremental()
           .then(changed => { if (changed) extendedRevision += 1; })
           .catch(() => {})
-          .finally(() => { tokenScanInFlight = null; });
+          .finally(() => {
+            tokenScanInFlight = null;
+            notifyMonitor();
+          });
       }
 
       const geminiEnabled = Boolean(settings.enableGoogleAiPro || settings.enableDynamicPriority);
@@ -437,21 +517,32 @@ async function run(cdpPort) {
         nextGeminiAt = Date.now() + geminiIntervalMs;
         geminiRefreshInFlight = extendedCoordinator.refreshGemini().then(() => {
           extendedRevision += 1;
-        }).catch(() => {}).finally(() => { geminiRefreshInFlight = null; });
+        }).catch(() => {}).finally(() => {
+          geminiRefreshInFlight = null;
+          notifyMonitor();
+        });
       }
 
-      if (geminiEnabled) {
+      if (geminiEnabled && !geminiRefreshInFlight) {
         const currentAnti = extendedCoordinator.getSnapshot()?.antigravity;
-        const nowSec = Math.floor(Date.now() / 1000);
-        const hasExpiredReset = (currentAnti?.accounts || []).some(acc =>
-          (acc.rows || []).some(r => !r.unavailable && r.resetTime && r.resetTime <= nowSec)
+        const expiredAccount = (currentAnti?.accounts || []).find(acc =>
+          expiredResetTracker.checkAccount(acc)
         );
-        if (hasExpiredReset && Date.now() - lastExpiredAutoRefresh > 8000 && !geminiRefreshInFlight) {
-          lastExpiredAutoRefresh = Date.now();
-          geminiRefreshInFlight = extendedCoordinator.refreshGemini()
-            .then(() => { extendedRevision += 1; })
-            .catch(() => {})
-            .finally(() => { geminiRefreshInFlight = null; });
+        if (expiredAccount) {
+          geminiRefreshInFlight = extendedCoordinator.refreshGemini(expiredAccount.email)
+            .then(() => {
+              const updatedAnti = extendedCoordinator.getSnapshot()?.antigravity;
+              const updatedAcc = (updatedAnti?.accounts || []).find(a => a.email === expiredAccount.email) || expiredAccount;
+              expiredResetTracker.recordResult(updatedAcc, null);
+              extendedRevision += 1;
+            })
+            .catch((err) => {
+              expiredResetTracker.recordResult(expiredAccount, err);
+            })
+            .finally(() => {
+              geminiRefreshInFlight = null;
+              notifyMonitor();
+            });
         }
       }
 
@@ -460,13 +551,19 @@ async function run(cdpPort) {
           tokenScanInFlight = extendedCoordinator.scanTokensIncremental()
             .then(changed => { if (changed) extendedRevision += 1; })
             .catch(() => {})
-            .finally(() => { tokenScanInFlight = null; });
+            .finally(() => {
+              tokenScanInFlight = null;
+              notifyMonitor();
+            });
         }
         if (geminiEnabled && !geminiRefreshInFlight) {
           geminiRefreshInFlight = extendedCoordinator.refreshGemini()
             .then(() => { extendedRevision += 1; })
             .catch(() => {})
-            .finally(() => { geminiRefreshInFlight = null; });
+            .finally(() => {
+              geminiRefreshInFlight = null;
+              notifyMonitor();
+            });
         }
       }
 
@@ -502,6 +599,10 @@ async function run(cdpPort) {
         || Date.now() - lastExtendedSnapshotAt >= 1500) {
         const nextSnapshot = extendedCoordinator.getSnapshot();
         nextSnapshot.failover = readFailoverStatus();
+        nextSnapshot.inFlight = {
+          tokens: Boolean(tokenScanInFlight),
+          gemini: Boolean(geminiRefreshInFlight),
+        };
         const extendedSignature = JSON.stringify({
           failover: [nextSnapshot.failover?.mode, nextSnapshot.failover?.lifecycle_state, nextSnapshot.failover?.external_model],
           pool: nextSnapshot.antigravity.poolStatus?.primaryAccount || null,

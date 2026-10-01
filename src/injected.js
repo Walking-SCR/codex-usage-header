@@ -141,6 +141,7 @@
     },
   };
   let failoverSwitching = false;
+  let failoverRequestId = null;
   let failoverTimeoutTimer = null;
   let rebalanceRequestId = null;
   let rebalanceFeedbackTimer = null;
@@ -156,6 +157,7 @@
   let popoverHideTimer = null;
   let refreshState = 'idle';
   let refreshRequestId = null;
+  let refreshSources = { primary: 'idle', google: 'idle', tokens: 'idle' };
   let refreshStartedAt = 0;
   let refreshTimeoutTimer = null;
   let refreshSettleTimer = null;
@@ -271,6 +273,10 @@
       noData: '暂无数据',
       staleData: '数据可能已过期',
       buildingHistory: '正在整理历史用量',
+      scopeNote: '统计口径：基于本地会话日志统计。跨设备、未同步或已清理的历史日志不计入。',
+      copyDiagnostics: '复制脱敏诊断信息',
+      copiedDiagnostics: '诊断信息已复制',
+      partiallyRefreshed: '部分数据已更新',
     },
     'en-US': {
       title: 'Usage quota',
@@ -359,6 +365,10 @@
       noData: 'No data',
       staleData: 'Data may be stale',
       buildingHistory: 'Building usage history',
+      scopeNote: 'Scope: Based on local session logs. Logs from other devices, unsynced sessions, or cleared history are excluded.',
+      copyDiagnostics: 'Copy sanitized diagnostics',
+      copiedDiagnostics: 'Diagnostics copied',
+      partiallyRefreshed: 'Partially refreshed',
     },
   };
 
@@ -458,6 +468,105 @@
     }, 1800);
   }
 
+  let diagnosticsCopyStatus = 'idle';
+  let diagnosticsCopyTimer = null;
+
+  function classifyDiagnosticsError(error) {
+    if (!error) return 'NONE';
+    const str = String(error?.message || error?.kind || error || '').toLowerCase();
+    if (str.includes('timeout')) return 'TIMEOUT';
+    if (str.includes('auth') || str.includes('401') || str.includes('403')) return 'AUTH_ERROR';
+    if (str.includes('429') || str.includes('rate')) return 'RATE_LIMITED';
+    if (str.includes('500') || str.includes('502') || str.includes('503') || str.includes('server')) return 'SERVER_ERROR';
+    if (str.includes('protocol') || str.includes('mismatch')) return 'PROTOCOL_ERROR';
+    if (str.includes('network') || str.includes('econnrefused')) return 'NETWORK_ERROR';
+    return 'UNKNOWN_ERROR';
+  }
+
+  function buildSanitizedDiagnostics() {
+    const mountCount = typeof document !== 'undefined' ? document.querySelectorAll('codex-usage-header-host').length : 1;
+    const sourcePath = window.__codexUsageHeaderSource__ || 'codex-usage-header';
+    const appServerDiag = window.__codexUsageHeaderAppServerDiagnostics__ || {};
+
+    const codexStatus = usageState.status || 'unknown';
+    const codexLastUpdated = usageState.lastUpdated ? new Date(usageState.lastUpdated).toISOString() : 'none';
+    const codexErrorClass = classifyDiagnosticsError(usageState.error);
+
+    const anti = extendedUsageState.antigravity || {};
+    const googleEnabled = Boolean(settings.enableGoogleAiPro);
+    const googleAccountsCount = (anti.accounts || []).length;
+    const googleLastUpdated = anti.fetchedAt ? new Date(anti.fetchedAt).toISOString() : 'none';
+    const googleErrorClass = classifyDiagnosticsError(anti.error);
+
+    const tokens = extendedUsageState.tokens || {};
+    const tokensEnabled = Boolean(settings.enableTokenUsage);
+    const tokensStatus = tokens.status || 'unknown';
+    const tokensBackfilled = tokens.backfillComplete !== false;
+    const tokensFileCount = tokens.fileCount ?? (tokens.data?.files ? Object.keys(tokens.data.files).length : 'none');
+
+    const failoverMode = extendedUsageState.failover?.mode || 'openai';
+    const failoverState = extendedUsageState.failover?.lifecycle_state || 'ACTIVE';
+
+    const lines = [
+      '=== Codex Quota Header Diagnostics ===',
+      `Version: ${RUNTIME_VERSION}`,
+      `Source: ${sourcePath}`,
+      `Mount Instances: ${mountCount}`,
+      `Platform: ${typeof navigator !== 'undefined' ? navigator.platform : 'unknown'}`,
+      `Failover Mode: ${failoverMode} (${failoverState})`,
+      '',
+      '[Data Source: Codex Primary]',
+      `  Status: ${codexStatus}`,
+      `  Last Success: ${codexLastUpdated}`,
+      `  Error Category: ${codexErrorClass}`,
+      `  App Server Connected: ${Boolean(appServerDiag.connected ?? true)}`,
+      '',
+      '[Data Source: Google AI Pro]',
+      `  Enabled: ${googleEnabled}`,
+      `  Accounts Detected: ${googleAccountsCount}`,
+      `  Last Success: ${googleLastUpdated}`,
+      `  Error Category: ${googleErrorClass}`,
+      '',
+      '[Data Source: Token Engine]',
+      `  Enabled: ${tokensEnabled}`,
+      `  Status: ${tokensStatus}`,
+      `  Backfill Complete: ${tokensBackfilled}`,
+      `  Tracked Files: ${tokensFileCount}`,
+      `  Coverage Start: ${tokens.earliestRecordedDate || 'none'}`,
+    ];
+    return lines.join('\n');
+  }
+
+  async function copySanitizedDiagnostics() {
+    const success = await copyTextToClipboard(buildSanitizedDiagnostics());
+    diagnosticsCopyStatus = success ? 'success' : 'error';
+    if (diagnosticsCopyTimer) clearTimeout(diagnosticsCopyTimer);
+    if (popover?.classList.contains('is-visible')) {
+      renderPopover();
+      positionPopover();
+    }
+    diagnosticsCopyTimer = setTimeout(() => {
+      diagnosticsCopyStatus = 'idle';
+      diagnosticsCopyTimer = null;
+      if (popover?.classList.contains('is-visible')) {
+        renderPopover();
+      }
+    }, 1800);
+  }
+
+  function finishFailoverFeedback(state, commandId = null) {
+    if (commandId && commandId !== failoverRequestId) return false;
+    if (failoverTimeoutTimer) clearTimeout(failoverTimeoutTimer);
+    failoverTimeoutTimer = null;
+    failoverSwitching = false;
+    failoverRequestId = null;
+    if (popover?.classList.contains('is-visible')) {
+      renderPopover();
+      positionPopover();
+    }
+    return true;
+  }
+
   function finishRebalanceFeedback(state, commandId = null) {
     if (commandId && commandId !== rebalanceRequestId) return false;
     if (rebalanceFeedbackTimer) clearTimeout(rebalanceFeedbackTimer);
@@ -479,9 +588,15 @@
   }
 
   function applyCommandAck(ack = {}) {
-    if (ack.kind !== 'rebalance' || ack.id !== rebalanceRequestId) return false;
-    finishRebalanceFeedback(ack.success ? 'success' : 'error', ack.id);
-    return true;
+    if (ack.kind === 'rebalance' && ack.id === rebalanceRequestId) {
+      finishRebalanceFeedback(ack.success ? 'success' : 'error', ack.id);
+      return true;
+    }
+    if (ack.kind === 'toggleFailoverMode' && ack.id === failoverRequestId) {
+      finishFailoverFeedback(ack.success ? 'success' : 'error', ack.id);
+      return true;
+    }
+    return false;
   }
 
   function persistSettings() {
@@ -702,6 +817,7 @@
       if (requestAtSettle !== refreshRequestId) return;
       clearRefreshTimers();
       refreshState = nextState;
+      refreshSources = { primary: 'idle', google: 'idle', tokens: 'idle' };
       usageState.error = nextState === 'error' ? (message || t('refreshFailed')) : null;
       renderAll();
       refreshSettleTimer = setTimeout(() => {
@@ -717,6 +833,24 @@
     else complete();
   }
 
+  function checkRefreshSettlement() {
+    if (refreshState !== 'loading') return;
+    const needed = [];
+    needed.push(refreshSources.primary);
+    if (settings.enableGoogleAiPro) needed.push(refreshSources.google);
+    if (settings.enableTokenUsage) needed.push(refreshSources.tokens);
+    if (needed.some(s => s === 'loading')) return;
+    const allSuccess = needed.every(s => s === 'success');
+    const allFailed = needed.every(s => s === 'error');
+    if (allSuccess) {
+      settleRefresh('success');
+    } else if (allFailed) {
+      settleRefresh('error', t('refreshFailed'));
+    } else {
+      settleRefresh('success', t('partiallyRefreshed'));
+    }
+  }
+
   function requestUsage({ manual = false } = {}) {
     const now = Date.now();
     if (manual) {
@@ -726,6 +860,11 @@
       refreshStartedAt = performance.now();
       refreshRequestId = emitCommand('refresh', {}, true);
       refreshState = 'loading';
+      refreshSources = {
+        primary: 'loading',
+        google: settings.enableGoogleAiPro ? 'loading' : 'idle',
+        tokens: settings.enableTokenUsage ? 'loading' : 'idle',
+      };
       usageState.error = null;
       renderAll();
       refreshTimeoutTimer = setTimeout(() => settleRefresh('error', t('refreshTimeout')), CONFIG.refreshTimeoutMs);
@@ -740,8 +879,9 @@
     if (!normalized) return false;
     usageState = normalized;
     renderAll();
-    if (refreshState === 'loading' && (metadata.requestId === refreshRequestId || !metadata.requestId)) {
-      settleRefresh('success');
+    if (refreshState === 'loading' && metadata.requestId === refreshRequestId) {
+      refreshSources.primary = 'success';
+      checkRefreshSettlement();
     }
     return true;
   }
@@ -965,6 +1105,11 @@
         copyTokenSummary().catch(() => {});
         return;
       }
+      const copyDiag = path.find(node => node?.classList?.contains('quota-diagnostics-copy-btn') || node?.closest?.('.quota-diagnostics-copy-btn'));
+      if (copyDiag) {
+        copySanitizedDiagnostics().catch(() => {});
+        return;
+      }
       const failoverBtn = path.find(node => node?.classList?.contains('failover-toggle-btn') || node?.closest?.('.failover-toggle-btn'));
       if (failoverBtn) {
         if (failoverSwitching) return;
@@ -972,11 +1117,12 @@
         if (failoverTimeoutTimer) clearTimeout(failoverTimeoutTimer);
         failoverTimeoutTimer = setTimeout(() => {
           failoverSwitching = false;
+          failoverRequestId = null;
           failoverTimeoutTimer = null;
           renderPopover();
           positionPopover();
         }, 15000);
-        emitCommand('toggleFailoverMode', {});
+        failoverRequestId = emitCommand('toggleFailoverMode', {}, true);
         renderPopover();
         positionPopover();
         return;
@@ -1129,6 +1275,7 @@
     popoverHideTimer = null;
     popoverState = 'closed';
     tokenModelMenuOpen = false;
+    if (popover) popover.__lastMarkup = null;
     popover?.classList.remove('is-visible');
     popover?.setAttribute('aria-hidden', 'true');
     updateExpanded(false);
@@ -1387,6 +1534,22 @@
       + '</div>';
   }
 
+  function renderDiagnosticsButton(dark, isZh) {
+    const diagLabel = isZh ? '复制脱敏诊断信息' : 'Copy Sanitized Diagnostics';
+    const diagCopied = isZh ? '已复制诊断信息' : 'Diagnostics Copied';
+    const diagFailed = isZh ? '复制失败' : 'Copy Failed';
+    const label = diagnosticsCopyStatus === 'success' ? diagCopied : diagnosticsCopyStatus === 'error' ? diagFailed : diagLabel;
+    const diagSvg = '<svg class="icon diagnostics-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="2.5" width="10" height="11.5" rx="1.5"/><path d="M6 1.5h4v2H6z"/><path d="M5.5 6.5h5M5.5 9.5h5M5.5 12.5h3"/></svg>';
+    const icon = diagnosticsCopyStatus === 'success'
+      ? '<span class="diagnostics-feedback-icon" style="color:#34C759;font-weight:700">✓</span>'
+      : diagnosticsCopyStatus === 'error'
+        ? '<span class="diagnostics-feedback-icon" style="color:#FF3B30;font-weight:700">!</span>'
+        : diagSvg;
+    return '<button type="button" class="quota-icon-btn quota-diagnostics-copy-btn' + (diagnosticsCopyStatus === 'success' ? ' is-copied' : diagnosticsCopyStatus === 'error' ? ' is-error' : '') + '" aria-label="' + esc(label) + '" title="' + esc(label) + '">'
+      + icon
+      + '</button>';
+  }
+
   function renderExtendedUsage(dark) {
     const isZh = settings.locale === 'zh-CN';
     const anti = extendedUsageState.antigravity || {};
@@ -1551,6 +1714,14 @@
       const tokenCopyStatus = extendedUsageState.copyStatus || 'idle';
       const copyButton = '<button type="button" class="quota-token-copy-btn" data-state="' + tokenCopyStatus + '" aria-label="' + esc(t(tokenCopyStatus === 'success' ? 'copiedSummary' : tokenCopyStatus === 'error' ? 'copyFailed' : 'copySummary')) + '" title="' + esc(t(tokenCopyStatus === 'success' ? 'copiedSummary' : tokenCopyStatus === 'error' ? 'copyFailed' : 'copySummary')) + '">' + copySvg + '<span class="quota-token-copy-label">' + esc(tokenCopyStatus === 'success' ? t('copiedSummary') : tokenCopyStatus === 'error' ? t('copyFailed') : t('copySummary')) + '</span></button>';
 
+      const tokensData = extendedUsageState.tokens || {};
+      const earliest = tokensData.earliestRecordedDate || (tokensData.coverageStartedAt ? toShanghaiDate(tokensData.coverageStartedAt) : null);
+      const isBackfilled = tokensData.backfillComplete !== false;
+      const scopeText = isZh
+        ? ('统计范围：基于本地会话日志' + (earliest ? '（最早 ' + earliest + '）' : '') + ' · ' + (isBackfilled ? '历史回填已完成' : '历史回填整理中') + ' · 跨设备或已清理日志不计入')
+        : ('Scope: Local session logs' + (earliest ? ' (from ' + earliest + ')' : '') + ' · ' + (isBackfilled ? 'Backfill complete' : 'Backfill in progress') + ' · Excludes other devices/purged logs');
+      const tokenScopeNote = '<div class="token-scope-footnote">' + esc(scopeText) + '</div>';
+
       tokenSection = '<div class="card-section quota-extension-section" data-section="tokens">'
         + '<div class="quota-extension-header has-rows">'
         + '<div class="quota-extension-title-wrap">'
@@ -1561,6 +1732,7 @@
         + '<div class="quota-token-controls">' + rangeTabs + modelSelectorMarkup + '</div>'
         + '</div>'
         + tokenContent
+        + tokenScopeNote
         + '</div>';
     }
 
@@ -1727,7 +1899,9 @@
     const docEmptySvg = '<svg width="22" height="24" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M5 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5zm3 5a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1zm0 4a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1zm0 4a1 1 0 0 1 1-1h4a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1z"/></svg>';
 
     let geminiContent = '';
-    if (!accounts.length || !activeRows || activeRows.length === 0) {
+    if (!accounts.length) {
+      geminiContent = renderEmptyState(docEmptySvg, t('noGoogleAccounts'));
+    } else if (!activeRows || activeRows.length === 0) {
       geminiContent = renderEmptyState(docEmptySvg, t('noData'));
     } else if (visibleProviderRows.length) {
         geminiContent = '<div class="quota-extension-rows">'
@@ -1735,7 +1909,7 @@
             const color = getQuotaColor(row.remainingPercent);
             const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
               ? row.remainingPercent + '%'
-              : '0%';
+              : '—';
             const countdownStr = formatDynamicCountdown(row, isZh);
             const resetInfo = row.unavailable ? esc(t('noData')) : esc(countdownStr);
 
@@ -1754,9 +1928,10 @@
 
     const sparkleSvg = designIcon('sparkle', 'section-icon');
 
-    const maskButton = '<button type="button" class="account-mask-toggle-btn' + (settings.maskAccountNames ? ' is-active' : '') + '" aria-label="' + esc(t('toggleAccountMask')) + '" title="' + esc(t('toggleAccountMask')) + '">'
+    const maskButton = accounts.length ? ('<button type="button" class="account-mask-toggle-btn' + (settings.maskAccountNames ? ' is-active' : '') + '" aria-label="' + esc(t('toggleAccountMask')) + '" title="' + esc(t('toggleAccountMask')) + '">'
       + designIcon('eye')
-      + '</button>';
+      + '</button>') : '';
+    const claudeToggle = visibleProviderRows.length ? ('<button type="button" class="quota-extension-toggle" aria-label="' + esc(t('toggleClaudeRows')) + '" title="' + esc(t('toggleClaudeRows')) + '" aria-expanded="' + !claudeGptCollapsed + '">' + chevronSvg + '</button>') : '';
     geminiSection = '<div class="card-section quota-extension-section">'
       + '<div class="quota-extension-header' + (visibleProviderRows.length ? ' has-rows' : '') + '">'
       + '<div class="quota-extension-title-wrap">'
@@ -1767,7 +1942,7 @@
       + '</div>'
       + '<div class="quota-extension-header-actions">'
       + accountTabsHtml
-      + '<button type="button" class="quota-extension-toggle" aria-label="' + esc(t('toggleClaudeRows')) + '" title="' + esc(t('toggleClaudeRows')) + '" aria-expanded="' + !claudeGptCollapsed + '">' + chevronSvg + '</button>'
+      + claudeToggle
       + '</div>'
       + '</div>'
       + rebalanceTooltipHtml
@@ -1891,12 +2066,12 @@
       '.lang-opt{color:' + (dark ? '#8E8E93' : '#8E8E93') + ';font-weight:500;padding:1px 3px;border-radius:4px;transition:all .15s ease}',
       '.lang-opt.is-active{color:#007AFF;font-weight:700}',
       '.lang-sep{color:' + (dark ? 'rgba(255,255,255,.2)' : 'rgba(0,0,0,.15)') + ';font-size:10.5px}',
-      '.card-refresh,.header-module-toggle{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
-      '.header-module-toggle:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
+      '.card-refresh,.header-module-toggle,.quota-diagnostics-copy-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
+      '.header-module-toggle:hover,.quota-diagnostics-copy-btn:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
       '.header-module-toggle.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
-      '.card-refresh,.header-module-toggle{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';color:' + (dark ? '#8E8E93' : '#8E8E93') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
-      '.header-module-toggle:hover{background:' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.07)') + ';color:' + (dark ? '#FFFFFF' : '#1D1D1F') + '}',
-      '.header-module-toggle.is-active{background:' + (dark ? 'rgba(10,132,255,.20)' : 'rgba(0,122,255,.10)') + ';border-color:' + (dark ? 'rgba(10,132,255,.45)' : 'rgba(0,122,255,.30)') + ';color:#007AFF}',
+      '.quota-diagnostics-copy-btn.is-copied{color:#34C759;border-color:' + (dark ? 'rgba(52,199,89,.4)' : 'rgba(52,199,89,.3)') + ';background:' + (dark ? 'rgba(52,199,89,.15)' : 'rgba(52,199,89,.08)') + '}',
+      '.quota-diagnostics-copy-btn.is-error{color:#FF3B30;border-color:' + (dark ? 'rgba(255,59,48,.4)' : 'rgba(255,59,48,.3)') + ';background:' + (dark ? 'rgba(255,59,48,.15)' : 'rgba(255,59,48,.08)') + '}',
+      '.token-scope-footnote{margin-top:10px;padding-top:8px;border-top:1px solid ' + (dark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.05)') + ';font-size:11px;line-height:1.45;color:' + (dark ? '#8E8E93' : '#6B7280') + ';word-break:break-all}',
       '.failover-toggle-wrap{position:relative;display:inline-flex;align-items:center}',
       '.failover-toggle-btn{width:28px;height:28px;padding:0;border-radius:8px;border:1px solid ' + (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.08)') + ';background:' + (dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.03)') + ';cursor:pointer;display:grid;place-items:center;transition:all .15s ease}',
       '.failover-toggle-btn.is-external{background:' + (dark ? 'rgba(122,90,248,.20)' : 'rgba(122,90,248,.10)') + ';border-color:' + (dark ? 'rgba(122,90,248,.50)' : 'rgba(122,90,248,.35)') + ';color:#7A5AF8}',
@@ -2067,6 +2242,7 @@
       + moduleButton('google', 'sparkle', t('toggleGoogle'), settings.enableGoogleAiPro)
       + moduleButton('tokens', 'tokenChart', t('toggleStats'), settings.enableTokenUsage)
       + renderFailoverToggleButton(dark, isZh)
+      + renderDiagnosticsButton(dark, isZh)
       + '<button type="button" class="quota-icon-btn card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + designIcon('refresh') + '</button>'
       + '</div>'
       + '</div>'
@@ -2076,15 +2252,98 @@
       + '</div>';
   }
 
+  const safeEscapeSelector = val => (typeof CSS !== 'undefined' && CSS?.escape) ? CSS.escape(String(val)) : String(val).replace(/["\\]/g, '\\$&');
+
+  function getSemanticFocusKey(target) {
+    if (!target || typeof document === 'undefined') return null;
+    const active = document.activeElement;
+    if (!active || !target.contains(active)) return null;
+
+    if (active.dataset?.account) return { type: 'selector', value: 'button[data-account="' + safeEscapeSelector(active.dataset.account) + '"]' };
+    if (active.dataset?.range) return { type: 'selector', value: 'button[data-range="' + safeEscapeSelector(active.dataset.range) + '"]' };
+    if (active.dataset?.model) return { type: 'selector', value: 'button[data-model="' + safeEscapeSelector(active.dataset.model) + '"]' };
+    if (active.dataset?.module) return { type: 'selector', value: 'button[data-module="' + safeEscapeSelector(active.dataset.module) + '"]' };
+    if (active.dataset?.lang) return { type: 'selector', value: 'button[data-lang="' + safeEscapeSelector(active.dataset.lang) + '"]' };
+    if (active.classList.contains('card-refresh')) return { type: 'selector', value: '.card-refresh' };
+    if (active.classList.contains('failover-toggle-btn')) return { type: 'selector', value: '.failover-toggle-btn' };
+    if (active.classList.contains('quota-diagnostics-copy-btn')) return { type: 'selector', value: '.quota-diagnostics-copy-btn' };
+    if (active.classList.contains('quota-token-copy-btn')) return { type: 'selector', value: '.quota-token-copy-btn' };
+    if (active.classList.contains('quota-rebalance-pill-btn')) return { type: 'selector', value: '.quota-rebalance-pill-btn' };
+    if (active.classList.contains('quota-extension-model-button')) return { type: 'selector', value: '.quota-extension-model-button' };
+    if (active.classList.contains('account-mask-toggle-btn')) return { type: 'selector', value: '.account-mask-toggle-btn' };
+    if (active.classList.contains('quota-extension-toggle')) return { type: 'selector', value: '.quota-extension-toggle' };
+    if (active.classList.contains('token-folded-toggle')) return { type: 'selector', value: '.token-folded-toggle' };
+
+    const index = [...target.querySelectorAll('button,[tabindex]')].indexOf(active);
+    return index >= 0 ? { type: 'index', value: index } : null;
+  }
+
+  function restoreSemanticFocus(target, focusKey) {
+    if (!target || !focusKey) return false;
+    try {
+      if (focusKey.type === 'selector') {
+        const el = target.querySelector(focusKey.value);
+        if (el) {
+          el.focus({ preventScroll: true });
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  const SCROLL_CONTAINERS = [
+    '.popover-shell',
+    '.quota-extension-model-menu',
+    '.voucher-scroll-track',
+    '.quota-extension-account-tabs',
+    '.quota-extension-rows',
+  ];
+
+  function getScrollOffsets(target) {
+    if (!target) return [];
+    const offsets = [];
+    for (const sel of SCROLL_CONTAINERS) {
+      const el = target.querySelector(sel);
+      if (el && (el.scrollTop > 0 || el.scrollLeft > 0)) {
+        offsets.push({ sel, top: el.scrollTop, left: el.scrollLeft });
+      }
+    }
+    return offsets;
+  }
+
+  function restoreScrollOffsets(target, offsets) {
+    if (!target || !offsets?.length) return;
+    for (const { sel, top, left } of offsets) {
+      const el = target.querySelector(sel);
+      if (el) {
+        el.scrollTop = top;
+        el.scrollLeft = left;
+      }
+    }
+  }
+
   function renderPopover() {
     const target = ensurePopover();
-    const previousScroll = target.querySelector('.popover-shell')?.scrollTop || 0;
-    const previousFocusIndex = [...target.querySelectorAll('button,[tabindex]')].indexOf(document.activeElement);
     const dark = isDarkAppearance();
-    target.innerHTML = popoverMarkup(dark);
-    const shell = target.querySelector('.popover-shell');
-    if (shell) shell.scrollTop = previousScroll;
-    if (previousFocusIndex >= 0) target.querySelectorAll('button,[tabindex]')[previousFocusIndex]?.focus({ preventScroll: true });
+    const nextMarkup = popoverMarkup(dark);
+
+    // 数据不变不重绘
+    if (target.__lastMarkup === nextMarkup) {
+      return;
+    }
+
+    const previousScrollOffsets = getScrollOffsets(target);
+    const previousFocusKey = getSemanticFocusKey(target);
+    const previousFocusIndex = [...target.querySelectorAll('button,[tabindex]')].indexOf(document.activeElement);
+
+    target.innerHTML = nextMarkup;
+    target.__lastMarkup = nextMarkup;
+
+    restoreScrollOffsets(target, previousScrollOffsets);
+    if (!restoreSemanticFocus(target, previousFocusKey) && previousFocusIndex >= 0) {
+      target.querySelectorAll('button,[tabindex]')[previousFocusIndex]?.focus({ preventScroll: true });
+    }
   }
 
   function baseModeForWidth(width) {
@@ -2791,6 +3050,7 @@
         failoverTimeoutTimer = null;
       }
       failoverSwitching = false;
+      failoverRequestId = null;
     }
     if (payload.tokens && typeof payload.tokens === 'object') {
       const savedRange = extendedUsageState.tokens.selectedRange ||
@@ -2809,6 +3069,19 @@
         persistTokenModel('all');
         tokenModelMenuOpen = false;
       }
+    }
+    if (refreshState === 'loading') {
+      if (settings.enableGoogleAiPro && refreshSources.google === 'loading') {
+        if (!payload.inFlight?.gemini) {
+          refreshSources.google = payload.antigravity?.error ? 'error' : 'success';
+        }
+      }
+      if (settings.enableTokenUsage && refreshSources.tokens === 'loading') {
+        if (!payload.inFlight?.tokens) {
+          refreshSources.tokens = payload.tokens?.error ? 'error' : 'success';
+        }
+      }
+      checkRefreshSettlement();
     }
     if (staleIndicatorText() !== previousStatus) renderHost();
     if (popover && popover.classList.contains('is-visible')) {
