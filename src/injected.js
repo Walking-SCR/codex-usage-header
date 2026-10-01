@@ -2115,10 +2115,9 @@
     if (!element) return 520;
     const header = element.closest('header') || element.closest('[data-app-shell-header-toolbar="true"]') || element.closest('[role="toolbar"]') || document.querySelector('header');
     const headerRect = visibleRect(header);
-    const actionGroup = element.parentElement;
-    const newChat = element.dataset?.placement === 'new-chat' || element.dataset?.placement === 'new-chat-right';
     const chat = element.dataset?.placement === 'chat';
 
+    // 保留老版 app-shell chat placement 契约
     if (chat) {
       const referenceRect = visibleRect(element.nextElementSibling);
       const toolbar = header?.querySelector('[data-app-shell-header-toolbar="true"]')
@@ -2130,49 +2129,69 @@
       return Math.max(0, referenceRect.left - toolbarRect.left - titleNeed - 12);
     }
 
-    let toolbar = newChat ? header : actionGroup?.parentElement;
-    let toolbarRect = visibleRect(toolbar);
+    if (!headerRect || headerRect.width < 100) return 520;
 
-    const hasCodexShellToolbar = Boolean(header?.querySelector('[data-app-shell-header-toolbar="true"]')
-      || document.querySelector('[data-app-shell-header-toolbar="true"]'));
+    const hostRect = visibleRect(element);
+    const parent = element.parentElement;
 
-    // 核心修复：纯对话页面中（无 Codex 主工具栏），右侧按钮容器非常紧凑（仅约 160px）。
-    // 此时应回退到 header 容器进行真实可用空间计算，防止误判为 nano 模式。
-    if (!hasCodexShellToolbar && headerRect && headerRect.width >= 400) {
-      toolbar = header;
-      toolbarRect = headerRect;
-    }
-
-    if (!toolbarRect || !actionGroup) return 520;
-
-    const isTopHeader = (toolbar === header);
-    let titleNeed = 160;
-    if (isTopHeader && headerRect) {
-      let maxLeftRight = headerRect.left + 160;
-      const hostRect = visibleRect(element);
-      const hostLeft = hostRect ? hostRect.left : headerRect.right - 200;
-      const leftCandidates = [...header.querySelectorAll('button,a,[role="button"],[role="tab"],h1,h2,.title')].filter(isVisible);
-      for (const el of leftCandidates) {
-        if (element.contains(el)) continue;
-        const r = visibleRect(el);
-        if (r && r.right < hostLeft && r.width < headerRect.width * 0.6) {
-          if (r.right > maxLeftRight) maxLeftRight = r.right;
-        }
+    // 1. 查找右侧物理障碍边界 (Right Bound)
+    // 优先取紧邻的右侧元素，或右侧任何原生操作按钮/控制区的最左边缘
+    let rightBound = headerRect.right - 12;
+    if (element.nextElementSibling) {
+      const nextRect = visibleRect(element.nextElementSibling);
+      if (nextRect && nextRect.left > 0) {
+        rightBound = Math.min(rightBound, nextRect.left);
       }
-      titleNeed = Math.max(160, maxLeftRight - headerRect.left + 16);
-    } else if (!newChat) {
-      const titleRegion = [...toolbar.children].find(child => child !== actionGroup) || null;
-      titleNeed = measureTitleNeed(titleRegion);
+    }
+    const rightControl = header.querySelector('div[class*="justify-self-end"], div[class*="ms-auto"], .titlebar-right');
+    if (rightControl) {
+      const rcRect = visibleRect(rightControl);
+      if (rcRect && rcRect.left > 0 && rcRect.left < rightBound) {
+        rightBound = rcRect.left;
+      }
     }
 
-    const nativeRects = [...actionGroup.querySelectorAll('button,[role="button"]')].filter(button => !element.contains(button)).map(visibleRect).filter(Boolean);
-    const native = newChat
-      ? (visibleRect(element.nextElementSibling)?.width || 70)
-      : nativeRects.length
-        ? Math.max(...nativeRects.map(rect => rect.right)) - Math.min(...nativeRects.map(rect => rect.left))
-        : [...actionGroup.children].filter(child => child !== element).map(visibleRect).filter(Boolean).reduce((sum, rect) => sum + rect.width, 0);
+    // 2. 查找左侧物理占用边界 (Left Bound)
+    // 优先取紧邻的左侧兄弟元素（标题/标签栏容器）的右边缘
+    let leftBound = headerRect.left + 16;
+    if (element.previousElementSibling) {
+      const prevRect = visibleRect(element.previousElementSibling);
+      if (prevRect && prevRect.right > leftBound) {
+        leftBound = prevRect.right;
+      }
+    } else if (parent && parent !== header) {
+      let sibling = parent.previousElementSibling;
+      while (sibling) {
+        const sr = visibleRect(sibling);
+        if (sr && sr.right > leftBound) {
+          leftBound = sr.right;
+          break;
+        }
+        sibling = sibling.previousElementSibling;
+      }
+    }
 
-    return Math.max(0, toolbarRect.width - titleNeed - native - 32);
+    // 检查左侧固定导航栏（例如窗口红绿灯、返回前进、侧栏开关等）
+    const navLeft = header.querySelector('div[class*="min-w-max"], nav, .titlebar-left');
+    if (navLeft) {
+      const nlRect = visibleRect(navLeft);
+      if (nlRect && nlRect.right > leftBound) {
+        leftBound = nlRect.right;
+      }
+    }
+
+    // 3. 计算物理剩余可用空间
+    const rawPhysicalSpace = rightBound - leftBound;
+    // 留出 12px 安全微间隙，避免紧贴两侧元素
+    const physicalAvailable = Math.max(0, rawPhysicalSpace - 12);
+
+    // 4. 自愈防死锁机制：
+    // 如果组件当前已有宽度，且右侧存在可供舒展的空闲空间，可用宽度为物理间隙与扩展上限的较大者
+    const currentHostWidth = hostRect ? hostRect.width : 0;
+    const freeSpaceToRight = hostRect ? Math.max(0, rightBound - hostRect.right - 6) : 0;
+    const maxCanExpand = currentHostWidth + freeSpaceToRight;
+
+    return Math.max(0, Math.max(physicalAvailable, maxCanExpand));
   }
 
   function renderHost() {
@@ -2366,10 +2385,12 @@
       if (layoutFrame) cancelAnimationFrame(layoutFrame);
       layoutFrame = requestAnimationFrame(updateMode);
     });
+    if (host?.parentElement) resizeObserver.observe(host.parentElement);
+    if (host?.previousElementSibling) resizeObserver.observe(host.previousElementSibling);
     const toolbar = host?.parentElement?.parentElement;
     if (toolbar) resizeObserver.observe(toolbar);
-    const header = toolbar?.closest('header');
-    if (header && header !== toolbar) resizeObserver.observe(header);
+    const header = toolbar?.closest('header') || document.querySelector('header');
+    if (header && header !== toolbar && header !== host?.parentElement) resizeObserver.observe(header);
   }
 
   // __MOUNT_POINT_LOGIC_BEGIN__
