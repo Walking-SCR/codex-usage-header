@@ -98,10 +98,57 @@
  ## 快速安装与上手
  
  ### 运行环境要求
- - 操作系统：macOS
- - 运行环境：已安装 [Node.js](https://nodejs.org/)（v18 或更高版本）
- - 客户端：已安装 Codex 或 ChatGPT 桌面客户端（ChatGPT.app）
- 
+ - **macOS**：macOS 12+，已安装 [Node.js](https://nodejs.org/)（v18 或更高版本），ChatGPT.app 或 Codex.app
+ - **Windows (`windows` 分支)**：Windows 11 x64（Build 22000+），Node.js v18+，Store/MSIX 版 ChatGPT 或独立安装客户端
+
+---
+
+### Windows 快速安装与 P0 探针（`windows` 分支）
+
+#### 1. 运行 P0 可行性探针（推荐先验）
+由于 Windows 端 ChatGPT 官方分发主要基于 Store/MSIX 包形态，建议在测试机上先行运行探针，核验 Store 别名入口、127.0.0.1 CDP 端口绑定及 Webview DOM 顶栏可注入性：
+
+```powershell
+# 在 PowerShell 中执行探针
+.\bin\win-probe.ps1
+# 或通过 Node 直接运行
+node bin/win-probe.mjs
+```
+
+> **注**：若探针输出 `[STOP]`，表明检测到顶栏由原生 DWM/WinUI 标题栏独占而无法做 DOM 注入，将触发硬止损，避免破坏性入侵系统沙箱。
+
+#### 2. 一键安装
+在 PowerShell 中以当前普通用户权限运行（不建议以管理员权限运行，以保证 `%APPDATA%` 目录归属正确）：
+
+```powershell
+.\bin\install.ps1
+```
+
+安装程序会自动：
+1. 校验 Windows 11 x64 与 Node.js v18+ 运行时；
+2. 规范规划数据目录：设置保存在 `%APPDATA%\Codex Quota Header`（Roaming），Token 汇总与日志保存在 `%LOCALAPPDATA%\Codex Quota Header`（Local）；
+3. 部署核心插件至 `%USERPROFILE%\.codex\plugins\codex-usage-header`；
+4. 创建桌面与开始菜单快捷方式（通过后台无黑框脚本启动）；
+5. 自动运行 P0 探针进行环境复测。
+
+#### 3. 日常启动
+- **快捷方式**：双击桌面或开始菜单中的 **“ChatGPT (Quota Header)”**（已自动关联官方应用图标，后台无黑框常驻）；
+- **命令行 CLI**：直接运行 `codex-header`（支持 CMD 与 PowerShell，已自动部署至 `%USERPROFILE%\.local\bin`）；
+- **专用脚本**：支持 `.\bin\codex-header.cmd`（CMD）或 `.\bin\codex-header.ps1`（PowerShell）。
+
+#### 4. 安全卸载
+```powershell
+# 常规卸载（保留历史设置与 Token 汇总）
+.\bin\uninstall.ps1
+
+# 彻底清理（同时移除 %APPDATA% 与 %LOCALAPPDATA% 下的数据）
+.\bin\uninstall.ps1 -Purge
+```
+
+---
+
+### macOS 快速安装与上手
+
  ### 第一步：一键安装
  
  打开 Mac 终端，进入本插件目录并运行安装脚本：

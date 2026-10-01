@@ -19,6 +19,30 @@ assert.equal(discover(['/opt/custom/codex'], { findOnPath: () => '/opt/custom/co
 assert.equal(discover([], { findOnPath: () => '/missing/codex' }), undefined, 'PATH 输出仍须经过可执行校验');
 assert.ok(desktopExecutableCandidates({ home: '/users/test', processPaths: [] }).includes('/Applications/Codex.app/Contents/MacOS/Codex'));
 
+// Windows 候选可执行文件与 CLI 探测测试
+const winEnv = {
+  LOCALAPPDATA: 'C:\\Users\\testuser\\AppData\\Local',
+  ProgramFiles: 'C:\\Program Files',
+  'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+};
+const winCandidates = desktopExecutableCandidates({ platform: 'win32', env: winEnv, home: 'C:\\Users\\testuser' });
+assert.ok(winCandidates.includes('C:\\Users\\testuser\\AppData\\Local/Microsoft/WindowsApps/ChatGPT.exe'.replaceAll('/', '\\')));
+assert.ok(winCandidates.includes('C:\\Program Files/ChatGPT/ChatGPT.exe'.replaceAll('/', '\\')));
+
+const winDiscover = (paths, options = {}) => locateCodexBinary({
+  home: 'C:\\Users\\testuser',
+  platform: 'win32',
+  processPaths: [],
+  findOnPath: () => '',
+  runnable: path => paths.includes(path),
+  ...options,
+});
+const winCodexCmd = 'C:\\Users\\testuser/AppData/Roaming/npm/codex.cmd'.replaceAll('/', '\\');
+assert.equal(winDiscover([winCodexCmd]), winCodexCmd, 'Windows npm 全局路径定位');
+const winWhereOutput = 'C:\\Tools/codex.cmd\n'.replaceAll('/', '\\');
+assert.equal(winDiscover(['C:\\Tools/codex.cmd'.replaceAll('/', '\\')], { findOnPath: () => winWhereOutput }), 'C:\\Tools/codex.cmd'.replaceAll('/', '\\'), 'Windows where.exe 输出校验');
+
+
 let spawns = 0;
 const fixture = fileURLToPath(new URL('./fixtures/app-server-stub.mjs', import.meta.url));
 const client = new AppServerClient({ binaryPath: process.execPath, spawnProcess: (_binary, args, options) => {

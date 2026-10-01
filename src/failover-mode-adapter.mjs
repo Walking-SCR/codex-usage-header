@@ -11,6 +11,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
+import { getPluginInstallDir } from './platform-paths.mjs';
 
 const DEFAULT_STATE_PATH = join(
   homedir(),
@@ -19,7 +20,11 @@ const DEFAULT_STATE_PATH = join(
 
 const DEFAULT_SCRIPT_PATH = join(
   homedir(),
-  '.codex/skills/codex-autoheal-bridge/scripts/quota_failover.py'
+  '.codex',
+  'skills',
+  'codex-autoheal-bridge',
+  'scripts',
+  'quota_failover.py'
 );
 
 const DEFAULT_APP_PATH = join(
@@ -53,7 +58,8 @@ export function readFailoverStatus(options = {}) {
   try {
     const stat = statSync(statePath);
     const cached = statusCache.get(statePath);
-    if (cached && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    const fileId = stat.ino || `${stat.birthtimeMs || stat.ctimeMs || 0}`;
+    if (cached && cached.ino === fileId && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
       return cached.value;
     }
     const raw = readFileSync(statePath, 'utf8');
@@ -70,7 +76,7 @@ export function readFailoverStatus(options = {}) {
       resets_at_iso: data.resets_at_iso || data.last_analysis?.expected_recovery_at_iso || null,
       last_checked_at: data.last_checked_at || null,
     };
-    statusCache.set(statePath, { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, value });
+    statusCache.set(statePath, { ino: fileId, size: stat.size, mtimeMs: stat.mtimeMs, value });
     return value;
   } catch {
     return fallback;
@@ -81,6 +87,14 @@ export function readFailoverStatus(options = {}) {
  * 打开【Codex Quota Header】APP
  */
 export function launchCodexQuotaHeaderApp(options = {}) {
+  if (process.platform === 'win32') {
+    const pluginDir = options.pluginDir || getPluginInstallDir();
+    const launcher = join(pluginDir, 'src', 'launcher.mjs');
+    if (existsSync(launcher)) {
+      execFile(process.execPath, [launcher], { windowsHide: true }, () => {});
+    }
+    return;
+  }
   const appPath = options.appPath || DEFAULT_APP_PATH;
   if (existsSync(appPath)) {
     execFile('/usr/bin/open', [appPath], () => {});
@@ -96,7 +110,7 @@ export function launchCodexQuotaHeaderApp(options = {}) {
  */
 export function triggerToggleFailoverMode(options = {}) {
   const scriptPath = options.scriptPath || DEFAULT_SCRIPT_PATH;
-  const pythonBin = options.pythonBin || process.env.CODEX_BRIDGE_PYTHON || process.env.PYTHON || 'python3';
+  const pythonBin = options.pythonBin || process.env.CODEX_BRIDGE_PYTHON || process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 
   return new Promise((resolve) => {
     if (!existsSync(scriptPath)) {
@@ -106,7 +120,7 @@ export function triggerToggleFailoverMode(options = {}) {
     execFile(
       pythonBin,
       [scriptPath, 'toggle', '--apply', '--restart', '--no-watch'],
-      { timeout: 40000 },
+      { timeout: 40000, windowsHide: true },
       (error, stdout, stderr) => {
         // 模式切换命令若在脚本内部成功执行了 restart_codex，则无需重复唤醒；若未重启成功，做保底延迟拉起
         const output = String(stdout || '');

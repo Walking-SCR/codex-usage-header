@@ -53,46 +53,58 @@ function readImageDataUrl(name, extension, mimeType) {
 }
 
 export function locateExecutable() {
-  if (process.platform === 'darwin') {
-    const candidates = desktopExecutableCandidates();
-    return candidates.find(existsSync) ?? candidates[0];
-  }
-
-  if (process.platform === 'win32') {
-    const localAppData = process.env.LOCALAPPDATA || '';
-    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-    const candidates = [
-      join(localAppData, 'Programs', 'ChatGPT', 'ChatGPT.exe'),
-      join(programFiles, 'ChatGPT', 'ChatGPT.exe'),
-    ];
-    return candidates.find(existsSync) ?? candidates[0];
-  }
-
-  return null;
+  const candidates = desktopExecutableCandidates();
+  return candidates.find(existsSync) ?? candidates[0];
 }
 
 export function getDesktopAppProcessInfo(port = DEFAULT_PORT) {
-  if (process.platform !== 'darwin') return { running: false, hasCdpFlag: false };
-  const candidates = desktopExecutableCandidates();
-  try {
-    const processes = execFileSync('/bin/ps', ['-axww', '-o', 'command='], { encoding: 'utf8' });
-    const lines = processes.split('\n');
-    let running = false;
-    let hasCdpFlag = false;
-    for (const rawLine of lines) {
-      const command = rawLine.trim();
-      const isCandidate = candidates.some(candidate => command === candidate || command.startsWith(`${candidate} `));
-      if (isCandidate) {
-        running = true;
+  if (process.platform === 'darwin') {
+    const candidates = desktopExecutableCandidates();
+    try {
+      const processes = execFileSync('/bin/ps', ['-axww', '-o', 'command='], { encoding: 'utf8' });
+      const lines = processes.split('\n');
+      let running = false;
+      let hasCdpFlag = false;
+      for (const rawLine of lines) {
+        const command = rawLine.trim();
+        const isCandidate = candidates.some(candidate => command === candidate || command.startsWith(`${candidate} `));
+        if (isCandidate) {
+          running = true;
+          if (command.includes(`--remote-debugging-port=${port}`) || command.includes('--remote-debugging-port=')) {
+            hasCdpFlag = true;
+          }
+        }
+      }
+      return { running, hasCdpFlag };
+    } catch {
+      return { running: false, hasCdpFlag: false };
+    }
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      const script = 'Get-CimInstance Win32_Process -Filter "Name=\'ChatGPT.exe\' or Name=\'Codex.exe\'" | Select-Object -ExpandProperty CommandLine';
+      const output = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+        encoding: 'utf8',
+        timeout: 3000,
+      });
+      const lines = output.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      if (lines.length === 0) {
+        return { running: false, hasCdpFlag: false };
+      }
+      let hasCdpFlag = false;
+      for (const command of lines) {
         if (command.includes(`--remote-debugging-port=${port}`) || command.includes('--remote-debugging-port=')) {
           hasCdpFlag = true;
         }
       }
+      return { running: true, hasCdpFlag };
+    } catch {
+      return { running: false, hasCdpFlag: false };
     }
-    return { running, hasCdpFlag };
-  } catch {
-    return { running: false, hasCdpFlag: false };
   }
+
+  return { running: false, hasCdpFlag: false };
 }
 
 export function isDesktopAppRunning() {
@@ -468,6 +480,7 @@ function launchDesktopApp(executable, port) {
   ], {
     detached: true,
     stdio: 'ignore',
+    windowsHide: false,
   });
   child.unref();
 }
@@ -688,6 +701,7 @@ export async function startUsageMonitor(port = DEFAULT_PORT) {
   const child = spawn(process.execPath, ['--max-old-space-size=64', MONITOR_PATH, '--port', String(port)], {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
   });
   child.unref();
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -816,8 +830,13 @@ if (isDirectRun) {
   main().catch(error => {
     if (error.message === 'app_running_without_cdp') {
       console.error('[Codex Quota Header] ChatGPT/Codex is running without the injection channel.');
-      console.error('The window may be closed already, but the main ChatGPT process is still alive in the background.');
-      console.error('Quit it with Command+Q and wait until the main process disappears from Activity Monitor, then run codex-header again.');
+      if (process.platform === 'win32') {
+        console.error('The window may be closed, but ChatGPT is still running in the background or system tray.');
+        console.error('Please exit ChatGPT completely (right-click the tray icon to Quit or close via Task Manager), then run codex-header again.');
+      } else {
+        console.error('The window may be closed already, but the main ChatGPT process is still alive in the background.');
+        console.error('Quit it with Command+Q and wait until the main process disappears from Activity Monitor, then run codex-header again.');
+      }
       process.exitCode = 10;
     } else {
       console.error(`[Codex Quota Header] ${error.message}`);

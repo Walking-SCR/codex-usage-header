@@ -13,8 +13,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { getAccountHealth } from './account-health.mjs';
+import { getCliProxyApiAuthDir } from './platform-paths.mjs';
 
-const DEFAULT_AUTH_DIR = join(homedir(), '.cli-proxy-api');
+const DEFAULT_AUTH_DIR = getCliProxyApiAuthDir();
 const QUOTA_SNAPSHOT_NAME = 'quota-snapshot.json';
 const POOL_STATUS_NAME = 'pool-status.json';
 const poolStatusCache = new Map();
@@ -73,7 +74,9 @@ export function exportQuotaSnapshot(accounts = [], options = {}) {
     const payload = JSON.stringify(snapshot, null, 2);
     writeFileSync(tmpPath, payload, { mode: 0o600 });
     renameSync(tmpPath, snapshotPath);
-    chmodSync(snapshotPath, 0o600);
+    if (process.platform !== 'win32') {
+      try { chmodSync(snapshotPath, 0o600); } catch { /* ignore */ }
+    }
     return { ok: true, snapshotPath, count: Object.keys(snapshot.accounts).length };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -175,16 +178,20 @@ export function readPoolStatus(options = {}) {
 export function triggerRebalance(options = {}) {
   const scriptPath = options.scriptPath || join(
     homedir(),
-    '.codex/skills/codex-autoheal-bridge/scripts/antigravity_pool.py'
+    '.codex',
+    'skills',
+    'codex-autoheal-bridge',
+    'scripts',
+    'antigravity_pool.py'
   );
-  const pythonBin = options.pythonBin || process.env.CODEX_BRIDGE_PYTHON || process.env.PYTHON || 'python3';
+  const pythonBin = options.pythonBin || process.env.CODEX_BRIDGE_PYTHON || process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 
   return new Promise((resolve) => {
     if (!existsSync(scriptPath)) {
       return resolve({ ok: false, error: 'script_not_found', path: scriptPath });
     }
 
-    execFile(pythonBin, [scriptPath, 'rebalance', '--apply'], { timeout: 10000 }, (error, stdout, stderr) => {
+    execFile(pythonBin, [scriptPath, 'rebalance', '--apply'], { timeout: 10000, windowsHide: true }, (error, stdout, stderr) => {
       if (error) {
         return resolve({ ok: false, error: error.message, stderr });
       }

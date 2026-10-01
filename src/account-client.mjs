@@ -109,17 +109,30 @@ export class AppServerClient {
     if (!binary) throw new Error('codex_app_server_not_found');
 
     this.binaryPath = binary;
-    try { this.binaryVersion = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 2000 }).trim().slice(0, 100); } catch { this.binaryVersion = null; }
+    try {
+      const isCmdOrBat = process.platform === 'win32' && /\.(cmd|bat)$/i.test(binary);
+      this.binaryVersion = execFileSync(binary, ['--version'], {
+        encoding: 'utf8',
+        timeout: 2000,
+        windowsHide: true,
+        ...(isCmdOrBat ? { shell: true } : {}),
+      }).trim().slice(0, 100);
+    } catch { this.binaryVersion = null; }
     this.buffer = '';
     this.stderrTail = '';
     this.initialized = false;
 
     let child;
     try {
+      const isCmdOrBat = process.platform === 'win32' && /\.(cmd|bat)$/i.test(binary);
       child = this.spawnProcess(
         binary,
         [...this.binaryArgsPrefix, 'app-server', '--stdio'],
-        { stdio: ['pipe', 'pipe', 'pipe'] },
+        {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
+          ...(isCmdOrBat ? { shell: true } : {}),
+        },
       );
     } catch (error) {
       throw enrichError(

@@ -1,13 +1,13 @@
 /** 监控进程与启动器共用的单实例锁。 */
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getLockFilePath } from './platform-paths.mjs';
 
-export const MONITOR_LOCK_PATH = process.env.CODEX_USAGE_HEADER_LOCK
-  || join(tmpdir(), 'codex-usage-header-monitor.lock');
+export const MONITOR_LOCK_PATH = getLockFilePath();
 
 const ownedLocks = new Map();
 const pauseArray = new Int32Array(new SharedArrayBuffer(4));
@@ -39,7 +39,7 @@ export function isMonitorProcess(pid, installDir) {
   try {
     const command = process.platform === 'win32'
       ? execFileSync('powershell.exe', ['-NoProfile', '-Command',
-        `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`], { encoding: 'utf8' })
+        `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`], { encoding: 'utf8', timeout: 3000, windowsHide: true })
       : execFileSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
     const executable = command.trim().match(/^(?:"([^"]+)"|(\S+))/)?.[1]
       || command.trim().match(/^(?:"[^"]+"|(\S+))/)?.[1];
@@ -121,7 +121,15 @@ export function acquireMonitorLock({ installDir = null, lockPath = MONITOR_LOCK_
           try { unlinkSync(lockPath); }
           catch (error) { if (error?.code !== 'ENOENT') throw error; }
         }
-        linkSync(candidate, lockPath);
+        try {
+          linkSync(candidate, lockPath);
+        } catch (linkError) {
+          if (process.platform === 'win32' || linkError?.code === 'EXDEV' || linkError?.code === 'EPERM') {
+            renameSync(candidate, lockPath);
+          } else {
+            throw linkError;
+          }
+        }
         ownedLocks.set(lockPath, ownerId);
         return { acquired: true, pid: process.pid, codeHash };
       } finally { rmdirSync(reclaim); }

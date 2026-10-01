@@ -23,6 +23,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { exportQuotaSnapshot, readPoolStatus } from './dynamic-priority-adapter.mjs';
 import { getAccountHealth } from './account-health.mjs';
+import { getDataDir, getRollupStoragePath, getSessionsDir } from './platform-paths.mjs';
 
 export const SCHEMA_VERSION = 1;
 export const TIMEZONE = 'Asia/Shanghai';
@@ -717,9 +718,9 @@ async function mapWithConcurrency(items, limit, mapper) {
 
 export class TokenRollupEngine {
   constructor(options = {}) {
-    this.baseDir = options.baseDir || join(homedir(), 'Library/Application Support/Codex Quota Header');
-    this.storagePath = options.storagePath || join(this.baseDir, 'token-rollup.json');
-    this.sessionsDir = options.sessionsDir || join(homedir(), '.codex/sessions');
+    this.baseDir = options.baseDir || getDataDir();
+    this.storagePath = options.storagePath || getRollupStoragePath();
+    this.sessionsDir = options.sessionsDir || getSessionsDir();
     this.data = {
       schemaVersion: SCHEMA_VERSION,
       timezone: options.timezone || TIMEZONE,
@@ -796,7 +797,9 @@ export class TokenRollupEngine {
       const json = JSON.stringify(this.data, null, 2);
       writeFileSync(tmpPath, json, { mode: 0o600 });
       renameSync(tmpPath, this.storagePath);
-      chmodSync(this.storagePath, 0o600);
+      if (process.platform !== 'win32') {
+        try { chmodSync(this.storagePath, 0o600); } catch { /* ignore */ }
+      }
       this.dirty = false;
       this.lastSavedAt = now;
     } catch { /* 忽略磁盘写入错误 */ }
@@ -900,9 +903,10 @@ export class TokenRollupEngine {
     }
 
     let record = this.data.files[filePath];
-    if (!record || record.inode !== stat.ino || stat.size < (record.offset || 0)) {
+    const fileId = stat.ino || `${stat.birthtimeMs || stat.ctimeMs || 0}`;
+    if (!record || record.inode !== fileId || stat.size < (record.offset || 0)) {
       record = {
-        inode: stat.ino,
+        inode: fileId,
         offset: 0,
         lastTotal: undefined,
         currentModel: 'unknown',

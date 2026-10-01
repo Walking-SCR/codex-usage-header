@@ -1,73 +1,111 @@
- # Codex Quota Header - 安全卸载（PowerShell）
- #
- # 顺序：先停止已核实属于本插件的监控进程，再删除安装文件。
- # 默认保留设置与统计数据（-Purge 才彻底清除）。
- param([switch]$Purge)
- $ErrorActionPreference = "SilentlyContinue"
+# Codex Quota Header - 安全卸载程序（PowerShell）
+#
+# 原则：
+# 1. 先优雅停止核实属于本插件的 Node.js 监控进程，绝不伤害用户正在使用的 ChatGPT 客户端；
+# 2. 清理桌面与开始菜单快捷方式；
+# 3. 删除插件安装目录；
+# 4. 默认保留设置与统计数据（使用 -Purge 开关才彻底清理 %APPDATA% 和 %LOCALAPPDATA%）。
 
- Write-Host "=== Uninstalling Codex Quota Header (Windows) ===" -ForegroundColor Cyan
+[CmdletBinding()]
+param(
+    [switch]$Purge
+)
 
- $PluginDir = Join-Path $env:USERPROFILE ".codex\plugins\codex-usage-header"
- $DataDir = Join-Path $env:APPDATA "Codex Quota Header"
- $LockFile = Join-Path $env:TEMP "codex-usage-header-monitor.lock"
- $MonitorPath = Join-Path $PluginDir "src\monitor.mjs"
+$ErrorActionPreference = "SilentlyContinue"
 
- # 与 macOS 一样，先通过插件自己的启动器摘除运行中的组件。
- $Node = Get-Command node.exe -ErrorAction SilentlyContinue
- $Launcher = Join-Path $PluginDir "src\launcher.mjs"
- if ($Node -and (Test-Path $Launcher)) {
-     & $Node.Source $Launcher --teardown | Out-Null
- }
+Write-Host "`n=== 卸载 Codex Quota Header (Windows) ===" -ForegroundColor Cyan
 
- # 1. 只停止命令行中包含本插件 monitor.mjs 的 node 进程（逐个核实，不误杀）
- $stopped = 0
- Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ForEach-Object {
-     $cmd = $_.CommandLine
-     if ($cmd -and $cmd.IndexOf($MonitorPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-         Stop-Process -Id $_.ProcessId -Force
-         $stopped++
-         Write-Host "✓ Stopped plugin monitor (pid $($_.ProcessId))." -ForegroundColor Green
-     }
- }
- if ($stopped -eq 0) { Write-Host "- No plugin monitor process found." -ForegroundColor Gray }
+$PluginDir = Join-Path $env:USERPROFILE ".codex\plugins\codex-usage-header"
+$RoamingDir = Join-Path $env:APPDATA "Codex Quota Header"
+$LocalDataDir = Join-Path $env:LOCALAPPDATA "Codex Quota Header"
+$tempDir = if ($env:TEMP) { $env:TEMP } elseif ($env:TMP) { $env:TMP } else { "C:\Temp" }
+$LockFile = Join-Path $tempDir "codex-usage-header-monitor.lock"
+$MonitorPath = Join-Path $PluginDir "src\monitor.mjs"
 
- # 2. 锁文件：确认无活进程持有后再清理
- $lockGone = $true
- if (Test-Path $LockFile) {
-     try {
-         $lockPid = (Get-Content $LockFile -Raw | ConvertFrom-Json).pid
-     } catch {
-         $lockPid = (Get-Content $LockFile -Raw).Trim()
-     }
-     if ($lockPid -and (Get-Process -Id $lockPid -ErrorAction SilentlyContinue)) {
-         Write-Host "! Lock held by live process ($lockPid); left untouched." -ForegroundColor Yellow
-         $lockGone = $false
-     } else {
-         Remove-Item -Path $LockFile -Force
-     }
- }
- if ($lockGone) { Write-Host "- Monitor lock cleaned." -ForegroundColor Gray }
+# 1. 尝试调用启动器优雅拆卸
+$Node = Get-Command node.exe -ErrorAction SilentlyContinue
+$Launcher = Join-Path $PluginDir "src\launcher.mjs"
+if ($Node -and (Test-Path $Launcher)) {
+    try {
+        & $Node.Source $Launcher --teardown | Out-Null
+    } catch {}
+}
 
- # 3. 删除安装文件
- if (Test-Path $PluginDir) {
-     Remove-Item -Path $PluginDir -Recurse -Force
-     Write-Host "✓ Removed plugin directory." -ForegroundColor Green
- }
+# 2. 逐一核实并停止属于本插件的 monitor.mjs node 进程（绝不误杀其他 Node 进程或 ChatGPT）
+$stopped = 0
+try {
+    Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ForEach-Object {
+        $cmd = $_.CommandLine
+        if ($cmd -and ($cmd.IndexOf($MonitorPath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $cmd.IndexOf("src/monitor.mjs", [StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            $stopped++
+            Write-Host "✓ 已停止插件监控器 (PID: $($_.ProcessId))" -ForegroundColor Green
+        }
+    }
+} catch {}
 
- $ShortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "ChatGPT (Quota Header).lnk"
- if (Test-Path $ShortcutPath) {
-     Remove-Item -Path $ShortcutPath -Force
-     Write-Host "✓ Removed desktop shortcut." -ForegroundColor Green
- }
+if ($stopped -eq 0) {
+    Write-Host "- 未发现运行中的插件监控进程" -ForegroundColor Gray
+}
 
- # 4. 数据：默认保留，-Purge 才删除
- if ($Purge) {
-     if (Test-Path $DataDir) {
-         Remove-Item -Path $DataDir -Recurse -Force
-         Write-Host "✓ Purged settings and statistics." -ForegroundColor Green
-     }
- } else {
-     Write-Host "✓ Kept settings and statistics in $DataDir (use -Purge to remove)." -ForegroundColor Gray
- }
+# 3. 锁文件核验与清理
+$lockGone = $true
+if (Test-Path $LockFile) {
+    try {
+        $lockContent = Get-Content $LockFile -Raw
+        $lockPid = ($lockContent | ConvertFrom-Json).pid
+    } catch {
+        $lockPid = $lockContent.Trim()
+    }
+    if ($lockPid -and (Get-Process -Id $lockPid -ErrorAction SilentlyContinue)) {
+        Write-Host "! 锁文件正被活动进程 ($lockPid) 持有；保留锁文件" -ForegroundColor Yellow
+        $lockGone = $false
+    } else {
+        Remove-Item -Path $LockFile -Force -ErrorAction SilentlyContinue
+    }
+}
+if ($lockGone) {
+    Write-Host "- 单实例监控锁已清理" -ForegroundColor Gray
+}
 
- Write-Host "🎉 Uninstallation complete." -ForegroundColor Cyan
+# 4. 删除快捷方式与 CLI 命令入口
+$DesktopLnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "ChatGPT (Quota Header).lnk"
+if (Test-Path $DesktopLnk) {
+    Remove-Item -Path $DesktopLnk -Force -ErrorAction SilentlyContinue
+    Write-Host "✓ 已移除桌面快捷方式" -ForegroundColor Green
+}
+
+$StartMenuLnk = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\ChatGPT (Quota Header).lnk"
+if (Test-Path $StartMenuLnk) {
+    Remove-Item -Path $StartMenuLnk -Force -ErrorAction SilentlyContinue
+    Write-Host "✓ 已移除开始菜单快捷方式" -ForegroundColor Green
+}
+
+$UserBin = Join-Path $env:USERPROFILE ".local\bin"
+if (Test-Path $UserBin) {
+    Remove-Item -Path (Join-Path $UserBin "codex-header.cmd") -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $UserBin "codex-header.ps1") -Force -ErrorAction SilentlyContinue
+    Write-Host "✓ 已移除 CLI 命令包装器" -ForegroundColor Green
+}
+
+# 5. 删除插件安装文件
+if (Test-Path $PluginDir) {
+    Remove-Item -Path $PluginDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "✓ 已移除插件主目录: $PluginDir" -ForegroundColor Green
+}
+
+# 6. 数据存储处理
+if ($Purge) {
+    if (Test-Path $RoamingDir) {
+        Remove-Item -Path $RoamingDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $LocalDataDir) {
+        Remove-Item -Path $LocalDataDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "✓ 已彻底清空所有设置 (%APPDATA%) 与 Token 统计缓存 (%LOCALAPPDATA%)" -ForegroundColor Green
+} else {
+    Write-Host "✓ 已保留用户设置 ($RoamingDir) 与统计数据 ($LocalDataDir)" -ForegroundColor Gray
+    Write-Host "  (如需完全清理，请重新运行带 -Purge 参数的卸载脚本)" -ForegroundColor Gray
+}
+
+Write-Host "`n🎉 卸载完成。" -ForegroundColor Cyan

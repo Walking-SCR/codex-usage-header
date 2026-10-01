@@ -38,6 +38,9 @@
   'priority-snapshot.test.mjs',
   'token-design-v4.test.mjs',
   'failover-mode.test.mjs',
+  'platform-paths.test.mjs',
+  'windows-launcher.test.mjs',
+  'win-probe.test.mjs',
 ];
 
 console.log('========================================================');

@@ -3,7 +3,6 @@
  * 并通过本机 CDP Runtime.evaluate 接收脱敏快照。
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AppServerClient } from './account-client.mjs';
@@ -12,6 +11,7 @@ import { triggerRebalance } from './dynamic-priority-adapter.mjs';
 import { readFailoverStatus, triggerToggleFailoverMode } from './failover-mode-adapter.mjs';
 import { evaluateInTarget, fetchCdpTargets, launchAndInject, selectUsageTargets, subscribeToCdpBinding } from './launcher.mjs';
 import { acquireMonitorLock, releaseMonitorLock, monitorCodeHash, MONITOR_LOCK_PATH } from './monitor-lock.mjs';
+import { getSettingsPath, getSkillPath } from './platform-paths.mjs';
 
 const DEFAULT_CDP_PORT = 9229;
 const TARGET_DISCOVERY_RETRY_MS = 2000;
@@ -21,7 +21,7 @@ const IDLE_TARGET_POLL_MS = 15000;
 const COMMAND_BINDING_NAME = 'codexUsageHeaderCommandV1';
 const MAX_NATIVE_COMMANDS = 256;
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SETTINGS_PATH = join(process.env.HOME || tmpdir(), 'Library/Application Support/Codex Quota Header/settings.json');
+const SETTINGS_PATH = getSettingsPath();
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -39,7 +39,7 @@ function acquireLock() {
 function releaseLock() { releaseMonitorLock(MONITOR_LOCK_PATH); }
 
 function readSettings() {
-  const skillPath = join(process.env.HOME || tmpdir(), '.codex/skills/codex-autoheal-bridge/SKILL.md');
+  const skillPath = getSkillPath();
   const skillInstalled = existsSync(skillPath);
   try {
     const value = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'));

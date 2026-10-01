@@ -1876,7 +1876,10 @@
 
     const css = [
       '*{box-sizing:border-box}',
-      '.popover-shell{display:block;width:590px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);overflow-y:auto;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(32,32,35,.98)' : 'rgba(255,255,255,.98)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 18px 48px rgba(0,0,0,.12),0 4px 12px rgba(0,0,0,.04);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-radius:18px;padding:18px 20px}',
+      '.popover-shell{display:block;width:590px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);overflow-y:auto;scrollbar-width:thin;scrollbar-color:' + (dark ? 'rgba(255,255,255,.2) transparent' : 'rgba(0,0,0,.18) transparent') + ';font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text","Segoe UI",sans-serif;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + ';background:' + (dark ? 'rgba(32,32,35,.98)' : 'rgba(255,255,255,.98)') + ';border:1px solid ' + (dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.07)') + ';box-shadow:0 18px 48px rgba(0,0,0,.12),0 4px 12px rgba(0,0,0,.04);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-radius:18px;padding:18px 20px}',
+      '.popover-shell::-webkit-scrollbar{width:6px}',
+      '.popover-shell::-webkit-scrollbar-track{background:transparent}',
+      '.popover-shell::-webkit-scrollbar-thumb{background:' + (dark ? 'rgba(255,255,255,.2)' : 'rgba(0,0,0,.18)') + ';border-radius:999px}',
       '.popover-header{position:-webkit-sticky;position:sticky;top:0;z-index:50;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}',
       '.popover-title-group{display:flex;flex-direction:column;gap:3px}',
       '.popover-title{font-size:18px;font-weight:750;letter-spacing:-.3px;line-height:1.2}',
@@ -2216,7 +2219,7 @@
       : '';
     const style = `<style>
       *{box-sizing:border-box}
-      :host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;user-select:none}
+      :host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text","Segoe UI",sans-serif;user-select:none}
       :host([data-space-hidden="true"]){display:none!important}
       :host([data-stale="true"])::after{display:none}
       .capsule-status-dot{width:6px;height:6px;border-radius:50%;background:#FF9500;box-shadow:0 0 0 1px ${dark ? 'rgba(25,25,27,.9)' : 'rgba(255,255,255,.9)'};flex:none;margin-left:5px;margin-right:1px}
@@ -2411,6 +2414,41 @@
     return false;
   }
 
+  function isWindowCaptionControl(el) {
+    if (!el) return false;
+    const label = (el.getAttribute?.('aria-label') || el.getAttribute?.('title') || el.className || '').toLowerCase();
+    return /^(?:minimize|maximize|restore|close|最小化|最大化|还原|关闭)$/i.test(label)
+      || /window-control|caption-button|titlebar-button/.test(label)
+      || Boolean(el.closest?.('.window-controls, [data-window-controls], .caption-buttons, [data-caption-buttons], .titlebar-controls, .titlebar-button-container, [data-testid="window-controls"], [data-tauri-drag-region] button, [data-app-region="drag"] button'));
+  }
+
+  function getWindowCaptionAvoidance(doc = document) {
+    const controls = doc?.querySelector?.('.window-controls, [data-window-controls], .caption-buttons, [data-caption-buttons], .titlebar-controls, .titlebar-button-container, [data-testid="window-controls"]');
+    if (controls) {
+      const rect = visibleRect(controls);
+      if (rect && rect.width > 0 && rect.left > window.innerWidth * 0.5) {
+        return Math.max(0, window.innerWidth - rect.left);
+      }
+    }
+    const buttons = doc?.querySelectorAll ? [...doc.querySelectorAll('button')] : [];
+    const captionBtns = buttons.filter(b => isVisible(b) && isWindowCaptionControl(b));
+    if (captionBtns.length > 0) {
+      let minLeft = window.innerWidth;
+      let found = false;
+      for (const btn of captionBtns) {
+        const r = visibleRect(btn);
+        if (r && r.top < 60 && r.left > window.innerWidth * 0.5) {
+          found = true;
+          if (r.left < minLeft) minLeft = r.left;
+        }
+      }
+      if (found && minLeft < window.innerWidth) {
+        return Math.max(0, window.innerWidth - minLeft);
+      }
+    }
+    return 0;
+  }
+
   function resolveEndSlotNewChatPoint(button) {
     const header = button?.closest?.('header');
     const slot = button?.closest?.('[data-app-shell-header-slot="end"]');
@@ -2516,7 +2554,7 @@
   }
 
   function resolveMountPoint(doc = document) {
-    const buttons = [...doc.querySelectorAll('button')].filter(isVisible);
+    const buttons = [...doc.querySelectorAll('button')].filter(btn => isVisible(btn) && !isWindowCaptionControl(btn));
     // 按水平从右至左排序，优先匹配顶栏右侧的操作按钮
     const rightwardButtons = [...buttons].sort((a, b) => (visibleRect(b)?.left || 0) - (visibleRect(a)?.left || 0));
 
@@ -2556,6 +2594,7 @@
     }
     // Tier 5：新版主页/工作台顶栏右侧按钮兜底（聊天/工作 Tab 右侧的新建[+]按钮）。
     const candidateButtons = rightwardButtons.filter(btn => {
+      if (isWindowCaptionControl(btn)) return false;
       const h = btn.closest?.('header') || btn.closest?.('[data-app-shell-header-toolbar="true"]');
       const r = visibleRect(btn);
       return Boolean(h && r && r.left >= (typeof window !== 'undefined' ? window.innerWidth * 0.4 : 350));
@@ -2588,6 +2627,8 @@
     const point = resolveMountPoint();
     const existing = document.querySelector(HOST_TAG);
     if (!point) return false;
+    const avoidance = getWindowCaptionAvoidance(document);
+    const baseMarginRight = avoidance > 0 ? (avoidance + 8) : 16;
     if (existing?.isConnected) {
       const wasHost = host;
       host = existing;
@@ -2603,13 +2644,13 @@
       existing.dataset.placement = point.placement;
       if (point.placement === 'new-chat-right') {
         existing.style.setProperty('margin-left', '0px');
-        existing.style.setProperty('margin-right', '16px');
+        existing.style.setProperty('margin-right', baseMarginRight + 'px');
       } else if (point.placement === 'new-chat') {
         existing.style.setProperty('margin-left', 'auto');
-        existing.style.setProperty('margin-right', '16px');
+        existing.style.setProperty('margin-right', baseMarginRight + 'px');
       } else {
         existing.style.removeProperty('margin-left');
-        existing.style.setProperty('margin-right', '0px');
+        existing.style.setProperty('margin-right', avoidance > 0 ? (avoidance + 8) + 'px' : '0px');
       }
       if (!existing.shadowRoot) {
         existing.attachShadow({ mode: 'open' });
@@ -2629,13 +2670,13 @@
     host.dataset.placement = point.placement;
     if (point.placement === 'new-chat-right') {
       host.style.setProperty('margin-left', '0px');
-      host.style.setProperty('margin-right', '16px');
+      host.style.setProperty('margin-right', baseMarginRight + 'px');
     } else if (point.placement === 'new-chat') {
       host.style.setProperty('margin-left', 'auto');
-      host.style.setProperty('margin-right', '16px');
+      host.style.setProperty('margin-right', baseMarginRight + 'px');
     } else {
       host.style.removeProperty('margin-left');
-      host.style.setProperty('margin-right', '0px');
+      host.style.setProperty('margin-right', avoidance > 0 ? (avoidance + 8) + 'px' : '0px');
     }
     host.attachShadow({ mode: 'open' });
     if (point.reference) point.container.insertBefore(host, point.reference);

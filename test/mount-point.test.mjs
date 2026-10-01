@@ -326,6 +326,35 @@ for (const label of ['新聊天 (⌘N)', '新标签页 (⌘T)', '新建标签页
   assert.equal(point.reference, rightActions, '锚点必须为右上角新建按钮区域，绝不可是 mainSection 本身');
   assert.equal(point.placement, 'new-chat');
 }
+// 回归 11：Windows 系统控制按钮（最小化、最大化、关闭）绝不可被选为挂载锚点
+{
+  const closeBtn = makeEl({
+    tag: 'button',
+    rect: makeRect({ top: 0, left: 1400, width: 40, height: 32 }),
+    attrs: { 'aria-label': 'Close', class: 'caption-button close' },
+  });
+  const minBtn = makeEl({
+    tag: 'button',
+    rect: makeRect({ top: 0, left: 1320, width: 40, height: 32 }),
+    attrs: { 'aria-label': 'Minimize', class: 'caption-button' },
+  });
+  const normalBtn = makeEl({
+    tag: 'button',
+    rect: makeRect({ top: 8, left: 1250, width: 32, height: 32 }),
+    attrs: { 'aria-label': '新聊天' },
+  });
+  const header = makeEl({
+    tag: 'header',
+    rect: makeRect({ top: 0, left: 0, width: 1440, height: 46 }),
+    children: [normalBtn, minBtn, closeBtn],
+  });
+
+  const point = makeEnv([normalBtn, minBtn, closeBtn]).resolveMountPoint();
+  assert.ok(point, '包含系统窗口按钮时必须能正确锚定正常操作按钮');
+  assert.notEqual(point.reference, closeBtn, '绝不能锚定关闭按钮');
+  assert.notEqual(point.reference, minBtn, '绝不能锚定最小化按钮');
+}
+
 assert.match(source, /const existing = document\.querySelector\(HOST_TAG\)/);
 assert.match(source, /existing\?\.isConnected/);
 assert.match(source, /point\.container\.insertBefore\(existing, point\.reference\)/);
