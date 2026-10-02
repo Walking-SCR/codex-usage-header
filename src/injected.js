@@ -1722,17 +1722,19 @@
         : ('Scope: Local session logs' + (earliest ? ' (from ' + earliest + ')' : '') + ' · ' + (isBackfilled ? 'Backfill complete' : 'Backfill in progress') + ' · Excludes other devices/purged logs');
       const tokenScopeNote = '<div class="token-scope-footnote">' + esc(scopeText) + '</div>';
 
+      // 注释掉底部提示文案不显示
+      // const tokenScopeNote = '<div class="token-scope-footnote">' + esc(scopeText) + '</div>';
       tokenSection = '<div class="card-section quota-extension-section" data-section="tokens">'
         + '<div class="quota-extension-header has-rows">'
         + '<div class="quota-extension-title-wrap">'
         + chartSvg
         + '<span class="quota-extension-title">' + esc(t('tokenUsage')) + '</span>'
-        + copyButton
+        // + copyButton (已移除复制用量简报功能)
         + '</div>'
         + '<div class="quota-token-controls">' + rangeTabs + modelSelectorMarkup + '</div>'
         + '</div>'
         + tokenContent
-        + tokenScopeNote
+        // + tokenScopeNote (已注释掉底部统计范围提示文案)
         + '</div>';
     }
 
@@ -2242,7 +2244,6 @@
       + moduleButton('google', 'sparkle', t('toggleGoogle'), settings.enableGoogleAiPro)
       + moduleButton('tokens', 'tokenChart', t('toggleStats'), settings.enableTokenUsage)
       + renderFailoverToggleButton(dark, isZh)
-      + renderDiagnosticsButton(dark, isZh)
       + '<button type="button" class="quota-icon-btn card-refresh state-' + refreshState + '" aria-label="' + esc(refreshState === 'loading' ? t('refreshing') : refreshState === 'error' ? t('refreshFailed') : t('refresh')) + '">' + designIcon('refresh') + '</button>'
       + '</div>'
       + '</div>'
