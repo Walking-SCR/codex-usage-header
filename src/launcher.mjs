@@ -163,19 +163,15 @@ export function selectUsageTargets(targets) {
       if (url.protocol !== 'app:') return false;
       if (url.hostname !== '-') return false;
       const initialRoute = url.searchParams.get('initialRoute');
-      // 明确排除设置、个人资料等辅助浮窗窗口
-      if (initialRoute && /^\/(?:settings|preferences|profile|auth|login|help|avatar-overlay)(?:\/|$|\?)/i.test(initialRoute)) {
+      // 明确排除设置、个人资料、头像浮层、独立弹窗等辅助窗口
+      if (initialRoute && /^\/(?:settings|preferences|profile|auth|login|help|avatar-overlay|detached)(?:\/|$|\?)/i.test(initialRoute)) {
         return false;
       }
       const pathname = url.pathname.toLowerCase();
       // 支持根路径、index.html 以及各类单页工作区或对话路由
       const isUsagePath = ['/', '/index.html', '/work/index.html', '/chat/index.html', '/work', '/chat'].includes(pathname)
-        || /^\/(?:work|threads?|chats?|projects?|new)(?:\/|$)/i.test(pathname);
+        || /^\/(?:work|threads?|chats?|projects?|new|local)(?:\/|$)/i.test(pathname);
       if (!isUsagePath) return false;
-      // 若有 initialRoute，确认符合主工作路由
-      if (initialRoute && !/^\/(?:work|threads?|chats?|projects?|new)(?:\/|$|\?)/i.test(initialRoute)) {
-        return false;
-      }
       return true;
     } catch { return false; }
   });

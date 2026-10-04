@@ -41,12 +41,20 @@
       muted: '#8E8E93',
     },
   };
+  const INSTANCE_ID = "inst_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
   if (window.__codexUsageHeaderInstalled__ === RUNTIME_VERSION
       && window.__codexUsageHeaderContentHash__ === CONTENT_HASH) {
     window.__codexUsageHeaderRemount?.();
     return;
   }
-  window.__codexUsageHeaderTeardown__?.();
+  try { window.__codexUsageHeaderTeardown__?.(); } catch { /* ignore */ }
+  // 在初始化前彻底拔除当前 DOM 中所有的历史残留宿主和悬浮框节点
+  if (typeof document !== "undefined") {
+    document.querySelectorAll(HOST_TAG).forEach(el => { try { el.remove(); } catch {} });
+    document.querySelectorAll("." + POPOVER_CLASS).forEach(el => { try { el.remove(); } catch {} });
+    document.querySelectorAll("[data-quota-capsule]").forEach(el => { try { el.remove(); } catch {} });
+  }
+  window.__codexUsageHeaderActiveInstanceId__ = INSTANCE_ID;
   const ICONS = window.__codexUsageHeaderIcons__ || {};
   const DESIGN_ICONS = window.__codexUsageHeaderDesignIcons__ || {};
   const getAccountHealth = window.__codexUsageHeaderAccountHealth__ || (account => account.health || { state: 'healthy', code: 'ok', zh: '', en: '' });
@@ -2697,6 +2705,10 @@
 
   function isWindowCaptionControl(el) {
     if (!el) return false;
+    // 排除非顶层抽屉、预览窗、侧边栏、卡片、模态框内部的普通按钮
+    if (el.closest?.('.summary-panel, [data-summary-panel], [class*="preview"], [class*="drawer"], [class*="dialog"], [class*="modal"], [class*="sidebar"]')) {
+      return false;
+    }
     const label = (el.getAttribute?.('aria-label') || el.getAttribute?.('title') || el.className || '').toLowerCase();
     return /^(?:minimize|maximize|restore|close|最小化|最大化|还原|关闭)$/i.test(label)
       || /window-control|caption-button|titlebar-button/.test(label)
@@ -2704,11 +2716,15 @@
   }
 
   function getWindowCaptionAvoidance(doc = document) {
+    // macOS 上系统红绿灯位于左上角，右上角无系统控制按钮，无需额外右避让
+    const isMac = typeof navigator !== 'undefined' && (/mac/i.test(navigator.platform || '') || /macintosh|mac os x/i.test(navigator.userAgent || ''));
+    if (isMac) return 0;
+
     const controls = doc?.querySelector?.('.window-controls, [data-window-controls], .caption-buttons, [data-caption-buttons], .titlebar-controls, .titlebar-button-container, [data-testid="window-controls"]');
     if (controls) {
       const rect = visibleRect(controls);
       if (rect && rect.width > 0 && rect.left > window.innerWidth * 0.5) {
-        return Math.max(0, window.innerWidth - rect.left);
+        return Math.min(160, Math.max(0, window.innerWidth - rect.left));
       }
     }
     const buttons = doc?.querySelectorAll ? [...doc.querySelectorAll('button')] : [];
@@ -2718,13 +2734,14 @@
       let found = false;
       for (const btn of captionBtns) {
         const r = visibleRect(btn);
-        if (r && r.top < 60 && r.left > window.innerWidth * 0.5) {
+        // 系统标题栏控制按钮必须紧贴屏幕顶部（top < 40）且距离最右边缘不超过 160px
+        if (r && r.top < 40 && (window.innerWidth - r.left) <= 160 && r.left > window.innerWidth * 0.7) {
           found = true;
           if (r.left < minLeft) minLeft = r.left;
         }
       }
       if (found && minLeft < window.innerWidth) {
-        return Math.max(0, window.innerWidth - minLeft);
+        return Math.min(160, Math.max(0, window.innerWidth - minLeft));
       }
     }
     return 0;
@@ -2735,7 +2752,7 @@
     const slot = button?.closest?.('[data-app-shell-header-slot="end"]');
     const headerRect = visibleRect(header);
     const slotRect = visibleRect(slot);
-    if (!header || !slot || !headerRect || !slotRect || headerRect.width < 400 || headerRect.height > 80) return null;
+    if (!header || !slot || !headerRect || !slotRect || headerRect.width < 220 || headerRect.height > 80) return null;
 
     // 新版 App Shell 将 [+] 放在固定的 end slot；组件必须进入其内层 action row。
     // 若作为 header 的同级 flex 项，header 与 end slot 各自的 auto margin 会平分空白，
@@ -2761,9 +2778,13 @@
 
     const headerRect = visibleRect(header);
     const buttonRect = visibleRect(button);
-    if (!headerRect || !buttonRect || headerRect.height > 80 || headerRect.width < 400) return null;
+    if (!headerRect || !buttonRect || headerRect.height > 80 || headerRect.width < 220) return null;
 
-    const minLeft = typeof window !== 'undefined' ? window.innerWidth * 0.35 : 300;
+    // 严禁锚定到侧边栏区域
+    if (button.closest?.('nav, aside, [role="navigation"], .sidebar, [class*="sidebar"]')) return null;
+
+    // 按钮必须位于所属顶栏容器的右侧操作区，分屏预览时以 header 自身宽度与偏移判定
+    const minLeft = headerRect.left + Math.max(80, headerRect.width * 0.25);
     if (buttonRect.left < minLeft) return null;
 
     // 从 button 自底向上寻找直接的排版定位容器（unwrap display: contents、span 与单个小尺寸包装 div）
@@ -2791,7 +2812,7 @@
 
     const toolbarRect = visibleRect(toolbar);
     if (!toolbarRect) return null;
-    if (!isNewChat && toolbarRect.width < 240) return null;
+    if (!isNewChat && toolbarRect.width < 220) return null;
 
     return { header, toolbar, container, reference, placement: isNewChat ? 'new-chat' : 'thread' };
   }
@@ -2805,14 +2826,16 @@
     if (!shellToolbar) return null;
     const header = shellToolbar.closest('header') || shellToolbar;
     const headerRect = visibleRect(header);
-    if (!headerRect || headerRect.top >= 80 || headerRect.height > 80 || headerRect.width < 400) return null;
+    if (!headerRect || headerRect.top >= 80 || headerRect.height > 80 || headerRect.width < 220) return null;
+
+    const minLeft = headerRect.left + Math.max(80, headerRect.width * 0.25);
 
     // 新版 Work 的原生操作在显式 App Shell 工具栏内，不一定有 obstacle 属性。
     for (const button of [...shellToolbar.querySelectorAll('button')].filter(isVisible)) {
       const label = button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent?.trim() || '';
       const isNewChat = isNewChatAction(button);
       if (!isNewChat && !THREAD_ACTION_RE.test(label) && !SHARE_ACTION_RE.test(label)) continue;
-      if (visibleRect(button)?.left < window.innerWidth * 0.35) continue;
+      if (visibleRect(button)?.left < minLeft) continue;
       const point = validateActionAnchor(button, isNewChat);
       if (point) return { ...point, placement: SHARE_ACTION_RE.test(label) ? 'chat' : point.placement };
     }
@@ -2820,7 +2843,7 @@
     const obstacles = [...header.querySelectorAll('[data-app-shell-header-obstacle="true"]')];
     for (const obstacle of obstacles) {
       const obstacleRect = visibleRect(obstacle);
-      if (!obstacleRect || obstacleRect.left < window.innerWidth * 0.35) continue;
+      if (!obstacleRect || obstacleRect.left < minLeft) continue;
       const obstacleButtons = [...obstacle.querySelectorAll('button,[role="button"]')].filter(isVisible);
       const shareButton = obstacleButtons.find(button => SHARE_ACTION_RE.test(button.getAttribute('aria-label') || button.textContent || ''));
       const fallbackButton = obstacleButtons.find(button => /^(聊天操作|更多|更多选项|更多操作|chat actions?|more(?: options)?)$/i.test(button.getAttribute('aria-label') || button.textContent || ''));
@@ -2877,8 +2900,9 @@
     const candidateButtons = rightwardButtons.filter(btn => {
       if (isWindowCaptionControl(btn)) return false;
       const h = btn.closest?.('header') || btn.closest?.('[data-app-shell-header-toolbar="true"]');
+      const hr = visibleRect(h);
       const r = visibleRect(btn);
-      return Boolean(h && r && r.left >= (typeof window !== 'undefined' ? window.innerWidth * 0.4 : 350));
+      return Boolean(h && hr && r && r.left >= (hr.left + Math.max(80, hr.width * 0.25)));
     });
     if (candidateButtons.length > 0) {
       const point = validateActionAnchor(candidateButtons[0], true);
@@ -2889,7 +2913,7 @@
     const header = doc.querySelector ? doc.querySelector("header") : null;
     if (header) {
       const headerRect = visibleRect(header);
-      if (headerRect && headerRect.height <= 80 && headerRect.width >= 400) {
+      if (headerRect && headerRect.height <= 80 && headerRect.width >= 220) {
         let container = header;
         const mainChild = [...(header.children || [])].find(c => {
           const r = visibleRect(c);
@@ -2904,8 +2928,30 @@
   }
   // __MOUNT_POINT_LOGIC_END__
 
+  function enforceSingleHostInstance(activeHost = null) {
+    if (typeof document === 'undefined') return null;
+    const allHosts = [...document.querySelectorAll(HOST_TAG)];
+    if (allHosts.length <= 1) return allHosts[0] || null;
+    let preserved = activeHost && activeHost.isConnected ? activeHost : null;
+    for (const el of allHosts) {
+      if (!preserved && el.isConnected) {
+        preserved = el;
+      } else if (el !== preserved) {
+        try { el.remove(); } catch { /* ignore */ }
+      }
+    }
+    return preserved;
+  }
+
   function mountCapsule() {
+    if (window.__codexUsageHeaderActiveInstanceId__ && window.__codexUsageHeaderActiveInstanceId__ !== INSTANCE_ID) {
+      window.__codexUsageHeaderTeardown__?.();
+      return false;
+    }
     const point = resolveMountPoint();
+    // 挂载前执行严格全页面单例清洗，彻底杜绝分屏或DOM重组时残留孪生实例
+    const preserved = enforceSingleHostInstance(host);
+    if (preserved) host = preserved;
     const existing = document.querySelector(HOST_TAG);
     if (!point) return false;
     const avoidance = getWindowCaptionAvoidance(document);
@@ -2945,6 +2991,7 @@
         updateMode();
         if (popover?.classList.contains('is-visible')) requestAnimationFrame(positionPopover);
       }
+      enforceSingleHostInstance(host);
       return true;
     }
     host = document.createElement(HOST_TAG);
@@ -2966,10 +3013,12 @@
     renderHost();
     bindResizeObserver();
     updateMode();
+    enforceSingleHostInstance(host);
     return true;
   }
 
   function suppressLegacyInstances() {
+    enforceSingleHostInstance(host);
     LEGACY_COMPONENTS.forEach(tag => document.querySelectorAll(tag).forEach(element => {
       element.style.setProperty('display', 'none', 'important');
       element.style.setProperty('pointer-events', 'none', 'important');
@@ -2995,10 +3044,15 @@
         return node.matches?.(headerSelectors) || Boolean(node.querySelector?.(headerSelectors));
       });
       if (containsHeader) return true;
-      if (target?.closest?.('main')) return false;
+      // 当页面分屏或预览面板打开时，根容器或 main 发生结构重组，需触发重新核验挂载
+      if (target?.parentElement === document.body || target?.tagName === 'MAIN' || target?.dataset?.summaryPanelVariant) return true;
       return false;
     };
     mountObserver = new MutationObserver(records => {
+      if (window.__codexUsageHeaderActiveInstanceId__ && window.__codexUsageHeaderActiveInstanceId__ !== INSTANCE_ID) {
+        mountObserver?.disconnect();
+        return;
+      }
       if (!records.some(isHeaderMutation)) return;
       suppressLegacyInstances();
       const point = resolveMountPoint();
@@ -3118,12 +3172,14 @@
     rootThemeObserver = null;
     resizeObserver?.disconnect();
     resizeObserver = null;
-    document.querySelector(HOST_TAG)?.remove();
-    document.querySelectorAll('.' + POPOVER_CLASS).forEach(item => item.remove());
-    document.getElementById('codex-usage-popover-style-v24')?.remove();
-    // 旧版本遗留节点：仅隐藏不够，彻底移除
-    LEGACY_COMPONENTS.forEach(tag => document.querySelectorAll(tag).forEach(el => el.remove()));
-    document.querySelectorAll('[data-quota-capsule]').forEach(el => el.remove());
+    if (!window.__codexUsageHeaderActiveInstanceId__ || window.__codexUsageHeaderActiveInstanceId__ === INSTANCE_ID) {
+      document.querySelectorAll(HOST_TAG).forEach(el => { try { el.remove(); } catch {} });
+      document.querySelectorAll('.' + POPOVER_CLASS).forEach(item => { try { item.remove(); } catch {} });
+      document.getElementById('codex-usage-popover-style-v24')?.remove();
+      LEGACY_COMPONENTS.forEach(tag => document.querySelectorAll(tag).forEach(el => { try { el.remove(); } catch {} }));
+      document.querySelectorAll('[data-quota-capsule]').forEach(el => { try { el.remove(); } catch {} });
+      window.__codexUsageHeaderActiveInstanceId__ = null;
+    }
     if (hitAreaParent) {
       if (hitAreaParentStyle === null) hitAreaParent.removeAttribute('style');
       else hitAreaParent.setAttribute('style', hitAreaParentStyle);
