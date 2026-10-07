@@ -295,6 +295,11 @@ export class GeminiQuotaManager {
           const filename = crossBasename(authId);
           const account = accountMapById.get(filename) || accountMapByEmail.get(authId.toLowerCase());
           if (!account) continue;
+          const recordModel = String(record.model || '').toLowerCase();
+          if (recordModel && !recordModel.includes('gemini')) {
+            const hasGeminiRemaining = (account.rows || []).some(r => (r.label?.includes('5h') || r.window === '5h') && r.remainingPercent > 0);
+            if (hasGeminiRemaining) continue;
+          }
           const status = String(record.status || '').toUpperCase();
           const health = ['ACTIVE', 'READY', 'OK'].includes(status)
             ? getAccountHealth()

@@ -479,6 +479,15 @@ async function run(cdpPort) {
       for (const command of rebalanceCommands) {
         rememberCommand(command.id);
         triggerRebalance().then(async result => {
+          if (geminiEnabled && !geminiRefreshInFlight) {
+            geminiRefreshInFlight = extendedCoordinator.refreshGemini()
+              .then(() => { extendedRevision += 1; })
+              .catch(() => {})
+              .finally(() => {
+                geminiRefreshInFlight = null;
+                notifyMonitor();
+              });
+          }
           await pushCommandAck(command.target, {
             id: command.id,
             kind: 'rebalance',

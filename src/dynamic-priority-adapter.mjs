@@ -185,13 +185,17 @@ export function triggerRebalance(options = {}) {
     'antigravity_pool.py'
   );
   const pythonBin = options.pythonBin || process.env.CODEX_BRIDGE_PYTHON || process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  const model = options.model || 'gemini-3.8-flash-high';
 
   return new Promise((resolve) => {
     if (!existsSync(scriptPath)) {
       return resolve({ ok: false, error: 'script_not_found', path: scriptPath });
     }
 
-    execFile(pythonBin, [scriptPath, 'rebalance', '--apply'], { timeout: 10000, windowsHide: true }, (error, stdout, stderr) => {
+    const args = [scriptPath, 'rebalance', '--apply'];
+    if (model) args.push('--model', model);
+
+    execFile(pythonBin, args, { timeout: 10000, windowsHide: true }, (error, stdout, stderr) => {
       if (error) {
         return resolve({ ok: false, error: error.message, stderr });
       }
