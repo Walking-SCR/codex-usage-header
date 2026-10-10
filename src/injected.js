@@ -2379,6 +2379,17 @@
     return Math.max(128, Math.min(320, right - rect.left + 12));
   }
 
+  function firstVisibleLayoutRect(element) {
+    const rect = visibleRect(element);
+    if (rect) return rect;
+    let first = null;
+    for (const child of element?.children || []) {
+      const childRect = firstVisibleLayoutRect(child);
+      if (childRect && (!first || childRect.left < first.left)) first = childRect;
+    }
+    return first;
+  }
+
   function measureAvailableWidth(element) {
     if (!element) return 520;
     const header = element.closest('header') || element.closest('[data-app-shell-header-toolbar="true"]') || element.closest('[role="toolbar"]') || document.querySelector('header');
@@ -2399,21 +2410,24 @@
 
     if (!headerRect || headerRect.width < 100) return 520;
 
-    const hostRect = visibleRect(element);
     const parent = element.parentElement;
 
     // 1. 查找右侧物理障碍边界 (Right Bound)
     // 优先取紧邻的右侧元素，或右侧任何原生操作按钮/控制区的最左边缘
     let rightBound = headerRect.right - 12;
     if (element.nextElementSibling) {
-      const nextRect = visibleRect(element.nextElementSibling);
+      // App Shell 用 display:contents 包装原生按钮，包装层自身没有矩形；
+      // 必须取其首个可见后代作为固定右边界，不能退化到包含宿主的 ms-auto 行。
+      const nextRect = firstVisibleLayoutRect(element.nextElementSibling);
       if (nextRect && nextRect.left > 0) {
         rightBound = Math.min(rightBound, nextRect.left);
       }
     }
-    const rightControl = header.querySelector('div[class*="justify-self-end"], div[class*="ms-auto"], .titlebar-right');
-    if (rightControl) {
-      const rcRect = visibleRect(rightControl);
+    const rightControls = header.querySelectorAll('div[class*="justify-self-end"], div[class*="ms-auto"], .titlebar-right');
+    for (const rightControl of rightControls) {
+      // 不把承载注入组件的弹性行本身当作边界；其 left 会随组件宽度移动。
+      if (rightControl === element || rightControl.contains(element)) continue;
+      const rcRect = firstVisibleLayoutRect(rightControl);
       if (rcRect && rcRect.left > 0 && rcRect.left < rightBound) {
         rightBound = rcRect.left;
       }
@@ -2448,18 +2462,12 @@
       }
     }
 
-    // 3. 计算物理剩余可用空间
+    // 3. 只按原生元素之间的固定边界计算空间，不再把组件自己的当前宽度
+    // 当作可扩展空间；否则形态变化会反过来改变测量值，形成尺寸反馈环。
     const rawPhysicalSpace = rightBound - leftBound;
     // 留出 12px 安全微间隙，避免紧贴两侧元素
     const physicalAvailable = Math.max(0, rawPhysicalSpace - 12);
-
-    // 4. 自愈防死锁机制：
-    // 如果组件当前已有宽度，且右侧存在可供舒展的空闲空间，可用宽度为物理间隙与扩展上限的较大者
-    const currentHostWidth = hostRect ? hostRect.width : 0;
-    const freeSpaceToRight = hostRect ? Math.max(0, rightBound - hostRect.right - 6) : 0;
-    const maxCanExpand = currentHostWidth + freeSpaceToRight;
-
-    return Math.max(0, Math.max(physicalAvailable, maxCanExpand));
+    return physicalAvailable;
   }
 
   function renderHost() {
@@ -2504,7 +2512,7 @@
     const staleDotHtml = statusText
       ? '<span class="capsule-status-dot" aria-hidden="true" title="' + esc(statusText) + '"></span>'
       : '';
-    const style = `<style>
+    const style = `
       *{box-sizing:border-box}
       :host{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;margin:0;position:relative;z-index:20;pointer-events:auto!important;-webkit-app-region:no-drag;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text","Segoe UI",sans-serif;user-select:none}
       :host([data-space-hidden="true"]){display:none!important}
@@ -2528,15 +2536,45 @@
       .divider{flex:none;width:1px;height:16px;margin:0;background:${dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)'}}
       @keyframes quota-number-shimmer{0%{opacity:.35;filter:blur(.4px)}50%{opacity:.85;filter:blur(0)}100%{opacity:.35;filter:blur(.4px)}}
       .capsule.is-refreshing .value{animation:quota-number-shimmer .75s ease-in-out infinite}
-    </style>`
-      + '<div class="capsule' + (refreshState === 'loading' ? ' is-refreshing' : '') + '">'
-      + '<button class="details-trigger" type="button" aria-label="' + esc(t('details') + (statusText ? ' · ' + statusText : '')) + '" title="' + esc(statusText) + '" aria-describedby="' + POPOVER_ID + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">' + content + staleDotHtml + '</button>'
-      + '<span class="capsule-separator" aria-hidden="true"></span>'
-      + '<button class="capsule-toggle" type="button" aria-label="' + esc(t('toggleDetails')) + '" aria-controls="' + POPOVER_ID + '" aria-expanded="' + detailsOpen + '">'
-      + designIcon('chevronDown', 'capsule-arrow' + (detailsOpen ? ' is-expanded' : ''))
-      + '</button>'
-      + '</div>';
-    host.shadowRoot.innerHTML = style;
+    `;
+    const shadow = host.shadowRoot;
+    let styleElement = shadow.querySelector('style[data-quota-header-style]');
+    if (!styleElement) {
+      styleElement = document.createElement('style');
+      styleElement.dataset.quotaHeaderStyle = '';
+      shadow.appendChild(styleElement);
+    }
+    if (styleElement.textContent !== style) styleElement.textContent = style;
+
+    let capsule = shadow.querySelector('.capsule');
+    if (!capsule) {
+      capsule = document.createElement('div');
+      capsule.className = 'capsule';
+      const trigger = document.createElement('button');
+      trigger.className = 'details-trigger';
+      trigger.type = 'button';
+      const separator = document.createElement('span');
+      separator.className = 'capsule-separator';
+      separator.setAttribute('aria-hidden', 'true');
+      const toggle = document.createElement('button');
+      toggle.className = 'capsule-toggle';
+      toggle.type = 'button';
+      capsule.append(trigger, separator, toggle);
+      shadow.appendChild(capsule);
+    }
+    capsule.classList.toggle('is-refreshing', refreshState === 'loading');
+    const trigger = capsule.querySelector('.details-trigger');
+    trigger.innerHTML = content + staleDotHtml;
+    trigger.setAttribute('aria-label', t('details') + (statusText ? ' · ' + statusText : ''));
+    trigger.title = statusText || '';
+    trigger.setAttribute('aria-describedby', POPOVER_ID);
+    trigger.setAttribute('aria-controls', POPOVER_ID);
+    trigger.setAttribute('aria-expanded', String(detailsOpen));
+    const toggle = capsule.querySelector('.capsule-toggle');
+    toggle.setAttribute('aria-label', t('toggleDetails'));
+    toggle.setAttribute('aria-controls', POPOVER_ID);
+    toggle.setAttribute('aria-expanded', String(detailsOpen));
+    toggle.innerHTML = designIcon('chevronDown', 'capsule-arrow' + (detailsOpen ? ' is-expanded' : ''));
   }
   function updateMode() {
     if (!host) return;
@@ -2552,8 +2590,9 @@
       currentMode = next;
       host.dataset.mode = currentMode;
       renderHost();
-      if (popover?.classList.contains('is-visible')) requestAnimationFrame(positionPopover);
     }
+    // 顶栏可能在不改变形态的情况下重排；展开卡片也必须跟随锚点更新位置。
+    if (popover?.classList.contains('is-visible')) positionPopover();
   }
 
   function ensureHostHitArea() {
@@ -2651,14 +2690,19 @@
     resizeObserver?.disconnect();
     resizeObserver = new ResizeObserver(() => {
       if (layoutFrame) cancelAnimationFrame(layoutFrame);
-      layoutFrame = requestAnimationFrame(updateMode);
+      layoutFrame = requestAnimationFrame(() => {
+        layoutFrame = null;
+        updateMode();
+      });
     });
-    if (host?.parentElement) resizeObserver.observe(host.parentElement);
+    // 不监听包含组件本身的弹性布局父级，避免组件宽度变化触发自身尺寸反馈。
+    // 监听顶栏及两侧原生边界，覆盖窗口缩放和工具栏按钮重排。
+    const toolbar = host?.closest('[data-app-shell-header-toolbar="true"]')
+      || host?.closest('[role="toolbar"]');
+    const header = host?.closest('header') || toolbar || document.querySelector('header');
+    if (header) resizeObserver.observe(header);
     if (host?.previousElementSibling) resizeObserver.observe(host.previousElementSibling);
-    const toolbar = host?.parentElement?.parentElement;
-    if (toolbar) resizeObserver.observe(toolbar);
-    const header = toolbar?.closest('header') || document.querySelector('header');
-    if (header && header !== toolbar && header !== host?.parentElement) resizeObserver.observe(header);
+    if (host?.nextElementSibling) resizeObserver.observe(host.nextElementSibling);
   }
 
   // __MOUNT_POINT_LOGIC_BEGIN__
@@ -2988,9 +3032,10 @@
       if (changed) {
         renderHost();
         if (wasHost !== existing || !resizeObserver) bindResizeObserver();
-        updateMode();
-        if (popover?.classList.contains('is-visible')) requestAnimationFrame(positionPopover);
       }
+      // ResizeObserver 无法发现仅由 transform/justify 等造成的位置变化；
+      // 周期性挂载巡检即使未移动宿主，也要刷新断点与展开卡片锚点。
+      updateMode();
       enforceSingleHostInstance(host);
       return true;
     }
