@@ -53,6 +53,16 @@ try {
   manager.routingHealthReadAt -= 6000;
   assert.equal(manager.getSnapshot().accounts[0].health.state, 'healthy', '已删除的错误记录不能继续保留红点');
 
+  // 非 Gemini 模型冷却伴随无 model 字段的泛型镜像时，Gemini 正常账号不应被判定为冷却
+  writeFileSync(recordPath, JSON.stringify({ provider: 'antigravity', records: [
+    { auth_id: healthy.id, status: 'cooling', next_retry_after: new Date(recoveryAt).toISOString(), reason: 'quota' },
+    { auth_id: healthy.id, model: 'claude-sonnet-4-6', status: 'cooling', next_retry_after: new Date(recoveryAt).toISOString(), reason: 'quota' },
+  ] }));
+  manager.routingHealthReadAt -= 6000;
+  assert.equal(manager.getSnapshot().accounts[0].health.state, 'healthy', 'Claude 冷却及其泛型镜像记录不能误标 Gemini 正常账号');
+  unlinkSync(recordPath);
+  manager.routingHealthReadAt -= 6000;
+
   const authPath = join(dir, healthy.id);
   writeFileSync(authPath, JSON.stringify({ type: 'antigravity', email: healthy.email, priority: 100 }));
   manager.accountCaches.set(healthy.email, healthy);

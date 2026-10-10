@@ -289,16 +289,31 @@ export class GeminiQuotaManager {
         }
 
         if (String(data.provider || '').toLowerCase() !== 'antigravity') continue;
-        for (const record of Array.isArray(data.records) ? data.records : []) {
+        const records = Array.isArray(data.records) ? data.records : [];
+        const nonGeminiCoolingEpochs = new Set();
+        for (const r of records) {
+          if (!r || typeof r !== 'object') continue;
+          const rm = String(r.model || '').toLowerCase();
+          if (rm && !rm.includes('gemini') && String(r.status || '').toLowerCase() === 'cooling') {
+            const rt = parseRecoveryTime(r.next_retry_after || r.quota?.next_recover_at);
+            if (rt) nonGeminiCoolingEpochs.add(Math.floor(rt / 1000));
+          }
+        }
+
+        for (const record of records) {
           if (!record || typeof record !== 'object') continue;
           const authId = String(record.auth_id || data.auth_id || name.replace(/\.cds$/, '.json')).trim();
           const filename = crossBasename(authId);
           const account = accountMapById.get(filename) || accountMapByEmail.get(authId.toLowerCase());
           if (!account) continue;
           const recordModel = String(record.model || '').toLowerCase();
-          if (recordModel && !recordModel.includes('gemini')) {
-            const hasGeminiRemaining = (account.rows || []).some(r => (r.label?.includes('5h') || r.window === '5h') && r.remainingPercent > 0);
-            if (hasGeminiRemaining) continue;
+          const hasGeminiRemaining = (account.rows || []).some(r => (r.label?.includes('5h') || r.window === '5h') && r.remainingPercent > 0);
+          if (hasGeminiRemaining) {
+            if (recordModel && !recordModel.includes('gemini')) continue;
+            if (!recordModel) {
+              const recTime = parseRecoveryTime(record.next_retry_after || record.quota?.next_recover_at);
+              if (recTime && nonGeminiCoolingEpochs.has(Math.floor(recTime / 1000))) continue;
+            }
           }
           const status = String(record.status || '').toUpperCase();
           const health = ['ACTIVE', 'READY', 'OK'].includes(status)
