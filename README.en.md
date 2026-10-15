@@ -8,23 +8,6 @@ Chinese: [README.md](README.md)
 
 ---
 
-## What changed (2026-10-16)
-
-These behaviors were missing from the previous README:
-
-- **One capsule, stable layout.** Split view and repeated injection keep a single header capsule. When the window is wide enough, the capsule uses the available space and skips containers that have no size. The card title stays pinned while the card scrolls.
-- **Visible quota problems.** The capsule shows an inline status dot, and the card shows one status line under the title. Unchanged data is not redrawn. Closing the card keeps keyboard focus and each section's scroll position.
-- **Reset-credit states.** The card distinguishes loading, no credits available, and "the available count loaded but the current response has no per-credit details." A temporary missing list keeps the last cards instead of spinning forever.
-- **Google account ranking.** Rebalance targets the Gemini model. A generic cooldown copied from another model does not mark an account as cooling while Gemini quota remains. Google quota refreshes immediately after rebalance.
-- **Route switching.** "Switching" ends only after the mode actually changes. Failure or a 15-second timeout shows a short failure message and leaves the current mode unchanged. The script selects a Python that can read TOML, so an old system Python no longer makes the button look dead. Set `CODEX_BRIDGE_PYTHON` or `PYTHON` to choose the interpreter.
-- **Safety and data.** The plugin no longer guesses a management key. Updated OAuth credentials and local rollups are written with restricted permissions. Token totals remember the file read position, so a restart does not count the same log twice. Expired windows retry with backoff instead of polling every few seconds.
-- **Removed controls.** The diagnostics copy button and the token-summary copy button are gone. The token scope footnote is no longer shown at the bottom of the card. Totals still cover only local session logs, not other devices, unsynced sessions, or deleted history.
-- **Windows.** The probe matches the listening port exactly and reports pass, fail, or unknown. A native title bar that cannot be injected still stops the probe.
-
-**Known limit:** switching between OpenAI and an external route still runs the bridge `--restart` flow. It can restart Codex and launch `Codex Quota Header.app`. It is not a hot switch. Save in-progress work first.
-
----
-
 ## Why it exists
 
 Deep work in the Codex or ChatGPT desktop app often hits the same interruptions:
@@ -350,3 +333,22 @@ codex-usage-header/
 ## Disclaimer
 
 This is a community efficiency extension, not an OpenAI product. A major desktop update that changes the header may require a new mounting adapter.
+
+---
+
+## What changed (2026-10-16)
+
+These behaviors were missing from the previous README:
+
+- **One capsule, stable layout.** Split view and repeated injection keep a single header capsule. When the window is wide enough, the capsule uses the available space and skips containers that have no size. The card title stays pinned while the card scrolls.
+- **Visible quota problems.** The capsule shows an inline status dot, and the card shows one status line under the title. Unchanged data is not redrawn. Closing the card keeps keyboard focus and each section's scroll position.
+- **Reset-credit states.** The card distinguishes loading, no credits available, and "the available count loaded but the current response has no per-credit details." A temporary missing list keeps the last cards instead of spinning forever.
+- **Google account ranking.** Rebalance targets the Gemini model. A generic cooldown copied from another model does not mark an account as cooling while Gemini quota remains. Google quota refreshes immediately after rebalance.
+- **Route switching.** "Switching" ends only after the mode actually changes. Failure or a 15-second timeout shows a short failure message and leaves the current mode unchanged. The script selects a Python that can read TOML, so an old system Python no longer makes the button look dead. Set `CODEX_BRIDGE_PYTHON` or `PYTHON` to choose the interpreter.
+- **Safety and data.** The plugin no longer guesses a management key. Updated OAuth credentials and local rollups are written with restricted permissions. Token totals remember the file read position, so a restart does not count the same log twice. Expired windows retry with backoff instead of polling every few seconds.
+- **Removed controls.** The diagnostics copy button and the token-summary copy button are gone. The token scope footnote is no longer shown at the bottom of the card. Totals still cover only local session logs, not other devices, unsynced sessions, or deleted history.
+- **Windows.** The probe matches the listening port exactly and reports pass, fail, or unknown. A native title bar that cannot be injected still stops the probe.
+
+**Known limit:** switching between OpenAI and an external route still runs the bridge `--restart` flow. It can restart Codex and launch `Codex Quota Header.app`. It is not a hot switch. Save in-progress work first.
+
+---
