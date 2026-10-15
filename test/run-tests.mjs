@@ -18,6 +18,7 @@
   'cdp-injection-retry.test.mjs',
   'installer.test.mjs',
   'renderer-contract.test.mjs',
+  'reset-card-lifecycle.test.mjs',
   'optimization-contract.test.mjs',
   'storage-safety.test.mjs',
   'refresh-contract.test.mjs',

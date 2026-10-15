@@ -111,10 +111,11 @@
     resetCredits: null,
     resetCreditDetails: [],
     resetCreditDetailsLoaded: false,
+    resetCreditDetailsState: settings.enableResetCredits ? 'loading' : 'idle',
     lastUpdated: null,
     error: null,
   };
-  let vouchersLoading = false;
+  let vouchersLoading = Boolean(settings.enableResetCredits);
   let extendedUsageState = {
     rebalanceState: 'idle',
     copyStatus: 'idle',
@@ -150,6 +151,9 @@
   };
   let failoverSwitching = false;
   let failoverRequestId = null;
+  let failoverSwitchFrom = null;
+  let failoverError = false;
+  let failoverErrorTimer = null;
   let failoverTimeoutTimer = null;
   let rebalanceRequestId = null;
   let rebalanceFeedbackTimer = null;
@@ -270,6 +274,7 @@
       loadingVouchers: '正在加载重置券…',
       noGoogleAccounts: '未检测到本地 Google AI Pro 账号配置',
       noResetCoupons: '暂无可用重置券',
+      resetDetailsUnavailable: '已读取可用次数，但当前接口未返回重置券明细',
       today: '今天',
       days7: '近7日',
       days30: '近30日',
@@ -362,6 +367,7 @@
       loadingVouchers: 'Loading reset credits…',
       noGoogleAccounts: 'No local Google AI Pro accounts found',
       noResetCoupons: 'No available reset coupons',
+      resetDetailsUnavailable: 'Available count loaded; reset-credit details were not returned',
       today: 'Today',
       days7: 'Last 7 days',
       days30: 'Last 30 days',
@@ -568,6 +574,16 @@
     failoverTimeoutTimer = null;
     failoverSwitching = false;
     failoverRequestId = null;
+    failoverSwitchFrom = null;
+    if (state === 'error') {
+      failoverError = true;
+      if (failoverErrorTimer) clearTimeout(failoverErrorTimer);
+      failoverErrorTimer = setTimeout(() => {
+        failoverError = false;
+        failoverErrorTimer = null;
+        if (popover?.classList.contains('is-visible')) renderPopover();
+      }, 2500);
+    }
     if (popover?.classList.contains('is-visible')) {
       renderPopover();
       positionPopover();
@@ -753,6 +769,41 @@
     };
   }
 
+  function normalizeResetCreditDetails(raw, previous = {}) {
+    const resetCredits = raw?.rateLimitResetCredits;
+    const countSource = resetCredits && typeof resetCredits === 'object'
+      ? (resetCredits.availableCount ?? resetCredits.available_count ?? raw.rate_limit_reset_credits)
+      : (resetCredits ?? raw?.rate_limit_reset_credits);
+    const count = Number(countSource);
+    const availableCount = Number.isFinite(count) ? count : null;
+    const hasDetailsArray = Boolean(resetCredits && typeof resetCredits === 'object'
+      && Array.isArray(resetCredits.credits));
+
+    if (hasDetailsArray) {
+      const details = resetCredits.credits.map(item => ({
+        id: item.id || null,
+        status: item.status || null,
+        title: item.title || null,
+        description: item.description || null,
+        expiresAt: Number(item.expiresAt || 0),
+      }));
+      const state = details.length > 0 ? 'loaded'
+        : availableCount > 0 ? 'unavailable' : 'empty';
+      return { availableCount, details, loaded: true, state };
+    }
+
+    const previousDetails = Array.isArray(previous.resetCreditDetails) ? previous.resetCreditDetails : [];
+    if (previous.resetCreditDetailsLoaded && previousDetails.length > 0) {
+      return { availableCount, details: previousDetails, loaded: true, state: 'stale' };
+    }
+    return {
+      availableCount,
+      details: [],
+      loaded: false,
+      state: availableCount === 0 ? 'empty' : 'unavailable',
+    };
+  }
+
   function normalizePayload(raw, metadata = {}) {
     if (!raw || typeof raw !== 'object') return null;
     const legacy = raw.rateLimits || raw.rate_limit || raw;
@@ -772,21 +823,10 @@
       : primary;
     const credits = root.credits || raw.credits || {};
     const balance = credits.balance ?? credits.balanceText ?? raw.balance ?? null;
-    const resetCredits = raw.rateLimitResetCredits;
-    const availableCount = typeof resetCredits === 'object'
-      ? Number(resetCredits.availableCount ?? resetCredits.available_count)
-      : Number(resetCredits ?? raw.rate_limit_reset_credits);
-    const hasDetailsArray = typeof resetCredits === 'object' && Array.isArray(resetCredits.credits);
-    const details = hasDetailsArray
-      ? resetCredits.credits.map(item => ({
-        id: item.id || null,
-        status: item.status || null,
-        title: item.title || null,
-        description: item.description || null,
-        expiresAt: Number(item.expiresAt || 0),
-      }))
-      : [];
-    if (hasDetailsArray) vouchersLoading = false;
+    const resetDetailPayload = normalizeResetCreditDetails(raw, usageState);
+    // 本次额度请求已完成。若上游只返回可用次数而未给出明细，
+    // 应显示“明细不可用”，而不是让加载动画一直转。
+    vouchersLoading = false;
     const unlimited = credits.unlimited === true || credits.unlimited === 'true';
     return {
       status: 'ready',
@@ -799,9 +839,10 @@
         displayValue: unlimited ? t('unlimited') : formatCreditBalance(balance),
         unlimited,
       },
-      resetCredits: Number.isFinite(availableCount) ? availableCount : null,
-      resetCreditDetails: details,
-      resetCreditDetailsLoaded: hasDetailsArray,
+      resetCredits: resetDetailPayload.availableCount,
+      resetCreditDetails: resetDetailPayload.details,
+      resetCreditDetailsLoaded: resetDetailPayload.loaded,
+      resetCreditDetailsState: resetDetailPayload.state,
       lastUpdated: Number(metadata.fetchedAt) || Date.now(),
       error: null,
     };
@@ -949,7 +990,10 @@
     }[module];
     if (!config) return;
     settings[config.key] = !settings[config.key];
-    if (module === 'reset' && settings[config.key] && !usageState.resetCreditDetailsLoaded) vouchersLoading = true;
+    if (module === 'reset') {
+      vouchersLoading = settings[config.key] && !usageState.resetCreditDetailsLoaded;
+      if (vouchersLoading) usageState.resetCreditDetailsState = 'loading';
+    }
     persistSettings();
     emitCommand('settings', { [config.command]: settings[config.key] });
     if (settings[config.key]) emitCommand('refresh', {}, false);
@@ -1122,13 +1166,12 @@
       if (failoverBtn) {
         if (failoverSwitching) return;
         failoverSwitching = true;
+        failoverError = false;
+        failoverSwitchFrom = extendedUsageState.failover?.mode || 'openai';
         if (failoverTimeoutTimer) clearTimeout(failoverTimeoutTimer);
         failoverTimeoutTimer = setTimeout(() => {
-          failoverSwitching = false;
-          failoverRequestId = null;
           failoverTimeoutTimer = null;
-          renderPopover();
-          positionPopover();
+          finishFailoverFeedback('error');
         }, 15000);
         failoverRequestId = emitCommand('toggleFailoverMode', {}, true);
         renderPopover();
@@ -1283,7 +1326,6 @@
     popoverHideTimer = null;
     popoverState = 'closed';
     tokenModelMenuOpen = false;
-    if (popover) popover.__lastMarkup = null;
     popover?.classList.remove('is-visible');
     popover?.setAttribute('aria-hidden', 'true');
     updateExpanded(false);
@@ -1500,6 +1542,10 @@
       modeLabel = isZh ? '正在切换模式' : 'Switching Mode';
       desc = isZh ? '正在切换模型路由并平滑重启服务，请稍候…' : 'Switching model routing & reloading service…';
       action = isZh ? '命令执行中…' : 'Executing command…';
+    } else if (failoverError) {
+      modeLabel = isZh ? '切换失败' : 'Switch Failed';
+      desc = isZh ? '桥接脚本执行出错，模式未改变' : 'Bridge script failed; mode unchanged';
+      action = isZh ? '请重试或查看诊断信息' : 'Retry or check diagnostics';
     } else if (isExternal) {
       modeLabel = isZh ? '当前模式：自定义模型' : 'Current: External Model';
       if (!pExhausted && pRemain > 0) {
@@ -1982,7 +2028,8 @@
 
     const voucherUnavailable = Boolean(usageState.error) && !usageState.resetCreditDetailsLoaded;
     const isVoucherLoading = !voucherUnavailable
-      && (vouchersLoading || (settings.enableResetCredits && !usageState.resetCreditDetailsLoaded));
+      && settings.enableResetCredits && vouchersLoading && !usageState.resetCreditDetailsLoaded;
+    const resetDetailsEmpty = usageState.resetCreditDetailsState === 'empty' || usageState.resetCredits === 0;
     const details = voucherUnavailable
       ? renderEmptyState(ticketEmptySvg, usageState.error || t('unavailable'))
       : isVoucherLoading
@@ -2002,7 +2049,9 @@
               + '<div class="coupon-copy"><strong>' + esc(t('fullReset')) + '</strong><span>' + esc(expiry) + '</span></div>'
               + designIcon('couponWave', 'coupon-wave') + '</div>';
           }).join('')
-          : renderEmptyState(ticketEmptySvg, t('noResetCoupons')));
+          : renderEmptyState(ticketEmptySvg, resetDetailsEmpty
+            ? t('noResetCoupons')
+            : t('resetDetailsUnavailable')));
 
     const pPercent = (p?.remainingPercent ?? '—') + '%';
     const sPercent = (s?.remainingPercent ?? '—') + '%';
@@ -2633,7 +2682,7 @@
     host.addEventListener('mouseover', openFromHost, true);
     host.addEventListener('mouseenter', openFromHost, true);
     const onHostLeave = () => {
-      suppressHoverUntilLeave = false;
+      if (!document.hidden) suppressHoverUntilLeave = false;
       scheduleHidePopover();
     };
     host.addEventListener('pointerleave', onHostLeave, true);
@@ -2675,6 +2724,7 @@
         const popRect = popoverState !== 'closed' ? popover?.getBoundingClientRect() : null;
         const insidePopover = popRect && point.x >= popRect.left && point.x <= popRect.right
           && point.y >= popRect.top && point.y <= popRect.bottom;
+        if (!inside) suppressHoverUntilLeave = false;
         if (inside || insidePopover) {
           if (popoverHideTimer) clearTimeout(popoverHideTimer);
           popoverHideTimer = null;
@@ -3145,12 +3195,11 @@
         ...extendedUsageState.failover,
         ...payload.failover,
       };
-      if (failoverTimeoutTimer) {
-        clearTimeout(failoverTimeoutTimer);
-        failoverTimeoutTimer = null;
+      // 快照每秒都带 failover 字段；只有模式真正发生变化才结束切换态，
+      // 否则加载反馈会被下一次广播立刻清掉，点击看起来像没反应。
+      if (failoverSwitching && payload.failover.mode && payload.failover.mode !== failoverSwitchFrom) {
+        finishFailoverFeedback('success');
       }
-      failoverSwitching = false;
-      failoverRequestId = null;
     }
     if (payload.tokens && typeof payload.tokens === 'object') {
       const savedRange = extendedUsageState.tokens.selectedRange ||
@@ -3295,6 +3344,8 @@
   on(window, 'scroll', positionPopover, true);
   on(document, 'visibilitychange', () => {
     if (document.hidden) {
+      if (popoverState !== 'closed') suppressHoverUntilLeave = true;
+      hidePopover(true);
       if (countdownTimer) clearInterval(countdownTimer);
       countdownTimer = null;
       if (healthTimer) clearInterval(healthTimer);

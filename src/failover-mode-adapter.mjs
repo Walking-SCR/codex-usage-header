@@ -10,7 +10,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { getPluginInstallDir } from './platform-paths.mjs';
 
 const DEFAULT_STATE_PATH = join(
@@ -104,13 +104,41 @@ export function launchCodexQuotaHeaderApp(options = {}) {
 }
 
 /**
+ * 选择能运行桥接脚本的 Python：脚本依赖 tomllib（3.11+）或 tomli。
+ * 显式指定（options / 环境变量）优先；否则逐个探测候选解释器并缓存结果。
+ * 系统自带的 python3 可能是 3.9 且未装 tomli，直接用会秒退，按钮表现为无响应。
+ */
+let resolvedPythonBin = null;
+export function resolveFailoverPython(options = {}) {
+  const explicit = options.pythonBin || process.env.CODEX_BRIDGE_PYTHON || process.env.PYTHON;
+  if (explicit) return explicit;
+  if (resolvedPythonBin) return resolvedPythonBin;
+  const names = process.platform === 'win32' ? ['python'] : ['python3', 'python3.13', 'python3.12', 'python3.11'];
+  const candidates = [];
+  for (const name of names) {
+    candidates.push(name);
+    if (process.platform !== 'win32') candidates.push(join(homedir(), '.local', 'bin', name));
+  }
+  const probe = 'import sys\ntry:\n import tomllib\nexcept ModuleNotFoundError:\n import tomli';
+  for (const bin of candidates) {
+    try {
+      execFileSync(bin, ['-c', probe], { timeout: 4000, stdio: 'ignore', windowsHide: true });
+      resolvedPythonBin = bin;
+      return bin;
+    } catch { /* 该解释器不可用，试下一个 */ }
+  }
+  resolvedPythonBin = names[0];
+  return resolvedPythonBin;
+}
+
+/**
  * 触发双向交替切换命令
  * python3 ~/.codex/skills/codex-autoheal-bridge/scripts/quota_failover.py toggle --apply --restart
  * 执行后触发打开【Codex Quota Header】APP
  */
 export function triggerToggleFailoverMode(options = {}) {
   const scriptPath = options.scriptPath || DEFAULT_SCRIPT_PATH;
-  const pythonBin = options.pythonBin || process.env.CODEX_BRIDGE_PYTHON || process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  const pythonBin = resolveFailoverPython(options);
 
   return new Promise((resolve) => {
     if (!existsSync(scriptPath)) {
