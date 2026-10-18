@@ -1243,7 +1243,7 @@ export class TokenRollupEngine {
           models: models.map(model => ({ ...model, percent: calcPct(model.tokens, familyEntry.tokens) })),
         };
       });
-      const summaryItems = items.length > 4
+      const summaryItems = items.length > 3
         ? [
           ...items.slice(0, 3),
           (() => {

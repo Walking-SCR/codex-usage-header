@@ -1504,9 +1504,11 @@
     return 'conic-gradient(' + stops.join(',') + ')';
   }
 
-  function renderTokenFamilyRow(item, isZh) {
-    const label = tokenFamilyLabel(item, isZh);
-    return '<div class="token-model-row">'
+  function renderTokenFamilyRow(item, isZh, expandable = false) {
+    const label = tokenFamilyLabel(item, isZh) + (expandable ? ' ▾' : '');
+    return '<div class="token-model-row' + (expandable ? ' is-folded-other token-folded-toggle' : '') + '"'
+      + (expandable ? ' role="button" tabindex="0" title="' + esc(isZh ? '点击展开其余分类' : 'Click to expand the remaining families') + '"' : '')
+      + '>'
       + '<span class="token-model-label" title="' + esc(label) + '"><span class="token-model-dot" style="background:' + tokenFamilyColor(item.key) + '"></span>' + esc(label) + '</span>'
       + '<span class="token-model-bar"><span class="token-model-bar-fill" style="width:' + percentWidth(item.percent) + '%;background:' + tokenFamilyColor(item.key) + '"></span></span>'
       + '<span class="token-model-pct">' + esc(item.percent || '—') + '</span>'
@@ -1659,7 +1661,17 @@
           let itemRows = '';
           if (selectedModel === 'all') {
             const summaryItems = rangeData.summaryItems || rawItems;
-            itemRows = summaryItems.map(item => renderTokenFamilyRow(item, isZh)).join('');
+            const hasOverflow = summaryItems.some(item => item.key === 'overflow');
+            if (hasOverflow && extendedUsageState.tokens.otherModelsExpanded) {
+              const collapseLabel = isZh ? '收起其余分类 ▴' : 'Collapse ▴';
+              const collapseRow = '<div class="token-collapse-wrap">'
+                + '<div class="token-collapse-btn token-folded-toggle" role="button" tabindex="0" title="' + esc(isZh ? '点击收起' : 'Click to collapse') + '">'
+                + '<span>' + esc(collapseLabel) + '</span>'
+                + '</div></div>';
+              itemRows = rawItems.map(item => renderTokenFamilyRow(item, isZh)).join('') + collapseRow;
+            } else {
+              itemRows = summaryItems.map(item => renderTokenFamilyRow(item, isZh, item.key === 'overflow')).join('');
+            }
           } else if (selectedFamily?.models?.length) {
             const models = selectedFamily.models;
             const familyColor = tokenFamilyColor(selectedFamily.key);

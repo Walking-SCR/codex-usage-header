@@ -193,6 +193,19 @@ try {
   assert.equal(manyFamiliesRange.summaryItems[3].modelCount, 3);
   assert.equal(manyFamiliesRange.summaryItems[3].tokens, 180);
   assert.equal(manyFamiliesRange.summaryItems.reduce((sum, item) => sum + item.tokens, 0), manyFamiliesRange.total);
+
+  // 只剩一个其余分类时也要折叠成可展开的「其他模型合计」
+  const singleOther = new TokenRollupEngine({ baseDir: testDir });
+  singleOther.data.days[todayDate] = {
+    'gpt-6-astra': 120,
+    'gemini-3.8-flash-high': 90,
+    'deepseek-v4-flash': 80,
+    'claude-sonnet-4-6': 60,
+  };
+  const singleOtherRange = singleOther.calculateRollup().today;
+  assert.deepEqual(singleOtherRange.summaryItems.map(item => item.key), ['gpt', 'gemini', 'deepseek', 'overflow']);
+  assert.equal(singleOtherRange.summaryItems[3].modelCount, 1);
+  assert.equal(singleOtherRange.summaryItems[3].tokens, 60);
   assert.equal(manyFamiliesRange.items.find(item => item.key === 'deepseek').models[0].id, 'deepseek-v4-flash');
 
     // 测试老旧日期目录（例如跨天长会话）里的活跃文件增量收集
