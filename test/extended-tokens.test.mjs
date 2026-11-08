@@ -161,7 +161,9 @@ try {
   // 测试保存和重新加载
   engine.dirty = true;
   engine.save(true);
-  assert.equal(statSync(storagePath).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') {
+    assert.equal(statSync(storagePath).mode & 0o777, 0o600);
+  }
 
   const reloaded = new TokenRollupEngine({ baseDir: testDir, storagePath });
   reloaded.load();

@@ -9,6 +9,11 @@ import { getMonitorStatus } from '../src/monitor-lock.mjs';
 
 console.log('Testing: macOS installer and launcher wrapper...');
 
+if (process.platform !== 'darwin') {
+  console.log('Skipping macOS installer test on non-darwin platform');
+  process.exit(0);
+}
+
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = dirname(testDir);
 const tempHome = mkdtempSync(join(tmpdir(), 'codex-usage-header-'));

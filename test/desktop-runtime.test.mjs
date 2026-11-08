@@ -17,7 +17,7 @@ assert.equal(discover([bundled, movedBundle], { processPaths: ['/custom/ChatGPT.
 assert.equal(discover(['/opt/homebrew/bin/codex']), '/opt/homebrew/bin/codex', 'GUI 的 PATH 缺少 Homebrew 时仍可定位');
 assert.equal(discover(['/opt/custom/codex'], { findOnPath: () => '/opt/custom/codex\n' }), '/opt/custom/codex');
 assert.equal(discover([], { findOnPath: () => '/missing/codex' }), undefined, 'PATH 输出仍须经过可执行校验');
-assert.ok(desktopExecutableCandidates({ home: '/users/test', processPaths: [] }).includes('/Applications/Codex.app/Contents/MacOS/Codex'));
+assert.ok(desktopExecutableCandidates({ platform: 'darwin', home: '/users/test', processPaths: [] }).includes('/Applications/Codex.app/Contents/MacOS/Codex'));
 
 // Windows 候选可执行文件与 CLI 探测测试
 const winEnv = {
