@@ -42,9 +42,12 @@ window.__codexUsageHeaderSetUsage__({
    {id:'preview-1',expiresAt:now+9*86400}, {id:'preview-2',expiresAt:now+10*86400}, {id:'preview-3',expiresAt:now+28*86400}
  ]}
 },{fetchedAt:Date.now()});
-const rows=[['Gemini 5h',81,now+4*3600],['Gemini 7d',95,now+6*86400],['Claude & GPT 5h',100,now+5*3600],['Claude & GPT 7d',100,now+6*86400]];
+const rows5=[['Gemini 4 Argon 7d',100,now+7*86400],['Gemini 5h',100,now+5*3600],['Gemini 7d',100,now+7*86400],['Claude & GPT 5h',100,now+4*3600+57*60],['Claude & GPT 7d',79,now+4*86400+13*3600]];
+const rows4=[['Gemini 5h',100,now+5*3600],['Gemini 7d',100,now+7*86400],['Claude & GPT 5h',100,now+5*3600],['Claude & GPT 7d',100,now+7*86400]];
+const rows2=[['Gemini 5h',88,now+4*3600],['Gemini 7d',92,now+6*86400]];
+const rowSets=[rows5,rows4,rows2];
 const accounts=['shekchoyrong','walkingscr','mancyliao001'].map((label,i)=>({
- label,email:label+'@example.test',rows:rows.map(([name,pct,resetTime])=>({label:name,remainingPercent:pct-i*3,resetTime}))
+ label,email:label+'@example.test',rows:rowSets[i].map(([name,pct,resetTime])=>({label:name,remainingPercent:pct,resetTime}))
 }));
 const scenario=previewOptions.get('health');
 if(scenario==='auth') Object.assign(accounts[0],{status:'error',stale:true,error:'auth_unavailable',httpStatus:503});

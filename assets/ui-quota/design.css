@@ -231,9 +231,11 @@
 .quota-dashboard .chevron-icon{width:20px;height:20px}
 .quota-dashboard .account-mask-toggle-btn{width:20px;height:20px}
 .quota-dashboard .account-mask-toggle-btn img{width:14px;height:14px}
-.quota-dashboard .quota-extension-rows{gap:3px}
+.quota-dashboard .quota-extension-rows{gap:3px;max-height:106px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.quota-dashboard .quota-extension-rows::-webkit-scrollbar{width:4px}
+.quota-dashboard .quota-extension-rows::-webkit-scrollbar-thumb{background:rgba(120,120,128,.28);border-radius:999px}
 .quota-dashboard .quota-extension-row{
-  display:grid;grid-template-columns:minmax(105px,120px) minmax(65px,1fr) 40px minmax(78px,92px);
+  display:grid;grid-template-columns:minmax(105px,max-content) minmax(65px,1fr) 40px minmax(78px,92px);
   min-height:24px;gap:5px;padding:3px 7px;border-radius:7px;
 }
 .quota-dashboard .quota-extension-row>*{grid-column:auto;grid-row:auto}
@@ -304,6 +306,7 @@
   .quota-dashboard .credit-detail{scroll-snap-align:start}
   .quota-dashboard .quota-extension-header-actions{width:100%;min-width:0}
   .quota-dashboard .quota-extension-account-tabs{max-width:calc(100% - 30px)}
+  .quota-dashboard .quota-extension-rows{max-height:240px}
   .quota-dashboard .quota-extension-row{grid-template-columns:minmax(84px,1fr) 44px;gap:4px}
   .quota-dashboard .quota-extension-percent{grid-column:2;grid-row:1}
   .quota-dashboard .quota-extension-track{grid-column:1/-1;grid-row:2}

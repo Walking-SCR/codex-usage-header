@@ -1073,7 +1073,11 @@
       const manualAccount = anti.userSelectedAccount ? accounts.find(a => a.email === anti.userSelectedAccount) : null;
       const isManualValid = Boolean(manualAccount);
       const activeAccount = (isManualValid ? manualAccount : (accounts.find(a => a.email === anti.selectedAccount) || accounts.find(isAccountAvailable))) || accounts[0] || anti;
-      const rows = activeAccount.rows || [];
+      const rawRows = activeAccount.rows || [];
+      const availableRows = rawRows.some(r => !r.unavailable) ? rawRows.filter(r => !r.unavailable) : rawRows;
+      const rows = claudeGptCollapsed
+        ? availableRows.filter(row => !/claude\s*&\s*gpt/i.test(row.label || ''))
+        : availableRows;
 
       const rowEls = popover.querySelectorAll('.quota-extension-row');
       rowEls.forEach((rowEl, idx) => {
@@ -1814,7 +1818,10 @@
     const manualAccount = anti.userSelectedAccount ? accounts.find(a => a.email === anti.userSelectedAccount) : null;
     const isManualValid = Boolean(manualAccount);
     const activeAccount = (isManualValid ? manualAccount : (accounts.find(a => a.email === anti.selectedAccount) || accounts.find(isAccountAvailable))) || accounts[0] || anti;
-    const activeRows = activeAccount.rows || anti.rows || [];
+    const rawActiveRows = activeAccount.rows || anti.rows || [];
+    const activeRows = rawActiveRows.some(r => !r.unavailable)
+      ? rawActiveRows.filter(r => !r.unavailable)
+      : rawActiveRows;
     const enableDynamic = Boolean(anti.enableDynamicPriority && anti.poolStatus?.available);
     const poolStatus = anti.poolStatus || {};
     const accountHealth = acc => {
@@ -1972,7 +1979,7 @@
     } else if (!activeRows || activeRows.length === 0) {
       geminiContent = renderEmptyState(docEmptySvg, t('noData'));
     } else if (visibleProviderRows.length) {
-        geminiContent = '<div class="quota-extension-rows">'
+        geminiContent = '<div class="quota-extension-rows' + (visibleProviderRows.length > 4 ? ' is-scrollable' : '') + '" data-row-count="' + visibleProviderRows.length + '">'
           + visibleProviderRows.map((row, idx) => {
             const color = getQuotaColor(row.remainingPercent);
             const percentText = (row.remainingPercent !== null && row.remainingPercent !== undefined && !row.unavailable)
@@ -2228,8 +2235,8 @@
       '@keyframes quota-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}',
       '.quota-extension-toggle{border:0;background:transparent;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:4px;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s ease}',
       '.quota-extension-toggle:hover{color:' + (dark ? '#FFFFFF' : '#1D1D1F') + ';background:' + (dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.05)') + '}',
-      '.quota-extension-rows{display:flex;flex-direction:column}',
-      '.quota-extension-row{display:grid;grid-template-columns:112px minmax(100px,1fr) 38px 96px;align-items:center;gap:10px;min-height:30px;border-bottom:1px solid ' + (dark ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.04)') + ';padding:5px 0}',
+      '.quota-extension-rows{display:flex;flex-direction:column;max-height:124px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}',
+      '.quota-extension-row{display:grid;grid-template-columns:minmax(112px,max-content) minmax(100px,1fr) 38px 96px;align-items:center;gap:10px;min-height:30px;border-bottom:1px solid ' + (dark ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.04)') + ';padding:5px 0}',
       '.quota-extension-row.is-last{border-bottom:0;padding-bottom:0}',
       '.quota-extension-label{font-size:12.5px;font-weight:500;text-align:left;white-space:nowrap;color:' + (dark ? '#F5F5F7' : '#1D1D1F') + '}',
       '.quota-extension-track{height:10px;min-width:100px;border-radius:999px;overflow:hidden;background:' + (dark ? 'rgba(120,120,128,.24)' : '#E5E7EB') + '}',

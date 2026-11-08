@@ -164,18 +164,30 @@ function parseRecoveryTime(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+export function normalizeQuotaWindow(bucketWindow, bucketId = '', displayName = '') {
+  const raw = `${bucketWindow || ''} ${bucketId || ''} ${displayName || ''}`;
+  const w = normalizeMatchText(bucketWindow || bucketId || displayName);
+  if (w === '5h' || w.includes('fivehour') || w.includes('5hour') || /5\s*小时/.test(raw)) return '5h';
+  if (w === '7d' || w.includes('weekly') || w.includes('week') || w.includes('7day') || /周限额|每周|7\s*天/.test(raw)) return '7d';
+  return String(bucketWindow || '').trim();
+}
+
 export function matchGeminiStandardRow(groupName, bucketWindow) {
   const g = normalizeMatchText(groupName);
-  const w = normalizeMatchText(bucketWindow);
+  const strippedGemini = String(groupName || '')
+    .replace(/(?:^|[\s_-])models?(?:$|[\s_-])|模型/gi, '')
+    .replace(/[^a-z0-9一-龥]/gi, '')
+    .toLowerCase();
 
-  const isGeminiGroup = g.includes('gemini');
+  const isBaseGeminiGroup = strippedGemini === 'gemini';
   const isClaudeGptGroup = g.includes('claude') || g.includes('gpt') || g.includes('3p') || g.includes('shared');
 
-  const is5h = w === '5h' || w.includes('fivehour') || w.includes('5hour');
-  const isWeekly = w === '7d' || w.includes('weekly') || w.includes('week') || w.includes('7day');
+  const win = normalizeQuotaWindow(bucketWindow);
+  const is5h = win === '5h';
+  const isWeekly = win === '7d';
 
-  if (isGeminiGroup && is5h) return 'Gemini 5h';
-  if (isGeminiGroup && isWeekly) return 'Gemini 7d';
+  if (isBaseGeminiGroup && is5h) return 'Gemini 5h';
+  if (isBaseGeminiGroup && isWeekly) return 'Gemini 7d';
   if (isClaudeGptGroup && isWeekly) return 'Claude & GPT 7d';
   if (isClaudeGptGroup && is5h) return 'Claude & GPT 5h';
   return null;
@@ -405,7 +417,7 @@ export class GeminiQuotaManager {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
-          'User-Agent': 'Antigravity/2.15.0',
+          'User-Agent': 'antigravity/hub/2.29.0 darwin/arm64',
         },
         timeout: 15000,
       }, (res) => {
@@ -441,7 +453,7 @@ export class GeminiQuotaManager {
         header: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
-          'User-Agent': 'Antigravity/2.15.0',
+          'User-Agent': 'antigravity/hub/2.29.0 darwin/arm64',
         },
       });
 
@@ -493,10 +505,21 @@ export class GeminiQuotaManager {
 
     for (const group of groups) {
       const groupName = group.displayName || group.display_name || '';
+      const cleanGroupName = String(groupName)
+        .replace(/\s+\bmodels?\b$/i, '')
+        .replace(/\s*模型$/, '')
+        .trim();
       const buckets = Array.isArray(group.buckets) ? group.buckets : [];
+      const groupExtras = [];
+
       for (const bucket of buckets) {
         const windowName = bucket.window || '';
-        const matchKey = matchGeminiStandardRow(groupName, windowName);
+        const normWin = normalizeQuotaWindow(
+          windowName,
+          bucket.bucketId || bucket.bucket_id,
+          bucket.displayName || bucket.display_name,
+        );
+        const matchKey = matchGeminiStandardRow(groupName, normWin || windowName);
 
         const remainingRaw = bucket.remainingFraction ?? bucket.remaining_fraction;
         const percent = (remainingRaw !== null && remainingRaw !== undefined && Number.isFinite(Number(remainingRaw)))
@@ -506,8 +529,12 @@ export class GeminiQuotaManager {
         const resetTimeRaw = bucket.resetTime || bucket.reset_time;
         const resetTimestamp = resetTimeRaw ? new Date(resetTimeRaw).getTime() : 0;
         let resetSeconds = resetTimestamp ? Math.max(0, Math.floor((resetTimestamp - Date.now()) / 1000)) : null;
-        if (windowName === '5h' && Number.isFinite(resetSeconds)) {
+        if (normWin === '5h' && Number.isFinite(resetSeconds)) {
           resetSeconds = Math.min(18000, resetSeconds);
+        }
+        if (resetSeconds === null && percent !== null) {
+          if (normWin === '5h') resetSeconds = 18000;
+          else if (normWin === '7d') resetSeconds = 7 * 86400;
         }
 
         const entry = {
@@ -521,30 +548,27 @@ export class GeminiQuotaManager {
         if (matchKey && standard[matchKey] === null) {
           standard[matchKey] = { label: matchKey, ...entry };
         } else if (!matchKey) {
-          let extraLabel = `${groupName} ${windowName}`.trim();
+          let extraLabel = `${cleanGroupName} ${normWin || windowName}`.trim();
           if (extraLabel === 'Claude and GPT models 5h') extraLabel = 'Claude & GPT 5h';
           if (extraLabel === 'Claude and GPT models weekly') extraLabel = 'Claude & GPT 7d';
-          if (!extra.some(e => e.label === extraLabel)) {
-            extra.push({ label: extraLabel, ...entry });
+          if (!extra.some(e => e.label === extraLabel) && !groupExtras.some(e => e.label === extraLabel)) {
+            groupExtras.push({ label: extraLabel, _win: normWin || windowName, ...entry });
           }
         }
       }
+
+      groupExtras.sort((a, b) => (a._win === '5h' ? -1 : b._win === '5h' ? 1 : 0));
+      for (const item of groupExtras) {
+        const { _win, ...rest } = item;
+        extra.push(rest);
+      }
     }
 
-    const rows = [
-      standard['Gemini 5h'] || { label: 'Gemini 5h', remainingPercent: null, countdown: null, unavailable: true },
-      standard['Gemini 7d'] || { label: 'Gemini 7d', remainingPercent: null, countdown: null, unavailable: true },
-    ];
-
-    if (standard['Claude & GPT 5h']) {
-      rows.push(standard['Claude & GPT 5h']);
-    }
-
-    rows.push(
-      standard['Claude & GPT 7d'] || { label: 'Claude & GPT 7d', remainingPercent: null, countdown: null, unavailable: true }
-    );
-
-    rows.push(...extra);
+    const rows = [...extra];
+    if (standard['Gemini 5h']) rows.push(standard['Gemini 5h']);
+    if (standard['Gemini 7d']) rows.push(standard['Gemini 7d']);
+    if (standard['Claude & GPT 5h']) rows.push(standard['Claude & GPT 5h']);
+    if (standard['Claude & GPT 7d']) rows.push(standard['Claude & GPT 7d']);
     return rows;
   }
 

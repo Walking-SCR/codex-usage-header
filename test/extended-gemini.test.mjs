@@ -25,6 +25,9 @@ assert.equal(matchGeminiStandardRow('Claude and GPT models', 'weekly'), 'Claude 
 assert.equal(matchGeminiStandardRow('Claude and GPT models', '5h'), 'Claude & GPT 5h');
 assert.equal(matchGeminiStandardRow('3p-models', '7d'), 'Claude & GPT 7d');
 assert.equal(matchGeminiStandardRow('Shared Models', 'weekly'), 'Claude & GPT 7d');
+assert.equal(matchGeminiStandardRow('Gemini 4 Argon', 'weekly'), null, 'Gemini 4 Argon 必须作为独立动态分组解析，不可被归入基础 Gemini 7d');
+assert.equal(matchGeminiStandardRow('Gemini 模型', '周限额'), 'Gemini 7d');
+assert.equal(matchGeminiStandardRow('Claude 与 GPT 模型', '5 小时限额'), 'Claude & GPT 5h');
 
 // 3. 原始数据解析测试（支持 camelCase 和 snake_case）
 const manager = new GeminiQuotaManager();
@@ -57,7 +60,7 @@ assert.equal(rowsCamel[1].remainingPercent, 42);
 assert.equal(rowsCamel[2].label, 'Claude & GPT 7d');
 assert.equal(rowsCamel[2].remainingPercent, 95);
 
-// 测试 snake_case 数据
+// 测试 snake_case 数据（仅含 Gemini 模型，无 Claude 时隐藏 Claude 行，仅返回 2 行）
 const snakePayload = {
   groups: [
     {
@@ -71,14 +74,29 @@ const snakePayload = {
 };
 
 const rowsSnake = manager.parseRawQuotaPayload(snakePayload);
+assert.equal(rowsSnake.length, 2, '无 Claude 分组时只返回 2 条 Gemini 额度行');
 assert.equal(rowsSnake[0].label, 'Gemini 5h');
 assert.equal(rowsSnake[0].remainingPercent, 0); // explicitly 0 must stay 0%
 assert.equal(rowsSnake[0].unavailable, false);
 assert.equal(rowsSnake[1].label, 'Gemini 7d');
 assert.equal(rowsSnake[1].remainingPercent, 50);
-assert.equal(rowsSnake[2].label, 'Claude & GPT 7d');
-assert.equal(rowsSnake[2].remainingPercent, null);
-assert.equal(rowsSnake[2].unavailable, true); // missing data must not become 0%
+
+// 测试显式缺失 remaining_fraction 的桶不会变成 0%
+const missingFractionPayload = {
+  groups: [
+    {
+      display_name: 'claude_and_gpt_models',
+      buckets: [
+        { window: 'week', remaining_fraction: null },
+      ],
+    },
+  ],
+};
+const missingFractionRows = manager.parseRawQuotaPayload(missingFractionPayload);
+assert.equal(missingFractionRows.length, 1);
+assert.equal(missingFractionRows[0].label, 'Claude & GPT 7d');
+assert.equal(missingFractionRows[0].remainingPercent, null);
+assert.equal(missingFractionRows[0].unavailable, true); // missing data must not become 0%
 
 // 测试完整的 4 行数据：Claude & GPT 7d 必须排在 Claude & GPT 5h 之后
 const fullPayload = {
@@ -105,6 +123,43 @@ assert.equal(fullRows[0].label, 'Gemini 5h');
 assert.equal(fullRows[1].label, 'Gemini 7d');
 assert.equal(fullRows[2].label, 'Claude & GPT 5h');
 assert.equal(fullRows[3].label, 'Claude & GPT 7d');
+
+// 测试含 Gemini 4 Argon 的 5 行数据（含满额无 resetTime 兜底）
+const gemini4Payload = {
+  groups: [
+    {
+      displayName: 'Gemini Models',
+      buckets: [
+        { window: 'weekly', remainingFraction: 1.0, resetTime: new Date(Date.now() + 7 * 86400000).toISOString() },
+        { window: '5h', remainingFraction: 1.0, resetTime: new Date(Date.now() + 18000000).toISOString() },
+      ],
+    },
+    {
+      displayName: 'Claude and GPT models',
+      buckets: [
+        { window: 'weekly', remainingFraction: 0.79, resetTime: new Date(Date.now() + (4 * 86400 + 13 * 3600) * 1000).toISOString() },
+        { window: '5h', remainingFraction: 1.0, resetTime: new Date(Date.now() + (4 * 3600 + 57 * 60) * 1000).toISOString() },
+      ],
+    },
+    {
+      displayName: 'Gemini 4 Argon',
+      buckets: [
+        { bucketId: 'gemini-argon-wtu-weekly', displayName: 'Gemini 4 Argon Weekly Limit', window: 'weekly', remainingFraction: 1.0 },
+      ],
+    },
+  ],
+};
+const gemini4Rows = manager.parseRawQuotaPayload(gemini4Payload);
+assert.equal(gemini4Rows.length, 5, '包含 Gemini 4 Argon 时应返回 5 条额度行');
+assert.equal(gemini4Rows[0].label, 'Gemini 4 Argon 7d');
+assert.equal(gemini4Rows[0].remainingPercent, 100);
+assert.equal(gemini4Rows[0].unavailable, false);
+assert.deepEqual(gemini4Rows[0].countdown, { zh: '7天后重置', en: 'resets in 7d' });
+assert.equal(gemini4Rows[1].label, 'Gemini 5h');
+assert.equal(gemini4Rows[2].label, 'Gemini 7d');
+assert.equal(gemini4Rows[3].label, 'Claude & GPT 5h');
+assert.equal(gemini4Rows[4].label, 'Claude & GPT 7d');
+assert.equal(gemini4Rows[4].remainingPercent, 79);
 
 // 4. 出错时保留过期缓存
 manager.cache = {

@@ -29,6 +29,62 @@ assert.match(css, /quota-extension-toggle\{position:relative;z-index:1;width:20p
 assert.match(css, /quota-extension-toggle::before\{content:"";position:absolute;inset:-6px\}/);
 assert.match(css, /chevron-icon\{width:20px;height:20px\}/);
 assert.match(css, /\.quota-dashboard \.quota-extension-row\{[\s\S]*?min-height:24px/);
+assert.match(css, /\.quota-dashboard \.quota-extension-rows\{[^}]*max-height:106px;overflow-y:auto/);
+assert.match(renderer, /data-row-count="/);
+assert.match(renderer, /visibleProviderRows\.length > 4 \? ' is-scrollable' : ''/);
+
+// 实测 renderExtendedUsage 在 5 行（含 Gemini 4 Argon）、4 行（无 Gemini 4）、2 行（无 Claude）下的真实 HTML 输出
+const start = renderer.indexOf('  function renderExtendedUsage(');
+const end = renderer.indexOf('  function popoverMarkup(', start);
+assert.ok(start >= 0 && end > start);
+const makeRenderer = new Function(
+  'settings', 'extendedUsageState', 'getAccountHealth', 'isAccountAvailable',
+  't', 'esc', 'maskAccountName', 'designIcon', 'claudeGptCollapsed',
+  'formatDynamicCountdown', 'renderEmptyState', 'getQuotaColor',
+  `${renderer.slice(start, end)}; return renderExtendedUsage;`,
+);
+const esc = v => String(v ?? '');
+const renderWithRows = (rows, collapsed = false) => makeRenderer(
+  { locale: 'zh-CN', enableGoogleAiPro: true, enableTokenUsage: false, maskAccountNames: false },
+  { antigravity: { accounts: [{ email: 'pro@example.test', label: 'pro', status: 'ready', rows }], selectedAccount: 'pro@example.test' }, tokens: {} },
+  () => ({ state: 'healthy', code: 'ok', zh: '', en: '' }),
+  () => true,
+  k => k,
+  esc,
+  v => v,
+  () => '',
+  collapsed,
+  row => row.countdown?.zh || '7天后重置',
+  () => 'empty',
+  () => '#34C759',
+)(false);
+
+const html5 = renderWithRows([
+  { label: 'Gemini 4 Argon 7d', remainingPercent: 100, unavailable: false },
+  { label: 'Gemini 5h', remainingPercent: 100, unavailable: false },
+  { label: 'Gemini 7d', remainingPercent: 100, unavailable: false },
+  { label: 'Claude & GPT 5h', remainingPercent: 100, unavailable: false },
+  { label: 'Claude & GPT 7d', remainingPercent: 79, unavailable: false },
+]);
+assert.match(html5, /class="quota-extension-rows is-scrollable" data-row-count="5"/);
+assert.match(html5, />Gemini 4 Argon 7d<\/span>[\s\S]*>Gemini 5h<\/span>[\s\S]*>Gemini 7d<\/span>[\s\S]*>Claude 5h<\/span>[\s\S]*>Claude 7d<\/span>/);
+
+const html4 = renderWithRows([
+  { label: 'Gemini 5h', remainingPercent: 100, unavailable: false },
+  { label: 'Gemini 7d', remainingPercent: 100, unavailable: false },
+  { label: 'Claude & GPT 5h', remainingPercent: 100, unavailable: false },
+  { label: 'Claude & GPT 7d', remainingPercent: 100, unavailable: false },
+]);
+assert.match(html4, /class="quota-extension-rows" data-row-count="4"/);
+assert.doesNotMatch(html4, /Gemini 4 Argon/);
+
+const html2 = renderWithRows([
+  { label: 'Gemini 5h', remainingPercent: 100, unavailable: false },
+  { label: 'Gemini 7d', remainingPercent: 100, unavailable: false },
+  { label: 'Claude & GPT 7d', remainingPercent: null, unavailable: true },
+]);
+assert.match(html2, /class="quota-extension-rows" data-row-count="2"/);
+assert.doesNotMatch(html2, />Claude 7d<\/span>/);
 assert.match(css, /\.quota-dashboard \.credit-detail\{min-height:52px/);
 assert.match(css, /\.quota-dashboard \.usage-section \.row\{[\s\S]*?min-height:38px/);
 assert.match(renderer, /Math\.min\(590, Math\.max\(280, window\.innerWidth - CONFIG\.viewportInset \* 2\)\)/);
