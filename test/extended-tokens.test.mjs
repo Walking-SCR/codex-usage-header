@@ -8,6 +8,8 @@ import {
   shiftDateKey,
   formatTokenCount,
   classifyModel,
+  parseAntigravityGenMetadataBlob,
+  parseAntigravityStepTimestamp,
   TokenRollupEngine,
 } from '../src/extended-usage.mjs';
 
@@ -294,6 +296,57 @@ try {
   await chunkedEngine.scanFileIncremental(chunkFile);
   assert.equal(chunkedEngine.data.days[chunkDate]['gemini-3.8-flash-high'], 50);
   assert.equal(chunkedEngine.data.files[chunkFile].offset, statSync(chunkFile).size);
+
+  // 测试 Claude Desktop / Claude Code JSONL 会话扫描及同 message.id 多内容块去重
+  const claudeDir = join(testDir, 'claude-projects', 'demo-proj');
+  mkdirSync(claudeDir, { recursive: true });
+  const claudeSessionFile = join(claudeDir, 'session-1.jsonl');
+  const nowIso = new Date().toISOString();
+  writeFileSync(claudeSessionFile, [
+    JSON.stringify({ type: 'assistant', timestamp: nowIso, message: { id: 'msg_01', model: 'claude-sonnet-4-6', usage: { input_tokens: 1000, cache_creation_input_tokens: 200, cache_read_input_tokens: 300, output_tokens: 50 } } }),
+    JSON.stringify({ type: 'assistant', timestamp: nowIso, message: { id: 'msg_01', model: 'claude-sonnet-4-6', usage: { input_tokens: 1000, cache_creation_input_tokens: 200, cache_read_input_tokens: 300, output_tokens: 50 } } }),
+    JSON.stringify({ type: 'assistant', timestamp: nowIso, message: { id: 'msg_02', model: 'gemini-4-argon-s', usage: { input_tokens: 500, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 100 } } }),
+  ].join('\n') + '\n');
+  const multiEngine = new TokenRollupEngine({
+    baseDir: testDir,
+    sessionsDir,
+    claudeProjectsDir: join(testDir, 'claude-projects'),
+  });
+  multiEngine.enabled = true;
+  const collectedMulti = multiEngine.collectSessionFiles(false);
+  assert.ok(collectedMulti.includes(claudeSessionFile), 'Claude 项目会话文件必须被纳入收集');
+  await multiEngine.scanFileIncremental(claudeSessionFile);
+  assert.equal(multiEngine.data.days[chunkDate]['claude-sonnet-4-6'], 1550, '相同 message.id 的多行内容块只统计一次');
+  assert.equal(multiEngine.data.days[chunkDate]['gemini-4-argon-s'], 600);
+
+  // 测试 Antigravity gen_metadata 与 step.metadata Protobuf 解析器
+  const sampleUsageSub = Buffer.from([
+    0x08, 0x01, // field 1: model_enum = 1
+    0x10, 0x64, // field 2: input_tokens = 100
+    0x18, 0x28, // field 3: output_tokens = 40
+    0x30, 0x0a, // field 6: cached_tokens = 10
+    0x3a, 0x08, ...Buffer.from('bot-1234'), // field 7: botId = "bot-1234"
+  ]);
+  const modelBytes = Buffer.from('gemini-4-argon-high');
+  const sampleEntrySub = Buffer.concat([
+    Buffer.from([0x22, sampleUsageSub.length]),
+    sampleUsageSub,
+    Buffer.from([0x9a, 0x01, modelBytes.length]),
+    modelBytes,
+  ]);
+  const sampleGenBlob = Buffer.concat([
+    Buffer.from([0x0a, sampleEntrySub.length]),
+    sampleEntrySub,
+  ]);
+  const parsedEntries = parseAntigravityGenMetadataBlob(sampleGenBlob);
+  assert.equal(parsedEntries.length, 1);
+  assert.equal(parsedEntries[0].botId, 'bot-1234');
+  assert.equal(parsedEntries[0].model, 'gemini-4-argon-high');
+  assert.equal(parsedEntries[0].tokens, 150);
+
+  const sampleStepMeta = Buffer.from([0x0a, 0x06, 0x08, 0x80, 0x80, 0xc0, 0xd6, 0x06]);
+  const parsedTs = parseAntigravityStepTimestamp(sampleStepMeta);
+  assert.ok(Number.isFinite(parsedTs) && parsedTs > 1e12, '必须正确解码 step.metadata 的 Timestamp 秒数');
 
   console.log("✓ Token rollup engine tests passed!");
 } finally {

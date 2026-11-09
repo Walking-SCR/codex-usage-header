@@ -36,6 +36,21 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 install -m 0755 "$ROOT_DIR/bin/codex-usage-header-launcher.sh" "$APP_DIR/Contents/MacOS/Codex Quota Header"
 install -m 0644 "$ROOT_DIR/bin/CodexUsageHeaderLauncher-Info.plist" "$APP_DIR/Contents/Info.plist"
 
+APPS_BASE_DIR="$(dirname "$APP_DIR")"
+for client_label in "Claude" "Antigravity"; do
+  client_app_dir="$APPS_BASE_DIR/${client_label} Quota Header.app"
+  mkdir -p "$client_app_dir/Contents/MacOS" "$client_app_dir/Contents/Resources"
+  install -m 0755 "$ROOT_DIR/bin/codex-usage-header-launcher.sh" "$client_app_dir/Contents/MacOS/Codex Quota Header"
+  install -m 0644 "$ROOT_DIR/bin/CodexUsageHeaderLauncher-Info.plist" "$client_app_dir/Contents/Info.plist"
+done
+
+if [[ "$(uname -s)" == "Darwin" ]] && command -v clang >/dev/null 2>&1; then
+  node "$ROOT_DIR/src/claude-overlay/build-overlay.mjs" >/dev/null 2>&1 || true
+  clang -O2 -framework Cocoa -framework WebKit "$ROOT_DIR/src/claude-overlay/main.m" -o "$ROOT_DIR/bin/claude-overlay-helper" 2>/dev/null || true
+  chmod 0755 "$ROOT_DIR/bin/claude-overlay-helper" 2>/dev/null || true
+  cp "$ROOT_DIR/bin/claude-overlay-helper" "$PLUGIN_DIR/bin/claude-overlay-helper" 2>/dev/null || true
+fi
+
 printf '%s\n' "✓ Plugin copied to $PLUGIN_DIR"
 printf '%s\n' "✓ Launcher installed to $LAUNCHER_BIN"
 printf '%s\n' "✓ No-terminal app installed to $APP_DIR"

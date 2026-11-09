@@ -20,7 +20,10 @@ assert.deepEqual(selectUsageTargets([
   { type: 'page', title: 'Avatar overlay', url: 'app://-/index.html?initialRoute=%2Favatar-overlay', webSocketDebuggerUrl: 'ws://overlay' },
   { type: 'page', title: 'Detached window', url: 'app://-/detached-window.html', webSocketDebuggerUrl: 'ws://detached-window' },
   { type: 'webview', title: 'Checkout', url: 'https://chatgpt.com/?source=codex-embedded-checkout', webSocketDebuggerUrl: 'ws://checkout' },
-]).map(target => target.title), ['Main', 'Work', 'Work HTML']);
+  { type: 'page', title: 'Claude', url: 'https://claude.ai/new', webSocketDebuggerUrl: 'ws://claude-main' },
+  { type: 'page', title: 'Claude Settings', url: 'https://claude.ai/settings', webSocketDebuggerUrl: 'ws://claude-settings' },
+  { type: 'page', title: 'Antigravity IDE', url: 'vscode-file://vscode-app/Applications/Antigravity.app/workbench.html', webSocketDebuggerUrl: 'ws://ag-ide' },
+]).map(target => target.title), ['Main', 'Work', 'Work HTML', 'Claude', 'Antigravity IDE']);
 
 const unusedPort = 65534;
 const status = await getStatus(unusedPort);

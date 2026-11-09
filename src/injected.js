@@ -402,12 +402,48 @@
     return t(cached ? 'cachedStatus' : 'serviceIssue');
   }
 
+  function parseRgbLuminance(bg) {
+    if (!bg || typeof bg !== 'string') return null;
+    const m = bg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/i);
+    if (!m) return null;
+    const alpha = m[4] !== undefined ? Number(m[4]) : 1;
+    if (!Number.isFinite(alpha) || alpha <= 0.05) return null;
+    const r = Number(m[1]);
+    const g = Number(m[2]);
+    const b = Number(m[3]);
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  }
+
   function isDarkAppearance() {
     const root = document.documentElement;
-    const declared = root.dataset.theme || root.dataset.colorScheme
-      || (root.classList.contains('dark') ? 'dark' : root.classList.contains('light') ? 'light' : '');
-    return declared ? declared.toLowerCase() === 'dark'
-      : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const body = document.body;
+    const checkEl = el => {
+      if (!el) return '';
+      const ds = el.dataset || {};
+      const attr = ds.theme || ds.colorScheme || ds.mode || el.getAttribute?.('data-theme') || el.getAttribute?.('data-mode') || '';
+      if (/dark/i.test(attr)) return 'dark';
+      if (/light/i.test(attr)) return 'light';
+      const cls = el.classList;
+      if (cls) {
+        if (cls.contains('dark') || cls.contains('dark-theme') || cls.contains('theme-dark') || cls.contains('vs-dark')) return 'dark';
+        if (cls.contains('light') || cls.contains('light-theme') || cls.contains('theme-light') || cls.contains('vs')) return 'light';
+      }
+      return '';
+    };
+    const declared = checkEl(root) || checkEl(body);
+    if (declared) return declared === 'dark';
+
+    try {
+      const rootStyle = root ? getComputedStyle(root) : null;
+      const bodyStyle = body ? getComputedStyle(body) : null;
+      const cs = String(bodyStyle?.colorScheme || rootStyle?.colorScheme || '').toLowerCase();
+      if (cs === 'dark') return true;
+      if (cs === 'light') return false;
+      const lum = parseRgbLuminance(bodyStyle?.backgroundColor) ?? parseRgbLuminance(rootStyle?.backgroundColor);
+      if (lum !== null) return lum < 128;
+    } catch { /* ignore style access errors */ }
+
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
   }
 
   function displayTimeZone() {
@@ -1349,7 +1385,7 @@
   }
 
   function scheduleHidePopover() {
-    if (popoverState === 'pinned') return;
+    if (popoverState === 'pinned' && !isExternalHostSurface()) return;
     if (popoverShowTimer) clearTimeout(popoverShowTimer);
     if (popoverHideTimer) clearTimeout(popoverHideTimer);
     popoverHideTimer = setTimeout(() => {
@@ -1361,8 +1397,8 @@
         popoverHideTimer = null;
         return;
       }
-      hidePopover();
-    }, 240);
+      hidePopover(true);
+    }, 200);
   }
 
   function isAccountAvailable(acc) {
@@ -1531,6 +1567,7 @@
   }
 
   function renderFailoverToggleButton(dark, isZh) {
+    if (isExternalHostSurface()) return '';
     const failover = extendedUsageState.failover || {};
     const mode = failover.mode || 'openai';
     const isExternal = mode === 'external';
@@ -2281,9 +2318,11 @@
       '.unavailable{font-size:12.5px;color:' + (dark ? '#A1A1A6' : '#6B7280') + ';padding:8px 0}',
     ].join('');
 
-    const moduleButton = (module, icon, label, active) =>
-      '<button type="button" class="quota-icon-btn header-module-toggle' + (active ? ' is-active' : '') + '" data-module="' + module + '" aria-label="' + esc(label) + '" title="' + esc(label) + '" aria-pressed="' + active + '">'
-      + designIcon(icon) + '</button>';
+    const moduleButton = (module, icon, label, active) => {
+      if (isExternalHostSurface() && module === 'reset') return '';
+      return '<button type="button" class="quota-icon-btn header-module-toggle' + (active ? ' is-active' : '') + '" data-module="' + module + '" aria-label="' + esc(label) + '" title="' + esc(label) + '" aria-pressed="' + active + '">'
+        + designIcon(icon) + '</button>';
+    };
       let combinedStatusText = '';
       if (staleText && usageState.error) {
         combinedStatusText = staleText + ' · ' + usageState.error;
@@ -2324,7 +2363,7 @@
       + '</div>'
       + '</div>'
       + usageContent
-      + (settings.enableResetCredits ? voucherSection : '')
+      + (settings.enableResetCredits && !isExternalHostSurface() ? voucherSection : '')
       + extensionMarkup
       + '</div>';
   }
@@ -2460,6 +2499,20 @@
 
   function measureAvailableWidth(element) {
     if (!element) return 520;
+    if (element.dataset?.placement === 'antigravity') {
+      const winW = typeof window !== 'undefined' ? (window.innerWidth || 1200) : 1200;
+      return Math.max(100, Math.min(520, winW - 257 - 180 - 180));
+    }
+    if (element.dataset?.placement === 'overlay') {
+      const claudeW = typeof window !== 'undefined' && Number.isFinite(window.__claudeWindowWidth)
+        ? window.__claudeWindowWidth
+        : (window.innerWidth || 1200);
+      return Math.max(100, Math.min(520, claudeW - 196 - 450));
+    }
+    if (element.dataset?.placement === 'floating-top-right') {
+      const rightPx = parseFloat(element.style?.right || '16') || 16;
+      return Math.max(140, Math.min(520, (window.innerWidth || 800) - rightPx - 220));
+    }
     const header = element.closest('header') || element.closest('[data-app-shell-header-toolbar="true"]') || element.closest('[role="toolbar"]') || document.querySelector('header');
     const headerRect = visibleRect(header);
     const chat = element.dataset?.placement === 'chat';
@@ -2604,6 +2657,16 @@
       .divider{flex:none;width:1px;height:16px;margin:0;background:${dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.12)'}}
       @keyframes quota-number-shimmer{0%{opacity:.35;filter:blur(.4px)}50%{opacity:.85;filter:blur(0)}100%{opacity:.35;filter:blur(.4px)}}
       .capsule.is-refreshing .value{animation:quota-number-shimmer .75s ease-in-out infinite}
+      :host([data-placement="antigravity"]){display:inline-flex;align-items:center;margin:0 6px 0 0!important;align-self:center!important;flex-shrink:0!important}
+      :host([data-placement="antigravity"]) .capsule{height:28px!important;min-width:0;padding:0 0 0 8px!important;border-radius:9999px!important}
+      :host([data-placement="antigravity"]) .details-trigger{height:26px!important;padding:0 6px 0 0!important;gap:4px!important;font-size:11.5px!important}
+      :host([data-placement="antigravity"]) .capsule-toggle{width:24px!important;height:26px!important}
+      :host([data-placement="antigravity"]) .capsule-arrow{width:12px!important;height:12px!important}
+      :host([data-placement="antigravity"]) .track{width:56px!important;height:8px!important}
+      :host([data-placement="antigravity"]) .divider{height:12px!important}
+      :host([data-placement="antigravity"]) .capsule-separator{height:14px!important}
+      :host([data-placement="antigravity"]) .label{font-size:11px!important}
+      :host([data-placement="antigravity"]) .value{font-size:11px!important}
     `;
     const shadow = host.shadowRoot;
     let styleElement = shadow.querySelector('style[data-quota-header-style]');
@@ -2749,10 +2812,13 @@
           popoverHideTimer = null;
         }
         if (inside && !suppressHoverUntilLeave) showPopover();
-        else if (!insidePopover && popoverState !== 'pinned') scheduleHidePopover();
+        else if (!insidePopover && (popoverState !== 'pinned' || isExternalHostSurface())) scheduleHidePopover();
       });
     };
     on(document, 'pointermove', handleDocumentPointerMove, true);
+    if (typeof window !== 'undefined') {
+      on(window, 'mouseleave', () => scheduleHidePopover(), true);
+    }
   }
 
   function bindResizeObserver() {
@@ -2803,6 +2869,54 @@
 
   function isEmptyChatSurface(doc) {
     return EMPTY_CHAT_TITLE_RE.test(String(doc?.title || '').trim());
+  }
+
+  function isExternalHostSurface(doc = (typeof document !== 'undefined' ? document : null)) {
+    if (typeof window !== 'undefined' && window.__forceMountTarget) return true;
+    const href = typeof location !== 'undefined' ? String(location.href || '') : '';
+    if (href.startsWith('app://-/') || /chatgpt\.com/i.test(href)) return false;
+    const ua = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
+    if (/Codex/i.test(ua) || doc?.querySelector?.('[data-app-shell-header-toolbar="true"]')) return false;
+    const title = String(doc?.title || '');
+    return /\b(?:Claude|Antigravity)\b/i.test(ua)
+      || /(?:claude\.ai|antigravity|vscode-file:\/\/|workbench\.html|claude-overlay)/i.test(href)
+      || /^(?:Claude|Antigravity)\b/i.test(title);
+  }
+
+  function resolveExternalClientMountPoint(doc = document) {
+    if (!doc?.body) return null;
+    const winW = window.innerWidth || 1200;
+    const candidates = doc.querySelectorAll
+      ? [...doc.querySelectorAll('button, [role="button"], .titlebar-right > *, .window-controls-container')]
+      : [];
+    let minRightControlLeft = winW;
+    let centerSum = 0;
+    let centerCount = 0;
+    for (const el of candidates) {
+      if (el.closest?.('codex-usage-header-host, #codex-usage-popover-v24, aside, nav, [class*="sidebar"]')) continue;
+      const r = visibleRect(el);
+      if (!r || r.top < 0 || r.top >= 48 || r.height > 44 || r.width > 220) continue;
+      if (r.left >= winW - 320 && r.left > winW * 0.5) {
+        if (r.left < minRightControlLeft) minRightControlLeft = r.left;
+        centerSum += r.top + r.height / 2;
+        centerCount += 1;
+      }
+    }
+    const rightOffset = minRightControlLeft < winW
+      ? Math.min(340, Math.max(16, Math.round(winW - minRightControlLeft + 10)))
+      : 18;
+    const topOffset = centerCount > 0
+      ? Math.max(4, Math.min(18, Math.round(centerSum / centerCount - 17)))
+      : 7;
+    return {
+      header: doc.body,
+      toolbar: doc.body,
+      container: doc.body,
+      reference: null,
+      placement: 'floating-top-right',
+      floatingRight: rightOffset,
+      floatingTop: topOffset,
+    };
   }
 
   function isNewChatAction(button) {
@@ -2971,6 +3085,30 @@
   }
 
   function resolveMountPoint(doc = document) {
+    if (typeof window !== 'undefined' && window.__forceMountTarget) {
+      return {
+        header: window.__forceMountTarget,
+        toolbar: window.__forceMountTarget,
+        container: window.__forceMountTarget,
+        reference: null,
+        placement: 'overlay',
+      };
+    }
+    const agyActions = doc.querySelector?.('.agy-layout-vars.justify-end, [class*="agy-layout-vars"][class*="justify-end"]');
+    if (agyActions) {
+      const titlebarRow = agyActions.closest?.('[class*="@container/titlebar"]') || agyActions.parentElement;
+      return {
+        header: titlebarRow || agyActions,
+        toolbar: agyActions,
+        container: agyActions,
+        reference: agyActions.firstChild,
+        placement: 'antigravity',
+      };
+    }
+    if (isExternalHostSurface(doc)) {
+      const extPoint = resolveExternalClientMountPoint(doc);
+      if (extPoint) return extPoint;
+    }
     const buttons = [...doc.querySelectorAll('button')].filter(btn => isVisible(btn) && !isWindowCaptionControl(btn));
     // 按水平从右至左排序，优先匹配顶栏右侧的操作按钮
     const rightwardButtons = [...buttons].sort((a, b) => (visibleRect(b)?.left || 0) - (visibleRect(a)?.left || 0));
@@ -3082,13 +3220,41 @@
       }
       const previousPlacement = existing.dataset.placement;
       existing.dataset.placement = point.placement;
-      if (point.placement === 'new-chat-right') {
+      if (point.placement === 'antigravity') {
+        existing.style.removeProperty('position');
+        existing.style.removeProperty('top');
+        existing.style.removeProperty('right');
+        existing.style.removeProperty('z-index');
+        existing.style.setProperty('margin-left', '0px');
+        existing.style.setProperty('margin-right', '6px');
+        existing.style.setProperty('align-self', 'center');
+        existing.style.setProperty('flex-shrink', '0');
+      } else if (point.placement === 'overlay') {
+        existing.style.setProperty('position', 'relative', 'important');
+        existing.style.setProperty('margin', '0px', 'important');
+      } else if (point.placement === 'floating-top-right') {
+        existing.style.setProperty('position', 'fixed', 'important');
+        existing.style.setProperty('top', (point.floatingTop || 7) + 'px', 'important');
+        existing.style.setProperty('right', (point.floatingRight || Math.max(16, baseMarginRight)) + 'px', 'important');
+        existing.style.setProperty('z-index', '2147483645', 'important');
+        existing.style.setProperty('margin-left', '0px');
+        existing.style.setProperty('margin-right', '0px');
+      } else if (point.placement === 'new-chat-right') {
+        existing.style.removeProperty('position');
+        existing.style.removeProperty('top');
+        existing.style.removeProperty('right');
         existing.style.setProperty('margin-left', '0px');
         existing.style.setProperty('margin-right', baseMarginRight + 'px');
       } else if (point.placement === 'new-chat') {
+        existing.style.removeProperty('position');
+        existing.style.removeProperty('top');
+        existing.style.removeProperty('right');
         existing.style.setProperty('margin-left', 'auto');
         existing.style.setProperty('margin-right', baseMarginRight + 'px');
       } else {
+        existing.style.removeProperty('position');
+        existing.style.removeProperty('top');
+        existing.style.removeProperty('right');
         existing.style.removeProperty('margin-left');
         existing.style.setProperty('margin-right', avoidance > 0 ? (avoidance + 8) + 'px' : '0px');
       }
@@ -3110,7 +3276,26 @@
     }
     host = document.createElement(HOST_TAG);
     host.dataset.placement = point.placement;
-    if (point.placement === 'new-chat-right') {
+    if (point.placement === 'antigravity') {
+      host.style.removeProperty('position');
+      host.style.removeProperty('top');
+      host.style.removeProperty('right');
+      host.style.removeProperty('z-index');
+      host.style.setProperty('margin-left', '0px');
+      host.style.setProperty('margin-right', '6px');
+      host.style.setProperty('align-self', 'center');
+      host.style.setProperty('flex-shrink', '0');
+    } else if (point.placement === 'overlay') {
+      host.style.setProperty('position', 'relative', 'important');
+      host.style.setProperty('margin', '0px', 'important');
+    } else if (point.placement === 'floating-top-right') {
+      host.style.setProperty('position', 'fixed', 'important');
+      host.style.setProperty('top', (point.floatingTop || 7) + 'px', 'important');
+      host.style.setProperty('right', (point.floatingRight || Math.max(16, baseMarginRight)) + 'px', 'important');
+      host.style.setProperty('z-index', '2147483645', 'important');
+      host.style.setProperty('margin-left', '0px');
+      host.style.setProperty('margin-right', '0px');
+    } else if (point.placement === 'new-chat-right') {
       host.style.setProperty('margin-left', '0px');
       host.style.setProperty('margin-right', baseMarginRight + 'px');
     } else if (point.placement === 'new-chat') {
@@ -3182,7 +3367,10 @@
         positionPopover();
       }
     });
-    rootThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-color-scheme'] });
+    rootThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme', 'data-mode'] });
+    if (document.body) {
+      rootThemeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme', 'data-mode', 'data-newux-theme', 'data-agy-theme'] });
+    }
     const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
     on(systemTheme, 'change', () => {
       if (document.documentElement.classList.contains('dark') || document.documentElement.classList.contains('light')) return;
@@ -3202,6 +3390,12 @@
   function applyExtendedUsagePayload(payload) {
     if (!payload || typeof payload !== 'object') return;
     const previousStatus = staleIndicatorText();
+    if (payload.settings && typeof payload.settings === 'object' && !readLocalSetting(SETTINGS_KEY)) {
+      if (typeof payload.settings.enableGoogleAiPro === 'boolean') settings.enableGoogleAiPro = payload.settings.enableGoogleAiPro;
+      if (typeof payload.settings.enableTokenUsage === 'boolean') settings.enableTokenUsage = payload.settings.enableTokenUsage;
+      if (typeof payload.settings.enableResetCredits === 'boolean') settings.enableResetCredits = payload.settings.enableResetCredits;
+      persistSettings();
+    }
     if (typeof payload.timezone === 'string' && payload.timezone) extendedUsageState.timezone = payload.timezone;
     if (payload.antigravity && typeof payload.antigravity === 'object') {
       extendedUsageState.antigravity = {

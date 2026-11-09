@@ -2,18 +2,19 @@
  * 单实例用量调度器。渲染器目标只提交命令，
  * 并通过本机 CDP Runtime.evaluate 接收脱敏快照。
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AppServerClient } from './account-client.mjs';
 import { ExtendedUsageCoordinator } from './extended-usage.mjs';
 import { triggerRebalance } from './dynamic-priority-adapter.mjs';
 import { readFailoverStatus, triggerToggleFailoverMode } from './failover-mode-adapter.mjs';
-import { evaluateInTarget, fetchCdpTargets, launchAndInject, selectUsageTargets, subscribeToCdpBinding } from './launcher.mjs';
+import { evaluateInTarget, fetchCdpTargets, fetchAllCdpTargets, DEFAULT_CDP_PORTS, launchAndInject, selectUsageTargets, subscribeToCdpBinding } from './launcher.mjs';
 import { acquireMonitorLock, releaseMonitorLock, monitorCodeHash, MONITOR_LOCK_PATH } from './monitor-lock.mjs';
-import { getSettingsPath, getSkillPath } from './platform-paths.mjs';
+import { getDataDir, getSettingsPath, getSkillPath } from './platform-paths.mjs';
 
 const DEFAULT_CDP_PORT = 9229;
+const LIVE_STATUS_PATH = join(getDataDir(), 'live-status.json');
 const TARGET_DISCOVERY_RETRY_MS = 2000;
 const IDLE_REFRESH_MS = 180000;
 const ACTIVE_TARGET_POLL_MS = 5000;
@@ -288,6 +289,7 @@ async function run(cdpPort) {
     let revision = 0;
     let inFlight = null;
     let inFlightContext = null;
+    let latestCodexUsage = null;
     const completedUsageResults = [];
     const seenCommands = new Set();
     const enqueueNativeMessage = (target, payload) => {
@@ -367,9 +369,10 @@ async function run(cdpPort) {
     // 保持单个所有者运行，并由 CDP 目标列表驱动可用性判断。
     // 这里执行同步进程扫描可能阻塞事件循环，使渲染器命令得不到处理，
     // 从而导致手动刷新看起来没有响应。
+    const watchedPorts = cdpPort === DEFAULT_CDP_PORT ? DEFAULT_CDP_PORTS : [cdpPort];
     while (true) {
       let targets;
-      try { targets = selectUsageTargets(await fetchCdpTargets(cdpPort)); } catch { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
+      try { targets = selectUsageTargets(await fetchAllCdpTargets(watchedPorts)); } catch { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
       if (targets.length === 0) { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
       const activeTargetKeys = new Set(targets.map(target => target.id || target.webSocketDebuggerUrl));
       for (const [key, unsubscribe] of bindingSubscriptions) {
@@ -383,10 +386,13 @@ async function run(cdpPort) {
         try { return { target, state: await inspectTarget(target) }; } catch { return null; }
       }));
       let valid = inspections.filter(Boolean);
-      if (valid.some(item => !item.state.mounted)) {
+      const unmountedPorts = [...new Set(valid.filter(item => !item.state.mounted).map(item => item.target._cdpPort || cdpPort))];
+      if (unmountedPorts.length > 0) {
         try {
-          await launchAndInject(cdpPort, { launchIfNeeded: false });
-          targets = selectUsageTargets(await fetchCdpTargets(cdpPort));
+          for (const cdpPort of unmountedPorts) {
+            await launchAndInject(cdpPort, { launchIfNeeded: false }).catch(() => {});
+          }
+          targets = selectUsageTargets(await fetchAllCdpTargets(watchedPorts));
           inspections = await Promise.all(targets.map(async target => {
             try { return { target, state: await inspectTarget(target) }; } catch { return null; }
           }));
@@ -583,6 +589,9 @@ async function run(cdpPort) {
         beginUsageRead(manualRequests, refreshMs, refreshAgain);
       }
       for (const result of completedUsageResults.splice(0)) {
+        if (!result.error && result.value) {
+          latestCodexUsage = { value: result.value, fetchedAt: result.fetchedAt };
+        }
         revision += result.error ? 0 : 1;
         const serializedDiagnostics = JSON.stringify(client.getDiagnostics()).replace(/</g, '\\u003c');
         await Promise.all(valid.map(async item => {
@@ -608,6 +617,11 @@ async function run(cdpPort) {
         || Date.now() - lastExtendedSnapshotAt >= 1500) {
         const nextSnapshot = extendedCoordinator.getSnapshot();
         nextSnapshot.failover = readFailoverStatus();
+        nextSnapshot.settings = {
+          enableGoogleAiPro: Boolean(settings.enableGoogleAiPro),
+          enableTokenUsage: Boolean(settings.enableTokenUsage),
+          enableResetCredits: Boolean(settings.enableResetCredits),
+        };
         nextSnapshot.inFlight = {
           tokens: Boolean(tokenScanInFlight),
           gemini: Boolean(geminiRefreshInFlight),
@@ -629,6 +643,16 @@ async function run(cdpPort) {
         if (extendedSignature !== lastExtendedSignature) {
           lastExtendedSignature = extendedSignature;
           extendedRevision += 1;
+          try {
+            mkdirSync(dirname(LIVE_STATUS_PATH), { recursive: true });
+            const tmpPath = `${LIVE_STATUS_PATH}.tmp.${process.pid}`;
+            writeFileSync(tmpPath, JSON.stringify({
+              updatedAt: Date.now(),
+              codex: latestCodexUsage,
+              extended: nextSnapshot,
+            }), { mode: 0o600 });
+            renameSync(tmpPath, LIVE_STATUS_PATH);
+          } catch { /* ignore status write error */ }
         }
         cachedExtendedSnapshot = nextSnapshot;
         lastExtendedSnapshotAt = Date.now();

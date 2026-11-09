@@ -25,9 +25,16 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { exportQuotaSnapshot, readPoolStatus } from './dynamic-priority-adapter.mjs';
 import { getAccountHealth } from './account-health.mjs';
-import { getDataDir, getRollupStoragePath, getSessionsDir } from './platform-paths.mjs';
+import {
+  getDataDir,
+  getRollupStoragePath,
+  getSessionsDir,
+  getClaudeProjectsDir,
+  getAntigravityConversationsDir,
+} from './platform-paths.mjs';
 
 export const SCHEMA_VERSION = 1;
+export const SOURCES_VERSION = 2;
 export const TIMEZONE = 'Asia/Shanghai';
 export const MAX_DAYS_RETENTION = 32;
 export const ROLLING_SAVE_INTERVAL_MS = 60000;
@@ -133,6 +140,151 @@ export function classifyModel(model) {
   if (/^claude[-_]/i.test(m)) return 'Claude';
   if (/^(?:minimax|abab)[-_]/i.test(m)) return 'MiniMax';
   return 'Other';
+}
+
+function readProtoVarint(buf, pos, end) {
+  let val = 0;
+  let shift = 0;
+  while (pos < end) {
+    const b = buf[pos++];
+    val += (b & 0x7f) * (2 ** shift);
+    if (!(b & 0x80)) return { val, pos };
+    shift += 7;
+    if (shift > 53) return null;
+  }
+  return null;
+}
+
+function parseAntigravityGenEntry(buf, start, end) {
+  let pos = start;
+  let tokens = 0;
+  let botId = '';
+  let model = '';
+  while (pos < end) {
+    const tagRes = readProtoVarint(buf, pos, end);
+    if (!tagRes) break;
+    pos = tagRes.pos;
+    const fieldNo = Math.floor(tagRes.val / 8);
+    const wire = tagRes.val & 7;
+    if (wire === 0) {
+      const v = readProtoVarint(buf, pos, end);
+      if (!v) break;
+      pos = v.pos;
+    } else if (wire === 2) {
+      const lenRes = readProtoVarint(buf, pos, end);
+      if (!lenRes || lenRes.val < 0 || lenRes.pos + lenRes.val > end) break;
+      pos = lenRes.pos;
+      const subEnd = pos + lenRes.val;
+      if (fieldNo === 4 && !botId) {
+        let sp = pos;
+        let inTok = 0;
+        let outTok = 0;
+        let cacheTok = 0;
+        let bId = '';
+        while (sp < subEnd) {
+          const st = readProtoVarint(buf, sp, subEnd);
+          if (!st) break;
+          sp = st.pos;
+          const sf = Math.floor(st.val / 8);
+          const sw = st.val & 7;
+          if (sw === 0) {
+            const sv = readProtoVarint(buf, sp, subEnd);
+            if (!sv) break;
+            sp = sv.pos;
+            if (sf === 2) inTok = sv.val;
+            else if (sf === 3) outTok = sv.val;
+            else if (sf === 6) cacheTok = sv.val;
+          } else if (sw === 2) {
+            const sl = readProtoVarint(buf, sp, subEnd);
+            if (!sl || sl.pos + sl.val > subEnd) break;
+            if (sf === 7) bId = buf.subarray(sl.pos, sl.pos + sl.val).toString('utf8');
+            sp = sl.pos + sl.val;
+          } else if (sw === 5) sp += 4;
+          else if (sw === 1) sp += 8;
+          else break;
+        }
+        if (bId.startsWith('bot-')) {
+          botId = bId;
+          tokens = inTok + outTok + cacheTok;
+        }
+      } else if (fieldNo === 19) {
+        model = buf.subarray(pos, subEnd).toString('utf8');
+      }
+      pos = subEnd;
+    } else if (wire === 5) pos += 4;
+    else if (wire === 1) pos += 8;
+    else break;
+  }
+  return botId && tokens > 0 ? { botId, model: model || 'gemini', tokens } : null;
+}
+
+export function parseAntigravityGenMetadataBlob(data) {
+  if (!data) return [];
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  const entries = [];
+  let pos = 0;
+  while (pos < buf.length) {
+    const t = readProtoVarint(buf, pos, buf.length);
+    if (!t) break;
+    pos = t.pos;
+    const fn = Math.floor(t.val / 8);
+    const w = t.val & 7;
+    if (w === 2) {
+      const l = readProtoVarint(buf, pos, buf.length);
+      if (!l || l.pos + l.val > buf.length) break;
+      if (fn === 1) {
+        const parsed = parseAntigravityGenEntry(buf, l.pos, l.pos + l.val);
+        if (parsed) entries.push(parsed);
+      }
+      pos = l.pos + l.val;
+    } else if (w === 0) {
+      const v = readProtoVarint(buf, pos, buf.length);
+      if (!v) break;
+      pos = v.pos;
+    } else if (w === 5) pos += 4;
+    else if (w === 1) pos += 8;
+    else break;
+  }
+  return entries;
+}
+
+export function parseAntigravityStepTimestamp(metadata) {
+  if (!metadata) return null;
+  const buf = Buffer.isBuffer(metadata) ? metadata : Buffer.from(metadata);
+  let pos = 0;
+  while (pos < buf.length) {
+    const t = readProtoVarint(buf, pos, buf.length);
+    if (!t) break;
+    pos = t.pos;
+    const fn = Math.floor(t.val / 8);
+    const w = t.val & 7;
+    if (w === 2) {
+      const l = readProtoVarint(buf, pos, buf.length);
+      if (!l || l.pos + l.val > buf.length) break;
+      if (fn === 1 && l.val > 0 && buf[l.pos] === 0x08) {
+        const sec = readProtoVarint(buf, l.pos + 1, l.pos + l.val);
+        if (sec && sec.val > 1e9 && sec.val < 1e11) return sec.val * 1000;
+      }
+      pos = l.pos + l.val;
+    } else if (w === 0) {
+      const v = readProtoVarint(buf, pos, buf.length);
+      if (!v) break;
+      pos = v.pos;
+    } else break;
+  }
+  return null;
+}
+
+let cachedSqliteModule;
+async function getSqliteDatabaseSync() {
+  if (cachedSqliteModule !== undefined) return cachedSqliteModule;
+  try {
+    const mod = await import('node:sqlite');
+    cachedSqliteModule = mod?.DatabaseSync || null;
+  } catch {
+    cachedSqliteModule = null;
+  }
+  return cachedSqliteModule;
 }
 
 export function formatGeminiCountdown(secondsRemaining) {
@@ -817,11 +969,19 @@ async function mapWithConcurrency(items, limit, mapper) {
 
 export class TokenRollupEngine {
   constructor(options = {}) {
+    const hasCustomDirs = Boolean(options.baseDir || options.sessionsDir || options.storagePath);
     this.baseDir = options.baseDir || getDataDir();
     this.storagePath = options.storagePath || getRollupStoragePath();
     this.sessionsDir = options.sessionsDir || getSessionsDir();
+    this.claudeProjectsDir = options.claudeProjectsDir !== undefined
+      ? options.claudeProjectsDir
+      : (hasCustomDirs ? null : getClaudeProjectsDir());
+    this.antigravityDir = options.antigravityDir !== undefined
+      ? options.antigravityDir
+      : (hasCustomDirs ? null : getAntigravityConversationsDir());
     this.data = {
       schemaVersion: SCHEMA_VERSION,
+      sourcesVersion: SOURCES_VERSION,
       timezone: options.timezone || TIMEZONE,
       files: {},
       days: {},
@@ -867,17 +1027,22 @@ export class TokenRollupEngine {
           this.status = 'building';
           return;
         }
+        const needsMultiSourceBackfill = Boolean(this.claudeProjectsDir || this.antigravityDir)
+          && raw.sourcesVersion !== SOURCES_VERSION;
         this.data = {
           schemaVersion: SCHEMA_VERSION,
+          sourcesVersion: SOURCES_VERSION,
           timezone: this.timezone,
           files: raw.files || {},
           days: raw.days || {},
           coverageStartedAt: raw.coverageStartedAt || null,
           earliestRecordedDate: raw.earliestRecordedDate || null,
           historicalTotals: raw.historicalTotals || {},
-          backfillComplete: typeof raw.backfillComplete === 'boolean'
-            ? raw.backfillComplete
-            : Object.keys(raw.days).length > 0,
+          backfillComplete: needsMultiSourceBackfill
+            ? false
+            : (typeof raw.backfillComplete === 'boolean'
+              ? raw.backfillComplete
+              : Object.keys(raw.days).length > 0),
         };
       }
     } catch {
@@ -982,12 +1147,117 @@ export class TokenRollupEngine {
             }
           }
         }
+      } else if (event.message?.usage && typeof event.message.usage === 'object') {
+        const u = event.message.usage;
+        const model = String(event.message.model || fileRecord.currentModel || 'claude').trim();
+        if (!model || model.startsWith('<')) return;
+        const msgTokens = (Number(u.input_tokens) || 0)
+          + (Number(u.cache_creation_input_tokens) || 0)
+          + (Number(u.cache_read_input_tokens) || 0)
+          + (Number(u.output_tokens) || 0);
+        if (!Number.isFinite(msgTokens) || msgTokens <= 0) return;
+        const msgId = String(event.message.id || event.requestId || event.uuid || '');
+        if (!fileRecord.recentMsgs || typeof fileRecord.recentMsgs !== 'object') {
+          fileRecord.recentMsgs = {};
+        }
+        const prevTokens = msgId ? (Number(fileRecord.recentMsgs[msgId]) || 0) : 0;
+        if (msgTokens > prevTokens) {
+          const delta = msgTokens - prevTokens;
+          if (msgId) {
+            fileRecord.recentMsgs[msgId] = msgTokens;
+            const keys = Object.keys(fileRecord.recentMsgs);
+            if (keys.length > 24) {
+              delete fileRecord.recentMsgs[keys[0]];
+            }
+          }
+          const date = event.timestamp ? toDateKey(event.timestamp, this.timezone) : dateFallback;
+          if (!this.data.days[date]) this.data.days[date] = {};
+          this.data.days[date][model] = (this.data.days[date][model] || 0) + delta;
+          this.dirty = true;
+          this.snapshotRevision += 1;
+          this.snapshotCache = null;
+        }
       }
     } catch { /* 忽略损坏的日志行 */ }
   }
 
+  async scanAntigravityDbIncremental(filePath) {
+    if (!this.enabled) return;
+    let stat;
+    try {
+      stat = statSync(filePath);
+    } catch (err) {
+      if (err?.code === 'ENOENT' || !existsSync(filePath)) {
+        if (this.data.files[filePath]) {
+          delete this.data.files[filePath];
+          this.dirty = true;
+        }
+      }
+      return;
+    }
+
+    const fileId = stat.ino || `${stat.birthtimeMs || stat.ctimeMs || 0}`;
+    let record = this.data.files[filePath];
+    if (!record || record.inode !== fileId || typeof record.lastIdx !== 'number') {
+      record = {
+        inode: fileId,
+        lastIdx: -1,
+        mtime: 0,
+        size: 0,
+      };
+      this.data.files[filePath] = record;
+      this.dirty = true;
+    }
+
+    if (record.mtime === stat.mtimeMs && record.size === stat.size && record.lastIdx >= 0) {
+      return;
+    }
+
+    const DatabaseSync = await getSqliteDatabaseSync();
+    if (!DatabaseSync) return;
+
+    const dateFallback = toDateKey(stat.mtimeMs || Date.now(), this.timezone);
+    let db;
+    try {
+      db = new DatabaseSync(filePath, { open: true, readOnly: true });
+      const stmt = db.prepare(
+        'SELECT g.idx AS idx, g.data AS data, s.metadata AS metadata FROM gen_metadata g LEFT JOIN steps s ON s.idx = g.idx WHERE g.idx > ? AND g.size > 20 ORDER BY g.idx ASC'
+      );
+      const rows = typeof stmt.iterate === 'function' ? stmt.iterate(record.lastIdx) : stmt.all(record.lastIdx);
+      for (const row of rows) {
+        const entries = parseAntigravityGenMetadataBlob(row.data);
+        if (entries.length > 0) {
+          const tsMs = parseAntigravityStepTimestamp(row.metadata);
+          const date = tsMs ? toDateKey(tsMs, this.timezone) : dateFallback;
+          if (!this.data.days[date]) this.data.days[date] = {};
+          for (const entry of entries) {
+            this.data.days[date][entry.model] = (this.data.days[date][entry.model] || 0) + entry.tokens;
+          }
+          this.dirty = true;
+          this.snapshotRevision += 1;
+          this.snapshotCache = null;
+        }
+        if (typeof row.idx === 'number' && row.idx > record.lastIdx) {
+          record.lastIdx = row.idx;
+        }
+      }
+      record.mtime = stat.mtimeMs;
+      record.size = stat.size;
+      this.dirty = true;
+    } catch {
+      // 数据库正被写入或表结构为空时静默跳过，下轮继续。
+    } finally {
+      if (db) {
+        try { db.close(); } catch { /* 忽略关闭异常 */ }
+      }
+    }
+  }
+
   async scanFileIncremental(filePath) {
     if (!this.enabled) return;
+    if (filePath.endsWith('.db')) {
+      return this.scanAntigravityDbIncremental(filePath);
+    }
     let stat;
     try {
       stat = statSync(filePath);
@@ -1064,7 +1334,7 @@ export class TokenRollupEngine {
 
   collectSessionFiles(recentOnly = false) {
     const results = new Set();
-    if (!existsSync(this.sessionsDir)) return [];
+    const recentCutoffMs = Date.now() - 7 * 86400000;
 
     // 1. 所有已追踪的活跃会话文件必须优先纳入检查（避免长会话跨天时被漏掉）
     if (this.data.files) {
@@ -1075,54 +1345,101 @@ export class TokenRollupEngine {
       }
     }
 
-    if (recentOnly) {
-      // 2. 检查最近 7 天的日期子目录，发现新创建的会话
-      const targetDays = new Set();
-      for (let i = 0; i < 7; i++) {
-        const dateStr = shiftDateKey(toDateKey(Date.now(), this.timezone), -i);
-        targetDays.add(dateStr.replace(/-/g, '/'));
-      }
+    // 2. Codex 会话文件 (~/.codex/sessions)
+    if (this.sessionsDir && existsSync(this.sessionsDir)) {
+      if (recentOnly) {
+        const targetDays = new Set();
+        for (let i = 0; i < 7; i++) {
+          const dateStr = shiftDateKey(toDateKey(Date.now(), this.timezone), -i);
+          targetDays.add(dateStr.replace(/-/g, '/'));
+        }
 
-      for (const dateRel of targetDays) {
-        const dir = join(this.sessionsDir, dateRel);
-        if (!existsSync(dir)) continue;
+        for (const dateRel of targetDays) {
+          const dir = join(this.sessionsDir, dateRel);
+          if (!existsSync(dir)) continue;
+          try {
+            const entries = readdirSync(dir, { withFileTypes: true });
+            for (const entry of entries) {
+              if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+                results.add(join(dir, entry.name));
+              }
+            }
+          } catch {}
+        }
+
         try {
-          const entries = readdirSync(dir, { withFileTypes: true });
-          for (const entry of entries) {
+          const rootEntries = readdirSync(this.sessionsDir, { withFileTypes: true });
+          for (const entry of rootEntries) {
             if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
-              results.add(join(dir, entry.name));
+              results.add(join(this.sessionsDir, entry.name));
             }
           }
         } catch {}
-      }
-
-      try {
-        const rootEntries = readdirSync(this.sessionsDir, { withFileTypes: true });
-        for (const entry of rootEntries) {
-          if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
-            results.add(join(this.sessionsDir, entry.name));
-          }
+      } else {
+        const queue = [this.sessionsDir];
+        while (queue.length > 0) {
+          const current = queue.shift();
+          try {
+            const entries = readdirSync(current, { withFileTypes: true });
+            for (const entry of entries) {
+              const full = join(current, entry.name);
+              if (entry.isDirectory()) {
+                queue.push(full);
+              } else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+                results.add(full);
+              }
+            }
+          } catch { /* 忽略权限错误 */ }
         }
-      } catch {}
-
-      return [...results];
+      }
     }
 
-    const queue = [this.sessionsDir];
-    while (queue.length > 0) {
-      const current = queue.shift();
+    // 3. Claude 会话文件 (~/.claude/projects/**/*.jsonl)
+    if (this.claudeProjectsDir && existsSync(this.claudeProjectsDir)) {
+      const queue = [this.claudeProjectsDir];
+      while (queue.length > 0) {
+        const current = queue.shift();
+        try {
+          const entries = readdirSync(current, { withFileTypes: true });
+          for (const entry of entries) {
+            const full = join(current, entry.name);
+            if (entry.isDirectory()) {
+              queue.push(full);
+            } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+              if (!recentOnly) {
+                results.add(full);
+              } else {
+                try {
+                  const st = statSync(full);
+                  if (st.mtimeMs >= recentCutoffMs) results.add(full);
+                } catch {}
+              }
+            }
+          }
+        } catch { /* 忽略权限错误 */ }
+      }
+    }
+
+    // 4. Antigravity / Antigravity IDE 会话数据库 (~/.gemini/antigravity/conversations/*.db)
+    if (this.antigravityDir && existsSync(this.antigravityDir)) {
       try {
-        const entries = readdirSync(current, { withFileTypes: true });
+        const entries = readdirSync(this.antigravityDir, { withFileTypes: true });
         for (const entry of entries) {
-          const full = join(current, entry.name);
-          if (entry.isDirectory()) {
-            queue.push(full);
-          } else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
-            results.add(full);
+          if (entry.isFile() && entry.name.endsWith('.db')) {
+            const full = join(this.antigravityDir, entry.name);
+            if (!recentOnly) {
+              results.add(full);
+            } else {
+              try {
+                const st = statSync(full);
+                if (st.mtimeMs >= recentCutoffMs) results.add(full);
+              } catch {}
+            }
           }
         }
       } catch { /* 忽略权限错误 */ }
     }
+
     return [...results];
   }
 

@@ -37,6 +37,12 @@ const DESIGN_ICONS = {
   couponWave: 'backgrounds/coupon-wave.svg',
 };
 const DEFAULT_PORT = 9229;
+export const CLIENT_PORT_MAP = {
+  codex: 9229,
+  claude: 9230,
+  antigravity: 9231,
+};
+export const DEFAULT_CDP_PORTS = [9229, 9230, 9231];
 const READY_TIMEOUT_MS = 12000;
 const CDP_EVALUATION_TIMEOUT_MS = 8000;
 const CDP_INJECTION_TIMEOUT_MS = 20000;
@@ -57,9 +63,33 @@ export function locateExecutable() {
   return candidates.find(existsSync) ?? candidates[0];
 }
 
-export function getDesktopAppProcessInfo(port = DEFAULT_PORT) {
+export function locateClientExecutable(client = 'codex') {
+  const norm = String(client || 'codex').toLowerCase();
+  if (norm === 'claude') {
+    const candidates = [
+      '/Applications/Claude.app/Contents/MacOS/Claude',
+      join(process.env.HOME || '', 'Applications/Claude.app/Contents/MacOS/Claude'),
+    ];
+    return candidates.find(existsSync) ?? candidates[0];
+  }
+  if (norm === 'antigravity') {
+    const candidates = [
+      '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
+      '/Applications/Antigravity IDE.app/Contents/MacOS/Electron',
+      '/Applications/Antigravity IDE.app/Contents/MacOS/Antigravity',
+      join(process.env.HOME || '', 'Applications/Antigravity.app/Contents/MacOS/Antigravity'),
+    ];
+    return candidates.find(existsSync) ?? candidates[0];
+  }
+  return locateExecutable();
+}
+
+export function getDesktopAppProcessInfo(port = DEFAULT_PORT, client = 'codex') {
   if (process.platform === 'darwin') {
-    const candidates = desktopExecutableCandidates();
+    const norm = String(client || 'codex').toLowerCase();
+    const candidates = norm === 'codex'
+      ? desktopExecutableCandidates()
+      : [locateClientExecutable(norm)].filter(Boolean);
     try {
       const processes = execFileSync('/bin/ps', ['-axww', '-o', 'command='], { encoding: 'utf8' });
       const lines = processes.split('\n');
@@ -126,7 +156,13 @@ export function fetchCdpTargets(port = DEFAULT_PORT) {
         }
         try {
           const targets = JSON.parse(data);
-          resolve(Array.isArray(targets) ? targets : []);
+          const list = Array.isArray(targets) ? targets : [];
+          for (const item of list) {
+            if (item && typeof item === 'object') {
+              Object.defineProperty(item, '_cdpPort', { value: port, enumerable: false, configurable: true });
+            }
+          }
+          resolve(list);
         } catch (error) {
           reject(new Error(`cdp_invalid_json: ${error.message}`));
         }
@@ -139,12 +175,23 @@ export function fetchCdpTargets(port = DEFAULT_PORT) {
   });
 }
 
+export async function fetchAllCdpTargets(ports = DEFAULT_CDP_PORTS) {
+  const portList = Array.isArray(ports) ? ports : [ports];
+  const results = await Promise.all(
+    portList.map(port => fetchCdpTargets(port).catch(() => []))
+  );
+  return results.flat();
+}
+
 function isRendererTarget(target) {
   if (!target?.webSocketDebuggerUrl) return false;
   if (!['page', 'webview'].includes(target.type)) return false;
   const haystack = `${target.title || ''} ${target.url || ''}`.toLowerCase();
   return haystack.includes('codex')
     || haystack.includes('chatgpt')
+    || haystack.includes('claude')
+    || haystack.includes('antigravity')
+    || haystack.includes('workbench')
     || haystack.includes('index.html')
     || haystack.includes('app://');
 }
@@ -160,19 +207,49 @@ export function selectUsageTargets(targets) {
     if (!target?.webSocketDebuggerUrl || !['page', 'webview'].includes(target.type)) return false;
     try {
       const url = new URL(target.url);
-      if (url.protocol !== 'app:') return false;
-      if (url.hostname !== '-') return false;
-      const initialRoute = url.searchParams.get('initialRoute');
-      // 明确排除设置、个人资料、头像浮层、独立弹窗等辅助窗口
-      if (initialRoute && /^\/(?:settings|preferences|profile|auth|login|help|avatar-overlay|detached)(?:\/|$|\?)/i.test(initialRoute)) {
+      if (url.protocol === 'devtools:' || url.protocol === 'chrome-extension:' || target.url === 'about:blank') {
         return false;
       }
-      const pathname = url.pathname.toLowerCase();
-      // 支持根路径、index.html 以及各类单页工作区或对话路由
-      const isUsagePath = ['/', '/index.html', '/work/index.html', '/chat/index.html', '/work', '/chat'].includes(pathname)
-        || /^\/(?:work|threads?|chats?|projects?|new|local)(?:\/|$)/i.test(pathname);
-      if (!isUsagePath) return false;
-      return true;
+      // 1. Codex 客户端 (app://-/...)
+      if (url.protocol === 'app:' && url.hostname === '-') {
+        const initialRoute = url.searchParams.get('initialRoute');
+        // 明确排除设置、个人资料、头像浮层、独立弹窗等辅助窗口
+        if (initialRoute && /^\/(?:settings|preferences|profile|auth|login|help|avatar-overlay|detached)(?:\/|$|\?)/i.test(initialRoute)) {
+          return false;
+        }
+        const pathname = url.pathname.toLowerCase();
+        // 支持根路径、index.html 以及各类单页工作区或对话路由
+        const isUsagePath = ['/', '/index.html', '/work/index.html', '/chat/index.html', '/work', '/chat'].includes(pathname)
+          || /^\/(?:work|threads?|chats?|projects?|new|local)(?:\/|$)/i.test(pathname);
+        return isUsagePath;
+      }
+      // 2. Claude Desktop 客户端 (https://claude.ai/...)
+      if (target.type === 'page' && url.protocol === 'https:' && (url.hostname === 'claude.ai' || url.hostname.endsWith('.claude.ai'))) {
+        const pathname = url.pathname.toLowerCase();
+        if (/^\/(?:settings|login|oauth|auth|logout|quicksilver|quick-entry)(?:\/|$)/i.test(pathname)) {
+          return false;
+        }
+        if (/quick[\s_-]?entry|about|settings/i.test(target.title || '')) {
+          return false;
+        }
+        return true;
+      }
+      // 3. Antigravity / Antigravity IDE 客户端
+      if (target.type === 'page') {
+        const pathname = url.pathname.toLowerCase();
+        const combined = `${target.title || ''} ${target.url || ''}`.toLowerCase();
+        if (/splash|wizard|onboarding|devtools/i.test(combined)) return false;
+        if (url.protocol === 'vscode-file:' && pathname.includes('workbench.html')) {
+          return true;
+        }
+        if (target._cdpPort === CLIENT_PORT_MAP.antigravity && ['file:', 'app:', 'http:', 'https:', 'vscode-file:'].includes(url.protocol)) {
+          return true;
+        }
+        if (['file:', 'app:'].includes(url.protocol) && /antigravity|workbench|jetski/i.test(combined)) {
+          return true;
+        }
+      }
+      return false;
     } catch { return false; }
   });
 }
@@ -583,14 +660,28 @@ export function buildInjectableScript() {
   return { scriptCode, contentHash };
 }
 
-export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = true } = {}) {
+export function ensureClaudeOverlayHelper() {
+  const helperBin = join(__dirname, '../bin/claude-overlay-helper');
+  if (!existsSync(helperBin)) return false;
+  try {
+    const running = execFileSync('/bin/ps', ['-ax', '-o', 'comm='], { encoding: 'utf8' })
+      .split('\n')
+      .some(line => line.includes('claude-overlay-helper'));
+    if (running) return true;
+    const child = spawn(helperBin, [], { detached: true, stdio: 'ignore' });
+    child.unref();
+    return true;
+  } catch { return false; }
+}
+
+export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = true, client = 'codex' } = {}) {
   const { scriptCode, contentHash } = buildInjectableScript();
   let targets;
 
   try {
     targets = await fetchCdpTargets(port);
   } catch {
-    const procInfo = getDesktopAppProcessInfo(port);
+    const procInfo = getDesktopAppProcessInfo(port, client);
     if (procInfo.running) {
       if (procInfo.hasCdpFlag) {
         // 应用已开启 CDP 调试参数正在运行或冷启动中，等待其调试端口就绪，绝不误判
@@ -598,10 +689,10 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
           targets = await waitForTargets(port, READY_TIMEOUT_MS, { checkExiting: true });
         } catch (waitErr) {
           // 若等待超时或应用在等待过程中退出（处于切换模式重启退出阶段）
-          if (!isDesktopAppRunning() || waitErr?.message === 'desktop_app_exited_during_wait') {
+          if (!getDesktopAppProcessInfo(port, client).running || waitErr?.message === 'desktop_app_exited_during_wait') {
             if (!launchIfNeeded) throw new Error('cdp_unavailable');
-            const executable = locateExecutable();
-            console.log(`[Codex Quota Header] Target app was exiting and has terminated; relaunching on CDP port ${port}...`);
+            const executable = locateClientExecutable(client);
+            console.log(`[Codex Quota Header] Target app (${client}) was exiting and has terminated; relaunching on CDP port ${port}...`);
             launchDesktopApp(executable, port);
             targets = await waitForTargets(port);
           } else {
@@ -614,8 +705,8 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
       }
     } else {
       if (!launchIfNeeded) throw new Error('cdp_unavailable');
-      const executable = locateExecutable();
-      console.log(`[Codex Quota Header] Launching desktop app on localhost CDP port ${port}...`);
+      const executable = locateClientExecutable(client);
+      console.log(`[Codex Quota Header] Launching ${client} app on localhost CDP port ${port}...`);
       launchDesktopApp(executable, port);
       targets = await waitForTargets(port);
     }
@@ -694,7 +785,7 @@ export async function startUsageMonitor(port = DEFAULT_PORT) {
     const stopped = await stopUsageMonitor(source);
     if (!stopped.stopped) throw new Error(`monitor_handoff_failed: ${stopped.reason}`);
   }
-  const child = spawn(process.execPath, ['--max-old-space-size=64', MONITOR_PATH, '--port', String(port)], {
+  const child = spawn(process.execPath, ['--no-warnings', '--max-old-space-size=192', MONITOR_PATH, '--port', String(port)], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
@@ -715,19 +806,30 @@ export async function startUsageMonitor(port = DEFAULT_PORT) {
 }
 
 function parseCliArgs(argv) {
-  const options = { port: DEFAULT_PORT, mode: 'launch' };
+  const options = { port: DEFAULT_PORT, portExplicit: false, mode: 'launch', client: 'codex' };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--status') options.mode = 'status';
     else if (arg === '--inject-only') options.mode = 'inject-only';
     else if (arg === '--teardown') options.mode = 'teardown';
     else if (arg === '--help' || arg === '-h') options.mode = 'help';
-    else if (arg === '--port') {
+    else if (arg === '--client') {
+      const val = String(argv[index + 1] || '').toLowerCase();
+      if (!['codex', 'claude', 'antigravity', 'all'].includes(val)) {
+        throw new Error(`invalid_client: ${val}`);
+      }
+      options.client = val;
+      if (!options.portExplicit && CLIENT_PORT_MAP[val]) {
+        options.port = CLIENT_PORT_MAP[val];
+      }
+      index += 1;
+    } else if (arg === '--port') {
       const value = Number(argv[index + 1]);
       if (!Number.isInteger(value) || value < 1024 || value > 65535) {
         throw new Error('invalid_port');
       }
       options.port = value;
+      options.portExplicit = true;
       index += 1;
     } else {
       throw new Error(`unknown_argument: ${arg}`);
@@ -740,13 +842,14 @@ function printHelp() {
   console.log(`Usage: codex-header [options]
 
 Options:
+  --client <name>   Target client: codex (9229) | claude (9230) | antigravity (9231) | all
   --status          Report desktop/CDP/component status without changing state
   --inject-only     Inject only when the desktop app already exposes CDP
   --teardown        Remove the component from running renderers (used by uninstall)
   --port <number>   CDP port (default: ${DEFAULT_PORT})
   -h, --help        Show this help
 
-For first launch, quit ChatGPT/Codex completely and run: codex-header`);
+For first launch, quit the target app completely and run: codex-header [--client codex|claude|antigravity|all]`);
 }
 
 async function main() {
@@ -786,10 +889,63 @@ async function main() {
     return;
   }
 
+  if (options.client === 'all' || (options.mode === 'inject-only' && !options.portExplicit && options.client === 'codex')) {
+    const clientEntries = options.client === 'all'
+      ? Object.entries(CLIENT_PORT_MAP)
+      : [['codex', 9229], ['claude', 9230], ['antigravity', 9231]];
+    const allResults = [];
+    for (const [clientName, clientPort] of clientEntries) {
+      try {
+        const res = await launchAndInject(clientPort, {
+          launchIfNeeded: options.mode !== 'inject-only' && options.client === 'all',
+          client: clientName,
+        });
+        allResults.push(res);
+      } catch (err) {
+        if (options.client === 'all' && options.mode !== 'inject-only') {
+          console.error(`[Codex Quota Header] ${clientName} (${clientPort}) skipped: ${err.message}`);
+        }
+      }
+    }
+    if (allResults.length === 0) {
+      throw new Error('cdp_unavailable');
+    }
+    const monitor = await startUsageMonitor(DEFAULT_PORT);
+    if (monitor.started) {
+      console.log(`[Codex Quota Header] Live usage monitor started (pid ${monitor.pid}).`);
+    } else {
+      console.log(`[Codex Quota Header] Monitor already running (pid ${monitor.pid}); keeping the existing instance.`);
+    }
+    for (const result of allResults) {
+      const parts = [`端口 ${result.port} 已挂载 ${result.mountedCount}`];
+      if (result.waitingCount > 0) parts.push(`等待顶栏 ${result.waitingCount}`);
+      if (result.failedCount > 0) parts.push(`失败 ${result.failedCount}`);
+      console.log(`[Codex Quota Header] 注入完成：${parts.join('，')}。`);
+      for (const item of result.results) {
+        const mark = item.status === 'mounted' ? '✓' : (item.status === 'waiting' ? '…' : '✗');
+        console.log(`  ${mark} [${item.status}] ${item.target}${item.placement ? ` (${item.placement})` : ''}`);
+      }
+    }
+    return;
+  }
+
+  if (options.client === 'claude') {
+    ensureClaudeOverlayHelper();
+    const proc = getDesktopAppProcessInfo(options.port, 'claude');
+    if (!proc.running && options.mode !== 'inject-only') {
+      const exec = locateClientExecutable('claude');
+      launchDesktopApp(exec, options.port);
+    }
+    const monitor = await startUsageMonitor(DEFAULT_PORT);
+    console.log(`[Codex Quota Header] Claude 顶栏悬浮胶囊已启动（智能吸附至窗口右上角，点击展开 590px 弹窗）。`);
+    return;
+  }
+
   const result = await launchAndInject(options.port, {
     launchIfNeeded: options.mode !== 'inject-only',
+    client: options.client,
   });
-  const monitor = await startUsageMonitor(options.port);
+  const monitor = await startUsageMonitor(DEFAULT_PORT);
   if (monitor.started) {
     console.log(`[Codex Quota Header] Live usage monitor started (pid ${monitor.pid}).`);
   } else {

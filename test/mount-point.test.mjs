@@ -355,6 +355,35 @@ for (const label of ['新聊天 (⌘N)', '新标签页 (⌘T)', '新建标签页
   assert.notEqual(point.reference, minBtn, '绝不能锚定最小化按钮');
 }
 
+// 回归 12：Claude / Antigravity 外部客户端顶栏自适应浮动锚点与右上角按钮避让
+{
+  const rightActionBtn = makeEl({
+    tag: 'button',
+    rect: makeRect({ top: 10, left: 1380, width: 28, height: 28 }),
+    attrs: { 'aria-label': 'Toggle Sidebar' },
+  });
+  const bodyEl = makeEl({ tag: 'body', rect: makeRect({ width: 1440, height: 900 }), children: [rightActionBtn] });
+  const fakeDoc = {
+    title: 'Antigravity',
+    body: bodyEl,
+    querySelectorAll(sel) {
+      if (sel.includes('button')) return [rightActionBtn];
+      return [];
+    },
+  };
+  const fakeWin = { innerWidth: 1440 };
+  const fakeStyle = el => ({ display: el._display || 'block', visibility: 'visible', opacity: '1' });
+  const { resolveMountPoint } = new Function(
+    'document', 'window', 'getComputedStyle',
+    `${logicBlock}\nreturn { resolveMountPoint };`
+  )(fakeDoc, fakeWin, fakeStyle);
+  const extPoint = resolveMountPoint(fakeDoc);
+  assert.ok(extPoint, 'Claude / Antigravity 客户端应解析出顶栏浮动挂载点');
+  assert.equal(extPoint.placement, 'floating-top-right');
+  assert.equal(extPoint.container, bodyEl);
+  assert.ok(extPoint.floatingRight >= 60, '应自动避让顶栏右上角原生按钮');
+}
+
 assert.match(source, /const existing = document\.querySelector\(HOST_TAG\)/);
 assert.match(source, /existing\?\.isConnected/);
 assert.match(source, /point\.container\.insertBefore\(existing, point\.reference\)/);

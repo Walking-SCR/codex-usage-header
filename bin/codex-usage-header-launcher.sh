@@ -60,10 +60,34 @@ release_lock() {
 trap release_lock EXIT
 acquire_lock || exit 1
 
+TARGET_CLIENT="codex"
+case "$0" in
+  *"Claude Quota Header"*) TARGET_CLIENT="claude" ;;
+  *"Antigravity Quota Header"*) TARGET_CLIENT="antigravity" ;;
+esac
+for ((i=1; i<=$#; i++)); do
+  if [[ "${!i}" == "--client" ]]; then
+    next_idx=$((i + 1))
+    if [[ $next_idx -le $# ]]; then
+      TARGET_CLIENT="${!next_idx}"
+    fi
+  fi
+done
+
 desktop_pids() {
-  /bin/ps -axww -o pid= -o command= | /usr/bin/awk '
-    $0 ~ "/(ChatGPT|Codex)\\.app/Contents/MacOS/(ChatGPT|Codex)" { print $1 }
-  '
+  if [[ "$TARGET_CLIENT" == "claude" ]]; then
+    /bin/ps -axww -o pid= -o command= | /usr/bin/awk '
+      $0 ~ "/Claude\\.app/Contents/MacOS/Claude" { print $1 }
+    '
+  elif [[ "$TARGET_CLIENT" == "antigravity" ]]; then
+    /bin/ps -axww -o pid= -o command= | /usr/bin/awk '
+      $0 ~ "/Antigravity\\.app/Contents/MacOS/Antigravity" { print $1 }
+    '
+  else
+    /bin/ps -axww -o pid= -o command= | /usr/bin/awk '
+      $0 ~ "/(ChatGPT|Codex)\\.app/Contents/MacOS/(ChatGPT|Codex)" { print $1 }
+    '
+  fi
 }
 
 wait_for_desktop_exit() {
@@ -97,12 +121,20 @@ force_stop_desktop() {
 
 run_launcher() {
   local launcher_rc
+  local extra_args=()
+  if [[ "$TARGET_CLIENT" != "codex" ]]; then
+    local has_client_flag=0
+    for arg in "$@"; do
+      [[ "$arg" == "--client" ]] && has_client_flag=1
+    done
+    [[ "$has_client_flag" -eq 0 ]] && extra_args=(--client "$TARGET_CLIENT")
+  fi
   {
     printf '\n[%s] Starting codex-header' "$(/bin/date '+%Y-%m-%d %H:%M:%S')"
-    printf ' %q' "$@"
+    printf ' %q' "${extra_args[@]}" "$@"
     printf '\n'
   } >> "$LOG_FILE"
-  "$HOME/.local/bin/codex-header" "$@" >> "$LOG_FILE" 2>&1
+  "$HOME/.local/bin/codex-header" "${extra_args[@]}" "$@" >> "$LOG_FILE" 2>&1
   launcher_rc=$?
   printf '[%s] codex-header exit=%s\n' "$(/bin/date '+%Y-%m-%d %H:%M:%S')" "$launcher_rc" >> "$LOG_FILE"
   return "$launcher_rc"
@@ -149,8 +181,14 @@ else
   # 重新启动桌面客户端。先尝试正常退出应用，不显示类似错误的确认提示。
   # 如果 ChatGPT 的正常退出处理器正在等待渲染器或后台辅助进程，
   # 也不能让 AppleScript 阻塞恢复流程。
-  /usr/bin/osascript -e 'tell application "ChatGPT" to quit' >/dev/null 2>&1 &
-  /usr/bin/osascript -e 'tell application "Codex" to quit' >/dev/null 2>&1 &
+  if [[ "$TARGET_CLIENT" == "claude" ]]; then
+    /usr/bin/osascript -e 'tell application "Claude" to quit' >/dev/null 2>&1 &
+  elif [[ "$TARGET_CLIENT" == "antigravity" ]]; then
+    /usr/bin/osascript -e 'tell application "Antigravity" to quit' >/dev/null 2>&1 &
+  else
+    /usr/bin/osascript -e 'tell application "ChatGPT" to quit' >/dev/null 2>&1 &
+    /usr/bin/osascript -e 'tell application "Codex" to quit' >/dev/null 2>&1 &
+  fi
   quit_pid=$!
   if ! wait_for_desktop_exit; then
     kill "$quit_pid" 2>/dev/null || true

@@ -762,3 +762,88 @@
 .quota-dashboard.is-dark .popover-status-row .status-dot {
   background: #F59E0B;
 }
+
+/* 暗黑模式高对比度底色与字体：解决弱对比与白底冲撞问题 */
+.quota-dashboard.is-dark .language-toggle,
+.quota-dashboard.is-dark .quota-icon-btn {
+  background: #202D3D !important;
+  border-color: #35475D !important;
+  color: var(--quota-blue) !important;
+}
+.quota-dashboard.is-dark .quota-icon-btn:hover,
+.quota-dashboard.is-dark .language-toggle:hover {
+  background: #283A4E !important;
+  border-color: #4A6382 !important;
+}
+.quota-dashboard.is-dark .lang-opt {
+  color: #C1CCE0 !important;
+}
+.quota-dashboard.is-dark .lang-opt:hover {
+  color: #FFFFFF !important;
+}
+.quota-dashboard.is-dark .lang-opt.is-active {
+  color: #38BDF8 !important;
+  font-weight: 700 !important;
+}
+.quota-dashboard.is-dark .lang-sep {
+  color: #52637A !important;
+}
+.quota-dashboard.is-dark .header-module-toggle.is-active {
+  background: #23364F !important;
+  border-color: #3A5270 !important;
+  color: var(--quota-blue) !important;
+}
+.quota-dashboard.is-dark .credit-detail {
+  background: #202D3D !important;
+  border-color: #35475D !important;
+}
+.quota-dashboard.is-dark .credit-detail:hover {
+  background: #263649 !important;
+  border-color: #465D7B !important;
+}
+.quota-dashboard.is-dark .credit-detail .coupon-lightning {
+  background: #28394E !important;
+}
+.quota-dashboard.is-dark .credit-detail strong {
+  color: #F8FAFC !important;
+}
+.quota-dashboard.is-dark .credit-detail span {
+  color: #94A3B8 !important;
+}
+.quota-dashboard.is-dark .credit-detail .coupon-wave {
+  opacity: .14 !important;
+}
+.quota-dashboard.is-dark .quota-extension-account-tabs,
+.quota-dashboard.is-dark .quota-extension-range-tabs {
+  background: #1B2636 !important;
+  border: 1px solid #304155 !important;
+}
+.quota-dashboard.is-dark .quota-extension-account-tab,
+.quota-dashboard.is-dark .quota-extension-range-tab {
+  color: #C1CCE0 !important;
+}
+.quota-dashboard.is-dark .quota-extension-account-tab:hover,
+.quota-dashboard.is-dark .quota-extension-range-tab:hover {
+  color: #FFFFFF !important;
+}
+.quota-dashboard.is-dark .quota-extension-account-tab.is-active,
+.quota-dashboard.is-dark .quota-extension-range-tab.is-active {
+  background: #007AFF !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 1px 3px rgba(0, 122, 255, 0.4) !important;
+}
+.quota-dashboard.is-dark .quota-extension-model-button {
+  background: #202D3D !important;
+  border-color: #35475D !important;
+  color: #F8FAFC !important;
+}
+.quota-dashboard.is-dark .quota-extension-model-button:hover,
+.quota-dashboard.is-dark .quota-extension-model-button[aria-expanded="true"] {
+  background: #263649 !important;
+  border-color: #465D7B !important;
+}
+.quota-dashboard.is-dark .empty-state-box {
+  background: #202D3D !important;
+  border-color: #35475D !important;
+}
+

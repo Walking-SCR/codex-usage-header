@@ -91,3 +91,16 @@ export function getCliProxyApiAuthDir({ platform = process.platform, env = proce
   const userHome = env.USERPROFILE || home;
   return p.join(userHome, '.cli-proxy-api');
 }
+
+export function getClaudeProjectsDir({ platform = process.platform, env = process.env, home = homedir() } = {}) {
+  const p = getPath(platform);
+  const userHome = env.USERPROFILE || home;
+  return p.join(userHome, '.claude', 'projects');
+}
+
+export function getAntigravityConversationsDir({ platform = process.platform, env = process.env, home = homedir() } = {}) {
+  const p = getPath(platform);
+  const userHome = env.USERPROFILE || home;
+  return p.join(userHome, '.gemini', 'antigravity', 'conversations');
+}
+
