@@ -9,6 +9,7 @@
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -175,10 +176,22 @@ export function fetchCdpTargets(port = DEFAULT_PORT) {
   });
 }
 
+export function getAntigravityActivePort() {
+  const p = join(homedir(), 'Library/Application Support/Antigravity/DevToolsActivePort');
+  try {
+    if (!existsSync(p)) return null;
+    const lines = readFileSync(p, 'utf8').split('\n');
+    const port = Number(lines[0]?.trim());
+    return Number.isInteger(port) && port > 1024 && port <= 65535 ? port : null;
+  } catch { return null; }
+}
+
 export async function fetchAllCdpTargets(ports = DEFAULT_CDP_PORTS) {
-  const portList = Array.isArray(ports) ? ports : [ports];
+  const dynamicPorts = new Set(Array.isArray(ports) ? ports : [ports]);
+  const agPort = getAntigravityActivePort();
+  if (agPort) dynamicPorts.add(agPort);
   const results = await Promise.all(
-    portList.map(port => fetchCdpTargets(port).catch(() => []))
+    [...dynamicPorts].map(port => fetchCdpTargets(port).catch(() => []))
   );
   return results.flat();
 }
@@ -245,7 +258,7 @@ export function selectUsageTargets(targets) {
         if (target._cdpPort === CLIENT_PORT_MAP.antigravity && ['file:', 'app:', 'http:', 'https:', 'vscode-file:'].includes(url.protocol)) {
           return true;
         }
-        if (['file:', 'app:'].includes(url.protocol) && /antigravity|workbench|jetski/i.test(combined)) {
+        if (['file:', 'app:', 'http:', 'https:', 'vscode-file:'].includes(url.protocol) && /antigravity|workbench|jetski/i.test(combined)) {
           return true;
         }
       }
@@ -660,16 +673,24 @@ export function buildInjectableScript() {
   return { scriptCode, contentHash };
 }
 
+let cachedHelperPid = null;
+
 export function ensureClaudeOverlayHelper() {
   const helperBin = join(__dirname, '../bin/claude-overlay-helper');
   if (!existsSync(helperBin)) return false;
+  if (cachedHelperPid && isPidAlive(cachedHelperPid)) return true;
   try {
-    const running = execFileSync('/bin/ps', ['-ax', '-o', 'comm='], { encoding: 'utf8' })
+    const running = execFileSync('/bin/ps', ['-ax', '-o', 'pid=,comm='], { encoding: 'utf8' })
       .split('\n')
-      .some(line => line.includes('claude-overlay-helper'));
-    if (running) return true;
+      .map(line => line.trim().split(/\s+/))
+      .find(parts => parts[1] && parts[1].includes('claude-overlay-helper'));
+    if (running && running[0]) {
+      cachedHelperPid = Number(running[0]);
+      return true;
+    }
     const child = spawn(helperBin, [], { detached: true, stdio: 'ignore' });
     child.unref();
+    cachedHelperPid = child.pid || null;
     return true;
   } catch { return false; }
 }
@@ -890,9 +911,10 @@ async function main() {
   }
 
   if (options.client === 'all' || (options.mode === 'inject-only' && !options.portExplicit && options.client === 'codex')) {
+    const agPort = getAntigravityActivePort() || CLIENT_PORT_MAP.antigravity;
     const clientEntries = options.client === 'all'
-      ? Object.entries(CLIENT_PORT_MAP)
-      : [['codex', 9229], ['claude', 9230], ['antigravity', 9231]];
+      ? [['codex', CLIENT_PORT_MAP.codex], ['claude', CLIENT_PORT_MAP.claude], ['antigravity', agPort]]
+      : [['codex', 9229], ['claude', 9230], ['antigravity', agPort]];
     const allResults = [];
     for (const [clientName, clientPort] of clientEntries) {
       try {

@@ -5,6 +5,7 @@
 //
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#include <sys/stat.h>
 
 @interface OverlayController : NSObject <WKScriptMessageHandler, WKNavigationDelegate>
 @property (nonatomic, strong) NSPanel *panel;
@@ -18,6 +19,9 @@
 @property (nonatomic, assign) CGFloat lastClaudeWidth;
 @property (nonatomic, assign) NSInteger lastThemeDetected; // -1: uninit, 0: light, 1: dark
 @property (nonatomic, assign) NSInteger mouseOutsideTicks;
+@property (nonatomic, assign) time_t lastStatusMtime;
+@property (nonatomic, assign) time_t lastConfigMtime;
+@property (nonatomic, assign) BOOL lastThemeIsDark;
 @end
 
 @implementation OverlayController
@@ -31,6 +35,9 @@
         _lastStatusJson = @"";
         _lastClaudeWidth = 0.0;
         _lastThemeDetected = -1;
+        _lastStatusMtime = 0;
+        _lastConfigMtime = 0;
+        _lastThemeIsDark = NO;
         [self setupPanelAndWebView];
         [self startTimers];
     }
@@ -41,17 +48,25 @@
     NSString *p1 = [@"~/Library/Application Support/Claude-3p/config.json" stringByExpandingTildeInPath];
     NSString *p2 = [@"~/Library/Application Support/Claude/config.json" stringByExpandingTildeInPath];
     for (NSString *path in @[p1, p2]) {
-        NSData *data = [NSData dataWithContentsOfFile:path];
-        if (data) {
-            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            if ([json isKindOfClass:[NSDictionary class]]) {
-                NSString *mode = json[@"userThemeMode"];
-                if ([mode isEqualToString:@"dark"]) return YES;
-                if ([mode isEqualToString:@"light"]) return NO;
+        struct stat st;
+        if (stat(path.fileSystemRepresentation, &st) == 0) {
+            if (_lastConfigMtime == st.st_mtime && _lastThemeDetected >= 0) {
+                return _lastThemeIsDark;
+            }
+            _lastConfigMtime = st.st_mtime;
+            NSData *data = [NSData dataWithContentsOfFile:path];
+            if (data) {
+                NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                if ([json isKindOfClass:[NSDictionary class]]) {
+                    NSString *mode = json[@"userThemeMode"];
+                    if ([mode isEqualToString:@"dark"]) { _lastThemeIsDark = YES; return YES; }
+                    if ([mode isEqualToString:@"light"]) { _lastThemeIsDark = NO; return NO; }
+                }
             }
         }
     }
-    return [NSApp.effectiveAppearance.name containsString:@"Dark"];
+    _lastThemeIsDark = [NSApp.effectiveAppearance.name containsString:@"Dark"];
+    return _lastThemeIsDark;
 }
 
 - (void)setupPanelAndWebView {
@@ -133,12 +148,15 @@
         });
     }
 
-    // 2. 读取并同步实时用量数据
+    // 2. 读取并同步实时用量数据（mtime 守卫：未发生内容变化时零磁盘读取与解析）
     NSString *statusPath = [@"~/Library/Application Support/Codex Quota Header/live-status.json" stringByExpandingTildeInPath];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:statusPath]) return;
+    struct stat st;
+    if (stat(statusPath.fileSystemRepresentation, &st) != 0) return;
+    if (st.st_mtime == _lastStatusMtime && _lastStatusMtime > 0) return;
 
     NSData *data = [NSData dataWithContentsOfFile:statusPath];
     if (!data) return;
+    _lastStatusMtime = st.st_mtime;
 
     NSString *content = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     if (content && ![content isEqualToString:_lastStatusJson]) {
@@ -153,6 +171,14 @@
 }
 
 - (void)updateWindowPosition {
+    // 性能优化：优先检测当前前台活跃应用。若用户在其它程序（微信、浏览器等），零开销退出
+    NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    BOOL isClaudeFront = [frontApp.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"];
+    if (!isClaudeFront && !_isExpanded) {
+        if (_panel.isVisible) [_panel orderOut:nil];
+        return;
+    }
+
     NSArray<NSRunningApplication *> *apps = [[NSWorkspace sharedWorkspace] runningApplications];
     NSRunningApplication *claudeApp = nil;
     for (NSRunningApplication *app in apps) {
@@ -162,16 +188,8 @@
         }
     }
 
-    // 解决问题 1：如果 Claude 未运行或已隐藏 (Cmd+H)，立即从桌面隐藏胶囊
+    // 如果 Claude 未运行或已隐藏 (Cmd+H)，立即从桌面隐藏胶囊
     if (!claudeApp || claudeApp.isHidden) {
-        if (_panel.isVisible) [_panel orderOut:nil];
-        return;
-    }
-
-    // 解决问题 1：当用户切换到其他应用（Finder/桌面/浏览器/微信）时，只要弹窗未被展开，立即隐藏！绝不孤零零悬浮在桌面上
-    NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
-    BOOL isClaudeFront = [frontApp.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"];
-    if (!isClaudeFront && !_isExpanded) {
         if (_panel.isVisible) [_panel orderOut:nil];
         return;
     }

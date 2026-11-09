@@ -9,7 +9,7 @@ import { AppServerClient } from './account-client.mjs';
 import { ExtendedUsageCoordinator } from './extended-usage.mjs';
 import { triggerRebalance } from './dynamic-priority-adapter.mjs';
 import { readFailoverStatus, triggerToggleFailoverMode } from './failover-mode-adapter.mjs';
-import { evaluateInTarget, fetchCdpTargets, fetchAllCdpTargets, DEFAULT_CDP_PORTS, launchAndInject, selectUsageTargets, subscribeToCdpBinding } from './launcher.mjs';
+import { evaluateInTarget, fetchCdpTargets, fetchAllCdpTargets, DEFAULT_CDP_PORTS, launchAndInject, selectUsageTargets, subscribeToCdpBinding, ensureClaudeOverlayHelper } from './launcher.mjs';
 import { acquireMonitorLock, releaseMonitorLock, monitorCodeHash, MONITOR_LOCK_PATH } from './monitor-lock.mjs';
 import { getDataDir, getSettingsPath, getSkillPath } from './platform-paths.mjs';
 
@@ -290,6 +290,7 @@ async function run(cdpPort) {
     let inFlight = null;
     let inFlightContext = null;
     let latestCodexUsage = null;
+    let nextHelperCheckAt = 0;
     const completedUsageResults = [];
     const seenCommands = new Set();
     const enqueueNativeMessage = (target, payload) => {
@@ -371,6 +372,10 @@ async function run(cdpPort) {
     // 从而导致手动刷新看起来没有响应。
     const watchedPorts = cdpPort === DEFAULT_CDP_PORT ? DEFAULT_CDP_PORTS : [cdpPort];
     while (true) {
+      if (process.platform === 'darwin' && Date.now() >= nextHelperCheckAt) {
+        nextHelperCheckAt = Date.now() + 15000;
+        try { ensureClaudeOverlayHelper(); } catch {}
+      }
       let targets;
       try { targets = selectUsageTargets(await fetchAllCdpTargets(watchedPorts)); } catch { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
       if (targets.length === 0) { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
