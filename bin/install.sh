@@ -51,6 +51,51 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v clang >/dev/null 2>&1; then
   cp "$ROOT_DIR/bin/claude-overlay-helper" "$PLUGIN_DIR/bin/claude-overlay-helper" 2>/dev/null || true
 fi
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+  PLIST_NAME="com.codex-usage-header.monitor.plist"
+  mkdir -p "$LAUNCH_AGENTS_DIR"
+  NODE_BIN=""
+  for candidate in "${CODEX_USAGE_HEADER_NODE:-}" /opt/homebrew/bin/node /usr/local/bin/node "$(command -v node 2>/dev/null || true)"; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      NODE_BIN="$candidate"
+      break
+    fi
+  done
+  if [[ -n "$NODE_BIN" ]]; then
+    cat <<PLIST > "$LAUNCH_AGENTS_DIR/$PLIST_NAME"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.codex-usage-header.monitor</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${NODE_BIN}</string>
+        <string>--max-old-space-size=192</string>
+        <string>${PLUGIN_DIR}/src/monitor.mjs</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${HOME}/Library/Logs/Codex Quota Header.monitor.log</string>
+    <key>StandardErrorPath</key>
+    <string>${HOME}/Library/Logs/Codex Quota Header.monitor.err.log</string>
+</dict>
+</plist>
+PLIST
+    if [[ -z "${CODEX_USAGE_HEADER_LOCK:-}" ]]; then
+      launchctl bootout "gui/$(id -u)/com.codex-usage-header.monitor" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENTS_DIR/$PLIST_NAME" 2>/dev/null || launchctl load "$LAUNCH_AGENTS_DIR/$PLIST_NAME" 2>/dev/null || true
+    fi
+  fi
+fi
+
 printf '%s\n' "✓ Plugin copied to $PLUGIN_DIR"
 printf '%s\n' "✓ Launcher installed to $LAUNCHER_BIN"
 printf '%s\n' "✓ No-terminal app installed to $APP_DIR"

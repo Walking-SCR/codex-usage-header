@@ -271,7 +271,9 @@ async function run(cdpPort) {
   };
   try {
     mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
-    await launchAndInject(cdpPort, { launchIfNeeded: true });
+    try {
+      await launchAndInject(cdpPort, { launchIfNeeded: false });
+    } catch { /* if target is not currently available on startup, continue watching */ }
     const extendedCoordinator = new ExtendedUsageCoordinator({ settings });
     extendedCoordinator.init();
     const expiredResetTracker = new ExpiredResetTracker();

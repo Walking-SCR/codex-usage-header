@@ -76,10 +76,18 @@ if [[ -f "$LOCK_FILE" ]]; then
   fi
 fi
 
-# 3. 删除安装文件
+# 3. 删除安装文件与系统任务
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  if [[ -z "${CODEX_USAGE_HEADER_LOCK:-}" ]]; then
+    launchctl bootout "gui/$(id -u)/com.codex-usage-header.monitor" 2>/dev/null || launchctl unload "$HOME/Library/LaunchAgents/com.codex-usage-header.monitor.plist" 2>/dev/null || true
+  fi
+  /bin/rm -f "$HOME/Library/LaunchAgents/com.codex-usage-header.monitor.plist" 2>/dev/null || true
+fi
 /bin/rm -rf "$PLUGIN_DIR"
 /bin/rm -f "$LAUNCHER_BIN"
 /bin/rm -rf "$APP_DIR"
+/bin/rm -rf "$(dirname "$APP_DIR")/Claude Quota Header.app" 2>/dev/null || true
+/bin/rm -rf "$(dirname "$APP_DIR")/Antigravity Quota Header.app" 2>/dev/null || true
 printf '%s\n' "✓ Removed $PLUGIN_DIR, $LAUNCHER_BIN, and $APP_DIR"
 
 # 4. 数据：默认保留，--purge 才删除
