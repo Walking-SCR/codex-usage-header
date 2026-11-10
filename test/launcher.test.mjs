@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { getStatus, selectRendererTargets, selectUsageTargets, getDesktopAppProcessInfo, isDesktopAppRunning, classifyMountProbe, statusExitCode } from '../src/launcher.mjs';
+import { getStatus, selectRendererTargets, selectUsageTargets, getDesktopAppProcessInfo, isDesktopAppRunning, classifyMountProbe, statusExitCode, parsePsElapsedSeconds, findUninstrumentedCodexProcessesAsync } from '../src/launcher.mjs';
 
 console.log('Testing: launcher target selection and offline status...');
 
@@ -49,5 +49,12 @@ assert.equal(statusExitCode({ installedCount: 1, mountedCount: 0, waitingCount: 
 assert.equal(statusExitCode({ installedCount: 1, mountedCount: 0, waitingCount: 1, failedCount: 0 }), 0);
 assert.equal(statusExitCode({ installedCount: 2, mountedCount: 1, waitingCount: 0, failedCount: 1 }), 0,
   '主窗口已挂载时，即便辅助目标未挂载也不应报错退出');
+
+// 测试 ps 运行时间解析与无 CDP 进程检测接口
+assert.equal(parsePsElapsedSeconds('00:05'), 5);
+assert.equal(parsePsElapsedSeconds('01:02:03'), 3723);
+assert.equal(parsePsElapsedSeconds('2-00:01:00'), 172860);
+assert.equal(parsePsElapsedSeconds(''), Infinity);
+assert.ok(Array.isArray(await findUninstrumentedCodexProcessesAsync(65534)));
 
 console.log('✓ Launcher target selection and offline status tests passed!');

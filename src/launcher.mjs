@@ -7,10 +7,13 @@
  * 安全提示：CDP 调试端口（默认 9229）仅绑定 127.0.0.1，但本机任意进程
  * 连接后都可操控渲染目标。这是 CDP 机制本身的特性，详见 SECURITY.md。
  */
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
@@ -140,6 +143,116 @@ export function getDesktopAppProcessInfo(port = DEFAULT_PORT, client = 'codex') 
 
 export function isDesktopAppRunning() {
   return getDesktopAppProcessInfo().running;
+}
+
+export function parsePsElapsedSeconds(etimeStr) {
+  const s = String(etimeStr || '').trim();
+  if (!s) return Infinity;
+  const dashParts = s.split('-');
+  let days = 0;
+  let timePart = s;
+  if (dashParts.length === 2) {
+    days = Number(dashParts[0]);
+    if (!Number.isFinite(days)) return Infinity;
+    timePart = dashParts[1];
+  }
+  const parts = timePart.split(':').map(Number);
+  if (parts.some(n => !Number.isFinite(n))) return Infinity;
+  let secs = 0;
+  if (parts.length === 3) secs = parts[0] * 3600 + parts[1] * 60 + parts[2];
+  else if (parts.length === 2) secs = parts[0] * 60 + parts[1];
+  else if (parts.length === 1) secs = parts[0];
+  else return Infinity;
+  return days * 86400 + secs;
+}
+
+export async function findUninstrumentedCodexProcessesAsync(port = DEFAULT_PORT) {
+  if (process.platform !== 'darwin') return [];
+  const candidates = desktopExecutableCandidates();
+  try {
+    const { stdout } = await execFileAsync('/bin/ps', ['-axww', '-o', 'pid=,etime=,command='], { encoding: 'utf8', timeout: 3000 });
+    const found = [];
+    for (const rawLine of stdout.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const match = line.match(/^(\d+)\s+(\S+)\s+(.+)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const etime = match[2];
+      const command = match[3].trim();
+      const matchedCandidate = candidates.find(candidate => command === candidate || command.startsWith(`${candidate} `));
+      if (!matchedCandidate) continue;
+      if (command.includes(`--remote-debugging-port=${port}`) || command.includes('--remote-debugging-port=')) {
+        return [];
+      }
+      found.push({
+        pid,
+        elapsedSeconds: parsePsElapsedSeconds(etime),
+        executable: matchedCandidate,
+      });
+    }
+    return found;
+  } catch {
+    return [];
+  }
+}
+
+export async function autoRelaunchCodexWithCdp(port = DEFAULT_PORT, processes = []) {
+  if (process.platform !== 'darwin' || !Array.isArray(processes) || processes.length === 0) {
+    return { ok: false, reason: 'invalid_state' };
+  }
+  const lockDir = join(process.env.TMPDIR || tmpdir(), 'codex-quota-header-launcher.lock');
+  if (existsSync(lockDir)) {
+    return { ok: false, reason: 'launcher_active' };
+  }
+  const executable = processes[0].executable || locateExecutable();
+  if (!executable || !existsSync(executable)) {
+    return { ok: false, reason: 'executable_not_found' };
+  }
+  const appName = executable.includes('/Codex.app/') ? 'Codex' : 'ChatGPT';
+  try {
+    await execFileAsync('/usr/bin/osascript', ['-e', `tell application "${appName}" to quit`], { timeout: 4000 }).catch(() => {});
+  } catch { /* ignore */ }
+
+  const deadline1 = Date.now() + 2500;
+  while (Date.now() < deadline1) {
+    if (processes.every(p => !isPidAlive(p.pid))) break;
+    await new Promise(r => setTimeout(r, 120));
+  }
+
+  if (processes.some(p => isPidAlive(p.pid))) {
+    for (const p of processes) {
+      if (isPidAlive(p.pid)) {
+        try { process.kill(p.pid, 'SIGTERM'); } catch { /* ignore */ }
+      }
+    }
+    const deadline2 = Date.now() + 4000;
+    while (Date.now() < deadline2) {
+      if (processes.every(p => !isPidAlive(p.pid))) break;
+      await new Promise(r => setTimeout(r, 120));
+    }
+  }
+
+  if (processes.some(p => isPidAlive(p.pid))) {
+    return { ok: false, reason: 'quit_timeout' };
+  }
+
+  // 确认期间没有被其它进程抢先用 CDP 拉起
+  const remaining = await findUninstrumentedCodexProcessesAsync(port);
+  if (remaining.length > 0) {
+    return { ok: false, reason: 'still_running' };
+  }
+  const info = getDesktopAppProcessInfo(port, 'codex');
+  if (info.running && info.hasCdpFlag) {
+    return { ok: true, alreadyInstrumented: true };
+  }
+
+  launchDesktopApp(executable, port);
+  try {
+    await waitForTargets(port, 8000);
+    await execFileAsync('/usr/bin/osascript', ['-e', `tell application "${appName}" to activate`], { timeout: 2500 }).catch(() => {});
+  } catch { /* 即使端口尚在初始化，后续 monitor 轮询仍会接管注入 */ }
+  return { ok: true, relaunched: true, executable };
 }
 
 const cdpHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 1, keepAliveMsecs: 10000 });
@@ -319,7 +432,7 @@ function getOrCreateCdpSocket(wsUrl) {
 
   entry.readyPromise = new Promise((resolve, reject) => {
     ws.onopen = () => resolve(entry);
-    ws.onerror = err => reject(err);
+    ws.onerror = err => reject(err instanceof Error ? err : new Error(err?.message || 'cdp_websocket_error'));
   });
 
   ws.onmessage = event => {
@@ -499,7 +612,7 @@ export function classifyMountProbe(probe) {
 //   failed  —— 已注入、顶栏存在锚点却挂载不上（明确错误）。
 // 只有安装标记都没立起来时才抛错（注入本身失败）。
 function isRetryableCdpInjectionError(error) {
-  return /cdp_evaluation_timeout|cdp_(?:socket|websocket)_closed|cdp_eval_failed/i.test(String(error?.message || error));
+  return /cdp_evaluation_timeout|cdp_(?:socket|websocket)_(?:closed|error)|cdp_eval_failed/i.test(String(error?.message || error));
 }
 
 async function evaluateInjectionWithRetry(wsUrl, scriptCode) {

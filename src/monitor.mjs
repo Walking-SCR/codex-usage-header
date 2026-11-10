@@ -9,7 +9,7 @@ import { AppServerClient } from './account-client.mjs';
 import { ExtendedUsageCoordinator } from './extended-usage.mjs';
 import { triggerRebalance } from './dynamic-priority-adapter.mjs';
 import { readFailoverStatus, triggerToggleFailoverMode } from './failover-mode-adapter.mjs';
-import { evaluateInTarget, fetchCdpTargets, fetchAllCdpTargets, DEFAULT_CDP_PORTS, launchAndInject, selectUsageTargets, subscribeToCdpBinding, ensureClaudeOverlayHelper } from './launcher.mjs';
+import { evaluateInTarget, fetchCdpTargets, fetchAllCdpTargets, DEFAULT_CDP_PORTS, launchAndInject, selectUsageTargets, subscribeToCdpBinding, ensureClaudeOverlayHelper, findUninstrumentedCodexProcessesAsync, autoRelaunchCodexWithCdp } from './launcher.mjs';
 import { acquireMonitorLock, releaseMonitorLock, monitorCodeHash, MONITOR_LOCK_PATH } from './monitor-lock.mjs';
 import { getDataDir, getSettingsPath, getSkillPath } from './platform-paths.mjs';
 
@@ -293,6 +293,10 @@ async function run(cdpPort) {
     let inFlightContext = null;
     let latestCodexUsage = null;
     let nextHelperCheckAt = 0;
+    let nextCodexAutoAttachCheckAt = 0;
+    let lastAutoRelaunchAt = 0;
+    let autoRelaunchInFlight = null;
+    const autoAttachAttemptedPids = new Set();
     const completedUsageResults = [];
     const seenCommands = new Set();
     const enqueueNativeMessage = (target, payload) => {
@@ -379,7 +383,30 @@ async function run(cdpPort) {
         try { ensureClaudeOverlayHelper(); } catch {}
       }
       let targets;
-      try { targets = selectUsageTargets(await fetchAllCdpTargets(watchedPorts)); } catch { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
+      try { targets = selectUsageTargets(await fetchAllCdpTargets(watchedPorts)); } catch { targets = []; }
+      const codexCdpActive = targets.some(target => target._cdpPort === cdpPort);
+      if (process.platform === 'darwin'
+        && !codexCdpActive
+        && !autoRelaunchInFlight
+        && Date.now() >= nextCodexAutoAttachCheckAt) {
+        nextCodexAutoAttachCheckAt = Date.now() + 2000;
+        findUninstrumentedCodexProcessesAsync(cdpPort).then(procs => {
+          const readyProcs = procs.filter(p => !autoAttachAttemptedPids.has(p.pid) && p.elapsedSeconds >= 1);
+          if (readyProcs.length > 0 && !autoRelaunchInFlight && Date.now() - lastAutoRelaunchAt >= 15000) {
+            for (const p of readyProcs) autoAttachAttemptedPids.add(p.pid);
+            if (autoAttachAttemptedPids.size > 200) autoAttachAttemptedPids.clear();
+            lastAutoRelaunchAt = Date.now();
+            autoRelaunchInFlight = autoRelaunchCodexWithCdp(cdpPort, readyProcs)
+              .catch(() => {})
+              .finally(() => {
+                autoRelaunchInFlight = null;
+                notifyMonitor();
+              });
+          } else if (procs.some(p => p.elapsedSeconds < 1)) {
+            nextCodexAutoAttachCheckAt = Date.now() + 1200;
+          }
+        }).catch(() => {});
+      }
       if (targets.length === 0) { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
       const activeTargetKeys = new Set(targets.map(target => target.id || target.webSocketDebuggerUrl));
       for (const [key, unsubscribe] of bindingSubscriptions) {
