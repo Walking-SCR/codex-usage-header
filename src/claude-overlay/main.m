@@ -120,8 +120,8 @@
 }
 
 - (void)startTimers {
-    // 窗口跟随定时器（60ms 高频丝滑吸附）
-    _trackingTimer = [NSTimer scheduledTimerWithTimeInterval:0.06
+    // 窗口跟随定时器（120ms 低开销吸附）
+    _trackingTimer = [NSTimer scheduledTimerWithTimeInterval:0.12
                                                       target:self
                                                     selector:@selector(updateWindowPosition)
                                                     userInfo:nil
@@ -251,7 +251,9 @@
     CGFloat targetY = primaryScreenH - (mainClaudeBounds.origin.y + topPadding + _currentHeight);
 
     NSRect targetFrame = NSMakeRect(targetX, targetY, _currentWidth, _currentHeight);
-    [_panel setFrame:targetFrame display:YES animate:NO];
+    if (!NSEqualRects(targetFrame, _panel.frame)) {
+        [_panel setFrame:targetFrame display:YES animate:NO];
+    }
 
     if (!_panel.isVisible) {
         [_panel orderFront:nil];

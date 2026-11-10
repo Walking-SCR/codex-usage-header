@@ -384,6 +384,28 @@ for (const label of ['新聊天 (⌘N)', '新标签页 (⌘T)', '新建标签页
   assert.ok(extPoint.floatingRight >= 60, '应自动避让顶栏右上角原生按钮');
 }
 
+// 回归 13：Codex 骨架屏抢先挂载（app://-/ 尚未渲染出 <header> 时先挂载到 body 右上角）
+{
+  const bodyEl = makeEl({ tag: 'body', rect: makeRect({ width: 1440, height: 900 }) });
+  const fakeDoc = {
+    title: 'ChatGPT',
+    body: bodyEl,
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+  const fakeWin = { innerWidth: 1440 };
+  const fakeStyle = el => ({ display: el._display || 'block', visibility: 'visible', opacity: '1' });
+  const fakeLoc = { href: 'app://-/index.html' };
+  const { resolveMountPoint } = new Function(
+    'document', 'window', 'getComputedStyle', 'location',
+    `${logicBlock}\nreturn { resolveMountPoint };`
+  )(fakeDoc, fakeWin, fakeStyle, fakeLoc);
+  const skeletonPoint = resolveMountPoint(fakeDoc);
+  assert.ok(skeletonPoint, 'Codex 骨架屏阶段应抢先解析出右上角挂载点');
+  assert.equal(skeletonPoint.placement, 'floating-top-right');
+  assert.equal(skeletonPoint.container, bodyEl);
+}
+
 assert.match(source, /const existing = document\.querySelector\(HOST_TAG\)/);
 assert.match(source, /existing\?\.isConnected/);
 assert.match(source, /point\.container\.insertBefore\(existing, point\.reference\)/);

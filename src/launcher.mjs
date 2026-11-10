@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { getMonitorStatus, isMonitorProcess, isPidAlive, monitorCodeHash } from './monitor-lock.mjs';
 import { getAccountHealth } from './account-health.mjs';
 import { desktopExecutableCandidates } from './desktop-runtime.mjs';
+import { getDataDir } from './platform-paths.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INJECTED_SCRIPT_PATH = join(__dirname, 'injected.js');
@@ -210,26 +211,56 @@ export async function autoRelaunchCodexWithCdp(port = DEFAULT_PORT, processes = 
     return { ok: false, reason: 'executable_not_found' };
   }
   const appName = executable.includes('/Codex.app/') ? 'Codex' : 'ChatGPT';
-  try {
-    await execFileAsync('/usr/bin/osascript', ['-e', `tell application "${appName}" to quit`], { timeout: 4000 }).catch(() => {});
-  } catch { /* ignore */ }
+  const isFreshColdLaunch = processes.every(p => p.elapsedSeconds <= 8);
 
-  const deadline1 = Date.now() + 2500;
-  while (Date.now() < deadline1) {
-    if (processes.every(p => !isPidAlive(p.pid))) break;
-    await new Promise(r => setTimeout(r, 120));
-  }
-
-  if (processes.some(p => isPidAlive(p.pid))) {
+  if (isFreshColdLaunch) {
+    // 刚冷启动的新进程（<=8s）：先发 SIGTERM，350ms 内若未退出直接发送 SIGKILL 快速回收，
+    // 避免 Chromium 卡在半初始化子进程清理流程中拖慢重启 1.5s+。
     for (const p of processes) {
       if (isPidAlive(p.pid)) {
         try { process.kill(p.pid, 'SIGTERM'); } catch { /* ignore */ }
       }
     }
-    const deadline2 = Date.now() + 4000;
-    while (Date.now() < deadline2) {
+    const deadlineGrace = Date.now() + 350;
+    while (Date.now() < deadlineGrace) {
       if (processes.every(p => !isPidAlive(p.pid))) break;
-      await new Promise(r => setTimeout(r, 120));
+      await new Promise(r => setTimeout(r, 40));
+    }
+    if (processes.some(p => isPidAlive(p.pid))) {
+      for (const p of processes) {
+        if (isPidAlive(p.pid)) {
+          try { process.kill(p.pid, 'SIGKILL'); } catch { /* ignore */ }
+        }
+      }
+      const deadlineKill = Date.now() + 1500;
+      while (Date.now() < deadlineKill) {
+        if (processes.every(p => !isPidAlive(p.pid))) break;
+        await new Promise(r => setTimeout(r, 40));
+      }
+    }
+  } else {
+    // 已运行较久的会话：异步通知优雅退出（不阻塞等待 4s），快速轮询并在超时后降级 SIGTERM
+    try {
+      execFile('/usr/bin/osascript', ['-e', `tell application "${appName}" to quit`], () => {});
+    } catch { /* ignore */ }
+
+    const deadline1 = Date.now() + 1200;
+    while (Date.now() < deadline1) {
+      if (processes.every(p => !isPidAlive(p.pid))) break;
+      await new Promise(r => setTimeout(r, 60));
+    }
+
+    if (processes.some(p => isPidAlive(p.pid))) {
+      for (const p of processes) {
+        if (isPidAlive(p.pid)) {
+          try { process.kill(p.pid, 'SIGTERM'); } catch { /* ignore */ }
+        }
+      }
+      const deadline2 = Date.now() + 3000;
+      while (Date.now() < deadline2) {
+        if (processes.every(p => !isPidAlive(p.pid))) break;
+        await new Promise(r => setTimeout(r, 60));
+      }
     }
   }
 
@@ -250,7 +281,7 @@ export async function autoRelaunchCodexWithCdp(port = DEFAULT_PORT, processes = 
   launchDesktopApp(executable, port);
   try {
     await waitForTargets(port, 8000);
-    await execFileAsync('/usr/bin/osascript', ['-e', `tell application "${appName}" to activate`], { timeout: 2500 }).catch(() => {});
+    await launchAndInject(port, { launchIfNeeded: false, client: 'codex' });
   } catch { /* 即使端口尚在初始化，后续 monitor 轮询仍会接管注入 */ }
   return { ok: true, relaunched: true, executable };
 }
@@ -627,12 +658,45 @@ async function evaluateInjectionWithRetry(wsUrl, scriptCode) {
   }
 }
 
+const preloadRegistryByWsUrl = new Map();
+
+async function registerPagePreload(wsUrl, scriptCode) {
+  if (!scriptCode || scriptCode.length < 64) return;
+  const hash = createHash('sha256').update(scriptCode).digest('hex');
+  const existing = preloadRegistryByWsUrl.get(wsUrl);
+  if (existing && existing.hash === hash) return;
+  try {
+    const entry = getOrCreateCdpSocket(wsUrl);
+    if (entry.ws.readyState !== WebSocket.OPEN) await entry.readyPromise;
+    await sendCdpCommand(entry, wsUrl, 'Page.enable', {}, 1500);
+    if (existing?.identifier) {
+      await sendCdpCommand(entry, wsUrl, 'Page.removeScriptToEvaluateOnNewDocument', { identifier: existing.identifier }, 1500).catch(() => {});
+    }
+    const res = await sendCdpCommand(entry, wsUrl, 'Page.addScriptToEvaluateOnNewDocument', { source: scriptCode }, 2000);
+    if (res?.identifier) {
+      preloadRegistryByWsUrl.set(wsUrl, { identifier: res.identifier, hash });
+    }
+  } catch { /* 非 Page 域目标或测试桩环境下忽略预注入失败 */ }
+}
+
+async function removePagePreload(wsUrl) {
+  const existing = preloadRegistryByWsUrl.get(wsUrl);
+  if (!existing?.identifier) return;
+  preloadRegistryByWsUrl.delete(wsUrl);
+  try {
+    const entry = getOrCreateCdpSocket(wsUrl);
+    if (entry.ws.readyState !== WebSocket.OPEN) await entry.readyPromise;
+    await sendCdpCommand(entry, wsUrl, 'Page.removeScriptToEvaluateOnNewDocument', { identifier: existing.identifier }, 1500);
+  } catch { /* ignore */ }
+}
+
 export async function injectScriptIntoTarget(wsUrl, scriptCode) {
   await evaluateInjectionWithRetry(wsUrl, scriptCode);
+  await registerPagePreload(wsUrl, scriptCode);
   const deadline = Date.now() + 6000;
   let probe;
   while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await new Promise(resolve => setTimeout(resolve, 100));
     probe = await probeMountState(wsUrl);
     if (probe?.mounted) return { ...probe, status: 'mounted' };
     if (!probe?.installed) break;
@@ -663,7 +727,7 @@ export async function waitForTargets(port, timeoutMs = READY_TIMEOUT_MS, { check
     if (checkExiting && !isDesktopAppRunning()) {
       throw new Error('desktop_app_exited_during_wait');
     }
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   if (lastTargets.length > 0) return lastTargets;
   throw new Error(`cdp_not_ready: ${lastError?.message || 'no_targets'}`);
@@ -673,10 +737,20 @@ function launchDesktopApp(executable, port) {
   if (!executable || !existsSync(executable)) {
     throw new Error(`desktop_executable_not_found: ${executable || 'unsupported_platform'}`);
   }
-  const child = spawn(executable, [
+  const args = [
     `--remote-debugging-port=${port}`,
     '--remote-debugging-address=127.0.0.1',
-  ], {
+  ];
+  const bundleMatch = process.platform === 'darwin' && executable.match(/^(.*?\.app)\/Contents\/MacOS\//);
+  if (bundleMatch) {
+    const child = spawn('/usr/bin/open', ['-a', bundleMatch[1], '--args', ...args], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    return;
+  }
+  const child = spawn(executable, args, {
     detached: true,
     stdio: 'ignore',
     windowsHide: false,
@@ -860,7 +934,14 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
     return [key, `data:image/svg+xml;base64,${data.toString('base64')}`];
   }));
   const designCss = readFileSync(join(DESIGN_DIR, 'design.css'), 'utf8');
-  const bootstrap = `window.__codexUsageHeaderAccountHealth__ = ${getAccountHealth.toString()}; window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderDesignIcons__ = ${JSON.stringify(designIcons)}; window.__codexUsageHeaderDesignCSS__ = ${JSON.stringify(designCss)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))};`;
+  let initialSnapshot = null;
+  try {
+    const liveStatusFile = join(getDataDir(), 'live-status.json');
+    if (existsSync(liveStatusFile)) {
+      initialSnapshot = JSON.parse(readFileSync(liveStatusFile, 'utf8'));
+    }
+  } catch { /* ignore */ }
+  const bootstrap = `window.__codexUsageHeaderAccountHealth__ = ${getAccountHealth.toString()}; window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderDesignIcons__ = ${JSON.stringify(designIcons)}; window.__codexUsageHeaderDesignCSS__ = ${JSON.stringify(designCss)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))}; window.__codexUsageHeaderInitialSnapshot__ = ${JSON.stringify(initialSnapshot)};`;
 
   const results = [];
   for (const target of renderers) {
@@ -1008,6 +1089,7 @@ async function main() {
     let removed = 0;
     for (const target of targets) {
       try {
+        await removePagePreload(target.webSocketDebuggerUrl).catch(() => {});
         const result = await evaluateInTarget(target.webSocketDebuggerUrl,
           `(() => { const source = window.__codexUsageHeaderSource__; if (source && source !== ${JSON.stringify(pluginRoot)}) return false; if (!source && ${!monitorOwned}) return false; window.__codexUsageHeaderTeardown__?.(); window.__codexUsageHeaderSource__ = null; return true; })()`);
         if (result) removed += 1;
@@ -1129,5 +1211,10 @@ if (isDirectRun) {
       console.error(`[Codex Quota Header] ${error.message}`);
       process.exitCode = 1;
     }
+  }).finally(() => {
+    closeAllCdpSockets();
+    cdpHttpAgent.destroy();
+    // 防止 WebSocket 异步关闭握手阻塞 CLI 进程退出
+    setTimeout(() => process.exit(process.exitCode ?? 0), 50).unref();
   });
 }

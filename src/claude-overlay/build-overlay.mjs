@@ -93,6 +93,7 @@ const html = `<!doctype html>
     window.__codexUsageHeaderDesignIcons__ = ${JSON.stringify(designIcons)};
     window.__codexUsageHeaderDesignCSS__ = ${JSON.stringify(designCss)};
     window.__codexUsageHeaderSource__ = ${JSON.stringify(ROOT)};
+    window.__codexUsageHeaderInitialSnapshot__ = null;
 
     localStorage.setItem('codexQuotaHeader.settings.v1', JSON.stringify({
       locale: 'zh-CN',

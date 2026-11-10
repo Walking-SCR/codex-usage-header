@@ -71,7 +71,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     <key>Label</key>
     <string>com.codex-usage-header.monitor</string>
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Interactive</string>
     <key>ProgramArguments</key>
     <array>
         <string>${NODE_BIN}</string>
@@ -91,6 +91,24 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 PLIST
     if [[ -z "${CODEX_USAGE_HEADER_LOCK:-}" ]]; then
       launchctl bootout "gui/$(id -u)/com.codex-usage-header.monitor" 2>/dev/null || true
+      # 清理可能从开发目录或旧版本手动启动、未被 launchd 托管的残余监控进程与旧版伴侣进程
+      stale_monitors=$(/bin/ps -ax -o pid= -o command= | /usr/bin/awk '/codex-usage-header\/src\/monitor\.mjs/ { print $1 }' || true)
+      for mpid in $stale_monitors; do
+        if [[ -n "$mpid" ]]; then
+          /bin/kill -TERM "$mpid" 2>/dev/null || true
+        fi
+      done
+      for _ in {1..20}; do
+        alive=$(/bin/ps -ax -o pid= -o command= | /usr/bin/awk '/codex-usage-header\/src\/monitor\.mjs/ { print $1 }' || true)
+        [[ -z "$alive" ]] && break
+        /bin/sleep 0.1
+      done
+      stale_helpers=$(/bin/ps -ax -o pid= -o comm= | /usr/bin/awk '/claude-overlay-helper$/ { print $1 }' || true)
+      for hpid in $stale_helpers; do
+        if [[ -n "$hpid" ]]; then
+          /bin/kill -TERM "$hpid" 2>/dev/null || true
+        fi
+      done
       launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENTS_DIR/$PLIST_NAME" 2>/dev/null || launchctl load "$LAUNCH_AGENTS_DIR/$PLIST_NAME" 2>/dev/null || true
     fi
   fi

@@ -2852,9 +2852,9 @@
 
   function isVisible(element) {
     const rect = visibleRect(element);
+    if (!(rect && rect.top < 80 && rect.bottom > 0 && rect.right > 0 && rect.left < window.innerWidth)) return false;
     const style = element ? getComputedStyle(element) : null;
-    return Boolean(rect && style && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0
-      && rect.top < 80 && rect.bottom > 0 && rect.right > 0 && rect.left < window.innerWidth);
+    return Boolean(style && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0);
   }
 
   const THREAD_ACTION_RE = /^聊天操作$|^chat actions?$|^more$/i;
@@ -3109,7 +3109,12 @@
       const extPoint = resolveExternalClientMountPoint(doc);
       if (extPoint) return extPoint;
     }
-    const buttons = [...doc.querySelectorAll('button')].filter(btn => isVisible(btn) && !isWindowCaptionControl(btn));
+    const isInHeaderScope = btn => Boolean(
+      btn.closest?.('header')
+      || btn.closest?.('[data-app-shell-header-toolbar="true"]')
+      || btn.closest?.('[role="toolbar"]')
+    );
+    const buttons = [...doc.querySelectorAll('button')].filter(btn => isInHeaderScope(btn) && isVisible(btn) && !isWindowCaptionControl(btn));
     // 按水平从右至左排序，优先匹配顶栏右侧的操作按钮
     const rightwardButtons = [...buttons].sort((a, b) => (visibleRect(b)?.left || 0) - (visibleRect(a)?.left || 0));
 
@@ -3172,6 +3177,25 @@
         });
         if (mainChild) container = mainChild;
         return { header, toolbar: container, container, reference: null, placement: "new-chat" };
+      }
+    }
+
+    // Tier 7：Codex 骨架屏抢先挂载。
+    // 在 React 尚未渲染 <header> 的骨架屏阶段，直接浮动挂载至右上角，
+    // 避免白屏空等 5.7 秒。后续 <header> 就绪后由 mountObserver 自动平滑迁入顶栏。
+    if (doc?.body && typeof location !== 'undefined' && /^app:\/\/-\//i.test(String(location.href || ''))
+      && !doc.querySelector?.('header,[data-app-shell-header-toolbar="true"]')) {
+      const winW = typeof window !== 'undefined' ? (window.innerWidth || 1200) : 1200;
+      if (winW >= 360) {
+        return {
+          header: doc.body,
+          toolbar: doc.body,
+          container: doc.body,
+          reference: null,
+          placement: 'floating-top-right',
+          floatingRight: 16,
+          floatingTop: 7,
+        };
       }
     }
 
@@ -3243,18 +3267,21 @@
         existing.style.removeProperty('position');
         existing.style.removeProperty('top');
         existing.style.removeProperty('right');
+        existing.style.removeProperty('z-index');
         existing.style.setProperty('margin-left', '0px');
         existing.style.setProperty('margin-right', baseMarginRight + 'px');
       } else if (point.placement === 'new-chat') {
         existing.style.removeProperty('position');
         existing.style.removeProperty('top');
         existing.style.removeProperty('right');
+        existing.style.removeProperty('z-index');
         existing.style.setProperty('margin-left', 'auto');
         existing.style.setProperty('margin-right', baseMarginRight + 'px');
       } else {
         existing.style.removeProperty('position');
         existing.style.removeProperty('top');
         existing.style.removeProperty('right');
+        existing.style.removeProperty('z-index');
         existing.style.removeProperty('margin-left');
         existing.style.setProperty('margin-right', avoidance > 0 ? (avoidance + 8) + 'px' : '0px');
       }
@@ -3347,16 +3374,22 @@
       if (target?.parentElement === document.body || target?.tagName === 'MAIN' || target?.dataset?.summaryPanelVariant) return true;
       return false;
     };
+    let mountCheckFrame = 0;
     mountObserver = new MutationObserver(records => {
       if (window.__codexUsageHeaderActiveInstanceId__ && window.__codexUsageHeaderActiveInstanceId__ !== INSTANCE_ID) {
         mountObserver?.disconnect();
         return;
       }
       if (!records.some(isHeaderMutation)) return;
-      suppressLegacyInstances();
-      const point = resolveMountPoint();
-      if (!host?.isConnected || (point && (host.parentElement !== point.container
-        || host.nextElementSibling !== point.reference || host.dataset.placement !== point.placement))) ensureMounted();
+      if (mountCheckFrame) return;
+      mountCheckFrame = requestAnimationFrame(() => {
+        mountCheckFrame = 0;
+        if (window.__codexUsageHeaderActiveInstanceId__ && window.__codexUsageHeaderActiveInstanceId__ !== INSTANCE_ID) return;
+        suppressLegacyInstances();
+        const point = resolveMountPoint();
+        if (!host?.isConnected || (point && (host.parentElement !== point.container
+          || host.nextElementSibling !== point.reference || host.dataset.placement !== point.placement))) ensureMounted();
+      });
     });
     mountObserver.observe(document.documentElement, { childList: true, subtree: true });
     rootThemeObserver?.disconnect();
@@ -3578,9 +3611,23 @@
   });
   on(window, 'storage', event => { if (event.key === SETTINGS_KEY) { settings = safeSettings(); renderAll(); } });
 
+  function applyInitialSnapshot() {
+    try {
+      const snap = window.__codexUsageHeaderInitialSnapshot__;
+      if (!snap || typeof snap !== 'object') return;
+      if (snap.codex?.value && usageState.status === 'loading') {
+        applyUsagePayload(snap.codex.value, { fetchedAt: snap.codex.fetchedAt });
+      }
+      if (snap.extended) {
+        applyExtendedUsagePayload(snap.extended);
+      }
+    } catch { /* ignore initial snapshot parse error */ }
+  }
+
   if (document.readyState === 'loading') {
-    on(document, 'DOMContentLoaded', () => { initObserver(); requestUsage(); });
+    on(document, 'DOMContentLoaded', () => { applyInitialSnapshot(); initObserver(); requestUsage(); });
   } else {
+    applyInitialSnapshot();
     initObserver();
     requestUsage();
   }

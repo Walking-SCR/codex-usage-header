@@ -281,6 +281,7 @@ async function run(cdpPort) {
     let nextGeminiAt = 0;
     let extendedRevision = 0;
     const deliveredExtendedRevision = new Map();
+    const deliveredCodexRevision = new Map();
     let lastExtendedSignature = '';
     let cachedExtendedSnapshot = null;
     let lastExtendedSnapshotAt = 0;
@@ -293,11 +294,33 @@ async function run(cdpPort) {
     let inFlightContext = null;
     let latestCodexUsage = null;
     let nextHelperCheckAt = 0;
-    let nextCodexAutoAttachCheckAt = 0;
-    let lastAutoRelaunchAt = 0;
+    let codexCdpConnected = false;
     let autoRelaunchInFlight = null;
+    let lastAutoRelaunchAt = 0;
     const autoAttachAttemptedPids = new Set();
     const completedUsageResults = [];
+    const checkCodexAutoAttach = () => {
+      if (process.platform !== 'darwin' || codexCdpConnected || autoRelaunchInFlight) return;
+      if (Date.now() - lastAutoRelaunchAt < 10000) return;
+      findUninstrumentedCodexProcessesAsync(cdpPort).then(procs => {
+        const readyProcs = procs.filter(p => !autoAttachAttemptedPids.has(p.pid));
+        if (readyProcs.length > 0 && !autoRelaunchInFlight && !codexCdpConnected && Date.now() - lastAutoRelaunchAt >= 10000) {
+          for (const p of readyProcs) autoAttachAttemptedPids.add(p.pid);
+          if (autoAttachAttemptedPids.size > 200) autoAttachAttemptedPids.clear();
+          lastAutoRelaunchAt = Date.now();
+          autoRelaunchInFlight = autoRelaunchCodexWithCdp(cdpPort, readyProcs)
+            .catch(() => {})
+            .finally(() => {
+              autoRelaunchInFlight = null;
+              notifyMonitor();
+            });
+        }
+      }).catch(() => {});
+    };
+    const codexWatchTimer = process.platform === 'darwin'
+      ? setInterval(checkCodexAutoAttach, 350)
+      : null;
+    codexWatchTimer?.unref?.();
     const seenCommands = new Set();
     const enqueueNativeMessage = (target, payload) => {
       const item = parseNativeCommand(payload, target);
@@ -384,43 +407,29 @@ async function run(cdpPort) {
       }
       let targets;
       try { targets = selectUsageTargets(await fetchAllCdpTargets(watchedPorts)); } catch { targets = []; }
-      const codexCdpActive = targets.some(target => target._cdpPort === cdpPort);
-      if (process.platform === 'darwin'
-        && !codexCdpActive
-        && !autoRelaunchInFlight
-        && Date.now() >= nextCodexAutoAttachCheckAt) {
-        nextCodexAutoAttachCheckAt = Date.now() + 2000;
-        findUninstrumentedCodexProcessesAsync(cdpPort).then(procs => {
-          const readyProcs = procs.filter(p => !autoAttachAttemptedPids.has(p.pid) && p.elapsedSeconds >= 1);
-          if (readyProcs.length > 0 && !autoRelaunchInFlight && Date.now() - lastAutoRelaunchAt >= 15000) {
-            for (const p of readyProcs) autoAttachAttemptedPids.add(p.pid);
-            if (autoAttachAttemptedPids.size > 200) autoAttachAttemptedPids.clear();
-            lastAutoRelaunchAt = Date.now();
-            autoRelaunchInFlight = autoRelaunchCodexWithCdp(cdpPort, readyProcs)
-              .catch(() => {})
-              .finally(() => {
-                autoRelaunchInFlight = null;
-                notifyMonitor();
-              });
-          } else if (procs.some(p => p.elapsedSeconds < 1)) {
-            nextCodexAutoAttachCheckAt = Date.now() + 1200;
-          }
-        }).catch(() => {});
-      }
-      if (targets.length === 0) { await sleep(TARGET_DISCOVERY_RETRY_MS); continue; }
+      codexCdpConnected = targets.some(target => target._cdpPort === cdpPort);
+      if (!codexCdpConnected) checkCodexAutoAttach();
+      if (targets.length === 0) { await waitForMonitor(autoRelaunchInFlight ? 300 : TARGET_DISCOVERY_RETRY_MS); continue; }
       const activeTargetKeys = new Set(targets.map(target => target.id || target.webSocketDebuggerUrl));
       for (const [key, unsubscribe] of bindingSubscriptions) {
         if (activeTargetKeys.has(key)) continue;
         unsubscribe();
         bindingSubscriptions.delete(key);
         visibleByTarget.delete(key);
+        deliveredExtendedRevision.delete(key);
+        deliveredCodexRevision.delete(key);
       }
       await Promise.all(targets.map(target => bindTarget(target).catch(() => {})));
       let inspections = await Promise.all(targets.map(async target => {
         try { return { target, state: await inspectTarget(target) }; } catch { return null; }
       }));
       let valid = inspections.filter(Boolean);
-      const unmountedPorts = [...new Set(valid.filter(item => !item.state.mounted).map(item => item.target._cdpPort || cdpPort))];
+      const unmountedPorts = [...new Set(
+        valid
+          .filter(item => !item.state.mounted)
+          .map(item => item.target._cdpPort || cdpPort)
+          .filter(port => !(autoRelaunchInFlight && port === cdpPort)),
+      )];
       if (unmountedPorts.length > 0) {
         try {
           for (const cdpPort of unmountedPorts) {
@@ -643,6 +652,20 @@ async function run(cdpPort) {
             revision,
             appServer: client.getDiagnostics(),
           });
+          deliveredCodexRevision.set(key, revision);
+        }).map(promise => promise.catch(() => {})));
+      }
+      if (latestCodexUsage && revision > 0) {
+        const serializedDiagnostics = client.getDiagnostics();
+        await Promise.all(valid.map(async item => {
+          const key = item.target.id || item.target.webSocketDebuggerUrl;
+          if (deliveredCodexRevision.get(key) === revision) return;
+          await pushUsage(item.target, latestCodexUsage.value, {
+            fetchedAt: latestCodexUsage.fetchedAt,
+            revision,
+            appServer: serializedDiagnostics,
+          });
+          deliveredCodexRevision.set(key, revision);
         }).map(promise => promise.catch(() => {})));
       }
 
@@ -703,6 +726,7 @@ async function run(cdpPort) {
       await waitForMonitor(anyVisible ? ACTIVE_TARGET_POLL_MS : IDLE_TARGET_POLL_MS);
     }
   } finally {
+    if (codexWatchTimer) clearInterval(codexWatchTimer);
     notifyMonitor();
     for (const unsubscribe of bindingSubscriptions.values()) unsubscribe();
     bindingSubscriptions.clear();
