@@ -46,9 +46,17 @@ done
 
 if [[ "$(uname -s)" == "Darwin" ]] && command -v clang >/dev/null 2>&1; then
   node "$ROOT_DIR/src/claude-overlay/build-overlay.mjs" >/dev/null 2>&1 || true
-  clang -O2 -framework Cocoa -framework WebKit "$ROOT_DIR/src/claude-overlay/main.m" -o "$ROOT_DIR/bin/claude-overlay-helper" 2>/dev/null || true
-  chmod 0755 "$ROOT_DIR/bin/claude-overlay-helper" 2>/dev/null || true
-  cp "$ROOT_DIR/bin/claude-overlay-helper" "$PLUGIN_DIR/bin/claude-overlay-helper" 2>/dev/null || true
+  MAIN_M_HASH=$(/usr/bin/shasum -a 256 "$ROOT_DIR/src/claude-overlay/main.m" | /usr/bin/awk '{print $1}')
+  PREV_M_HASH=$(cat "$ROOT_DIR/bin/.claude-overlay-helper.sha256" 2>/dev/null || true)
+  HELPER_BIN="$ROOT_DIR/bin/claude-overlay-helper"
+  if [[ ! -x "$HELPER_BIN" || "$MAIN_M_HASH" != "$PREV_M_HASH" ]]; then
+    clang -O2 -framework Cocoa -framework WebKit -framework ApplicationServices "$ROOT_DIR/src/claude-overlay/main.m" -o "$HELPER_BIN" 2>/dev/null || true
+    chmod 0755 "$HELPER_BIN" 2>/dev/null || true
+    printf '%s' "$MAIN_M_HASH" > "$ROOT_DIR/bin/.claude-overlay-helper.sha256"
+  fi
+  if [[ -x "$HELPER_BIN" ]] && ! cmp -s "$HELPER_BIN" "$PLUGIN_DIR/bin/claude-overlay-helper" 2>/dev/null; then
+    cp -p "$HELPER_BIN" "$PLUGIN_DIR/bin/claude-overlay-helper" 2>/dev/null || true
+  fi
 fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then

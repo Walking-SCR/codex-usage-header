@@ -1,27 +1,192 @@
 //
 // Claude Quota Overlay - Native macOS Companion Window
-// Automatically anchors to Claude.app's top-right header and renders the exact
-// same Shadow DOM capsule and 590px rich popover card.
+// Automatically anchors to Claude.app's conversation header (even when File/Diff/Terminal
+// split panes are open) and renders the exact Shadow DOM capsule and 590px rich popover card.
 //
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#import <ApplicationServices/ApplicationServices.h>
 #include <sys/stat.h>
+#include <dirent.h>
+
+typedef struct {
+    CGRect rect;
+    BOOL isSmallIcon;
+    BOOL isText;
+    BOOL isWideTitle;
+} HeaderItem;
+
+static BOOL axGetRect(AXUIElementRef el, CGRect *outRect) {
+    CFTypeRef posRef = NULL, sizeRef = NULL;
+    if (AXUIElementCopyAttributeValue(el, kAXPositionAttribute, &posRef) != kAXErrorSuccess || !posRef) {
+        return NO;
+    }
+    if (AXUIElementCopyAttributeValue(el, kAXSizeAttribute, &sizeRef) != kAXErrorSuccess || !sizeRef) {
+        CFRelease(posRef);
+        return NO;
+    }
+    CGPoint pt = CGPointZero;
+    CGSize sz = CGSizeZero;
+    BOOL ok = AXValueGetValue(posRef, kAXValueCGPointType, &pt) && AXValueGetValue(sizeRef, kAXValueCGSizeType, &sz);
+    CFRelease(posRef);
+    CFRelease(sizeRef);
+    if (ok && outRect) {
+        *outRect = CGRectMake(pt.x, pt.y, sz.width, sz.height);
+    }
+    return ok;
+}
+
+static NSString *axCopyStringAttr(AXUIElementRef el, CFStringRef attr) {
+    CFTypeRef ref = NULL;
+    if (AXUIElementCopyAttributeValue(el, attr, &ref) != kAXErrorSuccess || !ref) return nil;
+    NSString *res = nil;
+    if (CFGetTypeID(ref) == CFStringGetTypeID()) {
+        res = [(__bridge NSString *)ref copy];
+    }
+    CFRelease(ref);
+    return res;
+}
+
+static NSData *snappyDecompressData(const uint8_t *src, size_t srcLen) {
+    if (!src || srcLen == 0) return nil;
+    size_t i = 0;
+    uint64_t ulen = 0;
+    int shift = 0;
+    while (i < srcLen && shift < 35) {
+        uint8_t b = src[i++];
+        ulen |= (uint64_t)(b & 0x7f) << shift;
+        if (!(b & 0x80)) break;
+        shift += 7;
+    }
+    if (ulen == 0 || ulen > 4 * 1024 * 1024) return nil;
+    NSMutableData *out = [NSMutableData dataWithCapacity:(NSUInteger)ulen];
+    while (i < srcLen) {
+        uint8_t tag = src[i++];
+        uint8_t type = tag & 0x03;
+        if (type == 0) {
+            size_t len = (tag >> 2) + 1;
+            if (len > 60) {
+                size_t extra = len - 60;
+                if (extra > 4 || i + extra > srcLen) return nil;
+                len = 0;
+                for (size_t k = 0; k < extra; k++) len |= ((size_t)src[i + k]) << (8 * k);
+                len += 1;
+                i += extra;
+            }
+            if (i + len > srcLen) return nil;
+            [out appendBytes:(src + i) length:len];
+            i += len;
+        } else {
+            size_t len = 0, offset = 0;
+            if (type == 1) {
+                len = ((tag >> 2) & 0x07) + 4;
+                if (i >= srcLen) return nil;
+                offset = ((size_t)(tag & 0xe0) << 3) | src[i++];
+            } else if (type == 2) {
+                len = (tag >> 2) + 1;
+                if (i + 2 > srcLen) return nil;
+                offset = (size_t)src[i] | ((size_t)src[i + 1] << 8);
+                i += 2;
+            } else {
+                len = (tag >> 2) + 1;
+                if (i + 4 > srcLen) return nil;
+                offset = (size_t)src[i] | ((size_t)src[i + 1] << 8) | ((size_t)src[i + 2] << 16) | ((size_t)src[i + 3] << 24);
+                i += 4;
+            }
+            NSUInteger curLen = out.length;
+            if (offset == 0 || offset > curLen) return nil;
+            const uint8_t *bytes = (const uint8_t *)out.bytes;
+            for (size_t k = 0; k < len; k++) {
+                uint8_t b = bytes[curLen - offset + k];
+                [out appendBytes:&b length:1];
+                bytes = (const uint8_t *)out.bytes;
+                curLen++;
+            }
+        }
+    }
+    return out;
+}
+
+static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNeedle, const char *jsonStartNeedle) {
+    if (!haystack || haystack.length == 0) return nil;
+    NSData *keyData = [NSData dataWithBytes:keyNeedle length:strlen(keyNeedle)];
+    NSData *jsonStartData = [NSData dataWithBytes:jsonStartNeedle length:strlen(jsonStartNeedle)];
+    NSRange searchRange = NSMakeRange(0, haystack.length);
+    NSRange lastKeyRange = NSMakeRange(NSNotFound, 0);
+    while (searchRange.location < haystack.length) {
+        NSRange found = [haystack rangeOfData:keyData options:0 range:searchRange];
+        if (found.location == NSNotFound) break;
+        lastKeyRange = found;
+        NSUInteger nextLoc = found.location + found.length;
+        searchRange = NSMakeRange(nextLoc, haystack.length - nextLoc);
+    }
+    if (lastKeyRange.location == NSNotFound) return nil;
+    NSUInteger startSearch = lastKeyRange.location + lastKeyRange.length;
+    NSUInteger maxWindow = MIN((NSUInteger)65536, haystack.length - startSearch);
+    NSRange startFound = [haystack rangeOfData:jsonStartData options:0 range:NSMakeRange(startSearch, maxWindow)];
+    if (startFound.location == NSNotFound) return nil;
+
+    const uint8_t *bytes = (const uint8_t *)haystack.bytes;
+    NSUInteger jsonStart = startFound.location;
+    int depth = 0;
+    BOOL inString = NO;
+    BOOL escaped = NO;
+    NSUInteger limit = MIN(haystack.length, jsonStart + 131072);
+    for (NSUInteger pos = jsonStart; pos < limit; pos++) {
+        uint8_t ch = bytes[pos];
+        if (inString) {
+            if (escaped) { escaped = NO; }
+            else if (ch == '\\') { escaped = YES; }
+            else if (ch == '"') { inString = NO; }
+        } else {
+            if (ch == '"') { inString = YES; }
+            else if (ch == '{') { depth++; }
+            else if (ch == '}') {
+                depth--;
+                if (depth == 0) {
+                    return [[NSString alloc] initWithBytes:(bytes + jsonStart) length:(pos - jsonStart + 1) encoding:NSUTF8StringEncoding];
+                }
+            }
+        }
+    }
+    return nil;
+}
 
 @interface OverlayController : NSObject <WKScriptMessageHandler, WKNavigationDelegate>
 @property (nonatomic, strong) NSPanel *panel;
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, assign) CGFloat currentWidth;
 @property (nonatomic, assign) CGFloat currentHeight;
+@property (nonatomic, assign) CGFloat capsuleHeight;
 @property (nonatomic, assign) BOOL isExpanded;
 @property (nonatomic, copy) NSString *lastStatusJson;
 @property (nonatomic, strong) NSTimer *trackingTimer;
 @property (nonatomic, strong) NSTimer *statusTimer;
+@property (nonatomic, assign) CGFloat lastAvailableWidth;
 @property (nonatomic, assign) CGFloat lastClaudeWidth;
+@property (nonatomic, assign) CGFloat lastRightInset;
 @property (nonatomic, assign) NSInteger lastThemeDetected; // -1: uninit, 0: light, 1: dark
 @property (nonatomic, assign) NSInteger mouseOutsideTicks;
 @property (nonatomic, assign) time_t lastStatusMtime;
 @property (nonatomic, assign) time_t lastConfigMtime;
 @property (nonatomic, assign) BOOL lastThemeIsDark;
+
+// AXUIElement real-time header anchor cache
+@property (nonatomic, assign) pid_t axEnabledPid;
+@property (nonatomic, assign) BOOL axPrompted;
+@property (nonatomic, assign) NSTimeInterval lastAxScanTime;
+@property (nonatomic, assign) CGRect lastScannedWinBounds;
+@property (nonatomic, assign) BOOL cachedAxValid;
+@property (nonatomic, assign) CGFloat cachedAxAnchorRightX;
+@property (nonatomic, assign) CGFloat cachedAxAvailableGap;
+@property (nonatomic, assign) CGFloat cachedAxToolbarMidY;
+
+// LevelDB zero-permission fallback cache
+@property (nonatomic, assign) NSTimeInterval lastLdbScanTime;
+@property (nonatomic, assign) time_t lastLdbDirMtime;
+@property (nonatomic, assign) CGFloat ldbSidebarWidth;
+@property (nonatomic, assign) BOOL ldbSidebarCollapsed;
+@property (nonatomic, assign) CGFloat ldbChatRatio;
 @end
 
 @implementation OverlayController
@@ -29,15 +194,29 @@
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _currentWidth = 390.0;
+        _currentWidth = 376.0;
         _currentHeight = 42.0;
+        _capsuleHeight = 34.0;
         _isExpanded = NO;
         _lastStatusJson = @"";
+        _lastAvailableWidth = -1.0;
         _lastClaudeWidth = 0.0;
+        _lastRightInset = -1.0;
         _lastThemeDetected = -1;
         _lastStatusMtime = 0;
         _lastConfigMtime = 0;
         _lastThemeIsDark = NO;
+        _axEnabledPid = 0;
+        _axPrompted = NO;
+        _lastAxScanTime = 0;
+        _lastScannedWinBounds = CGRectZero;
+        _cachedAxValid = NO;
+        _cachedAxToolbarMidY = 22.0;
+        _lastLdbScanTime = 0;
+        _lastLdbDirMtime = 0;
+        _ldbSidebarWidth = 288.0;
+        _ldbSidebarCollapsed = NO;
+        _ldbChatRatio = 1.0;
         [self setupPanelAndWebView];
         [self startTimers];
     }
@@ -69,6 +248,15 @@
     return _lastThemeIsDark;
 }
 
+- (NSString *)resolveOverlayHtmlPath {
+    NSString *execDir = [[NSProcessInfo processInfo].arguments.firstObject stringByDeletingLastPathComponent];
+    NSString *relPath = [[execDir stringByAppendingPathComponent:@"../src/claude-overlay/overlay.html"] stringByStandardizingPath];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:relPath]) {
+        return relPath;
+    }
+    return @"/Users/scr/Documents/Project/codex-usage-header/src/claude-overlay/overlay.html";
+}
+
 - (void)setupPanelAndWebView {
     NSRect initialFrame = NSMakeRect(100, 100, _currentWidth, _currentHeight);
     _panel = [[NSPanel alloc] initWithContentRect:initialFrame
@@ -98,9 +286,11 @@
 
     [_panel.contentView addSubview:_webView];
 
-    NSString *htmlPath = @"/Users/scr/Documents/Project/codex-usage-header/src/claude-overlay/overlay.html";
+    NSString *htmlPath = [self resolveOverlayHtmlPath];
+    NSString *rootDir = [[htmlPath stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
+    rootDir = [rootDir stringByDeletingLastPathComponent];
     NSURL *fileUrl = [NSURL fileURLWithPath:htmlPath];
-    NSURL *accessUrl = [NSURL fileURLWithPath:@"/Users/scr/Documents/Project/codex-usage-header/"];
+    NSURL *accessUrl = [NSURL fileURLWithPath:rootDir];
     [_webView loadFileURL:fileUrl allowingReadAccessToURL:accessUrl];
 }
 
@@ -108,19 +298,20 @@
     if (![message.body isKindOfClass:[NSDictionary class]]) return;
     NSDictionary *dict = (NSDictionary *)message.body;
     BOOL expanded = [dict[@"expanded"] boolValue];
-    CGFloat w = [dict[@"width"] doubleValue] ?: (_currentWidth);
-    CGFloat h = [dict[@"height"] doubleValue] ?: (_currentHeight);
+    CGFloat w = [dict[@"width"] doubleValue] ?: _currentWidth;
+    CGFloat h = [dict[@"height"] doubleValue] ?: _currentHeight;
+    CGFloat capH = [dict[@"capsuleHeight"] doubleValue];
 
     dispatch_async(dispatch_get_main_queue(), ^{
         self.isExpanded = expanded;
         self.currentWidth = w;
         self.currentHeight = h;
+        if (capH > 10.0) self.capsuleHeight = capH;
         [self updateWindowPosition];
     });
 }
 
 - (void)startTimers {
-    // 窗口跟随定时器（120ms 低开销吸附）
     _trackingTimer = [NSTimer scheduledTimerWithTimeInterval:0.12
                                                       target:self
                                                     selector:@selector(updateWindowPosition)
@@ -128,7 +319,6 @@
                                                      repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:_trackingTimer forMode:NSRunLoopCommonModes];
 
-    // 数据同步定时器（每秒读取一次 live-status.json）
     _statusTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
                                                     target:self
                                                   selector:@selector(pollStatusFile)
@@ -138,7 +328,6 @@
 }
 
 - (void)pollStatusFile {
-    // 1. 同步检测 Claude 外观主题（跟随 Claude 设置中的 userThemeMode: dark/light/system）
     BOOL isDark = [self detectClaudeIsDark];
     if (_lastThemeDetected != (isDark ? 1 : 0)) {
         _lastThemeDetected = (isDark ? 1 : 0);
@@ -148,7 +337,6 @@
         });
     }
 
-    // 2. 读取并同步实时用量数据（mtime 守卫：未发生内容变化时零磁盘读取与解析）
     NSString *statusPath = [@"~/Library/Application Support/Codex Quota Header/live-status.json" stringByExpandingTildeInPath];
     struct stat st;
     if (stat(statusPath.fileSystemRepresentation, &st) != 0) return;
@@ -170,8 +358,375 @@
     }
 }
 
+- (void)pollLevelDbFallbackLayout {
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - _lastLdbScanTime < 1.5) return;
+    _lastLdbScanTime = now;
+
+    NSString *dir1 = [@"~/Library/Application Support/Claude-3p/Local Storage/leveldb" stringByExpandingTildeInPath];
+    NSString *dir2 = [@"~/Library/Application Support/Claude/Local Storage/leveldb" stringByExpandingTildeInPath];
+    NSString *ldbDir = nil;
+    struct stat dirStat;
+    time_t newestDirTime = 0;
+    for (NSString *cand in @[dir1, dir2]) {
+        if (stat(cand.fileSystemRepresentation, &dirStat) == 0 && dirStat.st_mtime >= newestDirTime) {
+            newestDirTime = dirStat.st_mtime;
+            ldbDir = cand;
+        }
+    }
+    if (!ldbDir) return;
+
+    // 找出最新的 .log 与 .ldb 文件及其 mtime
+    NSString *newestLog = nil, *newestLdb = nil;
+    time_t maxFileMtime = newestDirTime;
+    time_t logMtime = 0, ldbMtime = 0;
+    DIR *dp = opendir(ldbDir.fileSystemRepresentation);
+    if (!dp) return;
+    struct dirent *entry;
+    while ((entry = readdir(dp)) != NULL) {
+        NSString *name = [NSString stringWithUTF8String:entry->d_name];
+        if (![name hasSuffix:@".log"] && ![name hasSuffix:@".ldb"]) continue;
+        NSString *full = [ldbDir stringByAppendingPathComponent:name];
+        struct stat fst;
+        if (stat(full.fileSystemRepresentation, &fst) != 0) continue;
+        if (fst.st_mtime > maxFileMtime) maxFileMtime = fst.st_mtime;
+        if ([name hasSuffix:@".log"] && fst.st_mtime >= logMtime) {
+            logMtime = fst.st_mtime;
+            newestLog = full;
+        } else if ([name hasSuffix:@".ldb"] && fst.st_mtime >= ldbMtime) {
+            ldbMtime = fst.st_mtime;
+            newestLdb = full;
+        }
+    }
+    closedir(dp);
+
+    if (maxFileMtime == _lastLdbDirMtime && _lastLdbDirMtime > 0) return;
+    _lastLdbDirMtime = maxFileMtime;
+
+    NSMutableArray<NSData *> *blobs = [NSMutableArray array];
+    if (newestLog) {
+        NSData *logData = [NSData dataWithContentsOfFile:newestLog];
+        if (logData) [blobs addObject:logData];
+    }
+    if (newestLdb) {
+        NSData *ldbData = [NSData dataWithContentsOfFile:newestLdb];
+        if (ldbData && ldbData.length > 48) {
+            // 对 .ldb 文件直接尝试解析完整原始字节与内部 Snappy 数据块
+            [blobs addObject:ldbData];
+            const uint8_t *raw = (const uint8_t *)ldbData.bytes;
+            size_t len = ldbData.length;
+            // LevelDB .ldb 的 5 字节块尾为 [type(1B)=1(snappy), crc(4B)]，从页索引或扫描中还原常见小块
+            // 若在 .log 中尚未被合并，.ldb 中也保留了原始索引末尾信息
+            size_t footerStart = len - 48;
+            size_t o = footerStart;
+            uint64_t dummy = 0; int sh = 0;
+            // skip metaindex handle (2 varints)
+            for (int v = 0; v < 2 && o < len; v++) {
+                while (o < len && (raw[o] & 0x80)) o++;
+                if (o < len) o++;
+            }
+            uint64_t idxOff = 0, idxSz = 0;
+            sh = 0;
+            while (o < len) { uint8_t b = raw[o++]; idxOff |= (uint64_t)(b & 0x7f) << sh; if (!(b & 0x80)) break; sh += 7; }
+            sh = 0;
+            while (o < len) { uint8_t b = raw[o++]; idxSz |= (uint64_t)(b & 0x7f) << sh; if (!(b & 0x80)) break; sh += 7; }
+            (void)dummy;
+            if (idxOff + idxSz + 5 <= len && idxSz > 8) {
+                NSData *idxBlock = raw[idxOff + idxSz] == 1
+                    ? snappyDecompressData(raw + idxOff, (size_t)idxSz)
+                    : [NSData dataWithBytes:(raw + idxOff) length:(size_t)idxSz];
+                if (idxBlock && idxBlock.length >= 8) {
+                    const uint8_t *ib = (const uint8_t *)idxBlock.bytes;
+                    uint32_t restarts = 0;
+                    memcpy(&restarts, ib + idxBlock.length - 4, 4);
+                    if (idxBlock.length >= 4 + 4 * (size_t)restarts) {
+                        size_t limit = idxBlock.length - 4 - 4 * (size_t)restarts;
+                        size_t p = 0;
+                        while (p < limit) {
+                            // shared, non_shared, vlen
+                            while (p < limit && (ib[p] & 0x80)) p++; if (p < limit) p++;
+                            uint64_t nonShared = 0, vlen = 0;
+                            sh = 0; while (p < limit) { uint8_t b = ib[p++]; nonShared |= (uint64_t)(b & 0x7f) << sh; if (!(b & 0x80)) break; sh += 7; }
+                            sh = 0; while (p < limit) { uint8_t b = ib[p++]; vlen |= (uint64_t)(b & 0x7f) << sh; if (!(b & 0x80)) break; sh += 7; }
+                            if (p + nonShared + vlen > limit) break;
+                            p += (size_t)nonShared;
+                            size_t vp = p; p += (size_t)vlen;
+                            uint64_t boff = 0, bsz = 0;
+                            sh = 0; while (vp < p) { uint8_t b = ib[vp++]; boff |= (uint64_t)(b & 0x7f) << sh; if (!(b & 0x80)) break; sh += 7; }
+                            sh = 0; while (vp < p) { uint8_t b = ib[vp++]; bsz |= (uint64_t)(b & 0x7f) << sh; if (!(b & 0x80)) break; sh += 7; }
+                            if (boff + bsz + 1 <= len && raw[boff + bsz] == 1) {
+                                NSData *dec = snappyDecompressData(raw + boff, (size_t)bsz);
+                                if (dec) [blobs addObject:dec];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    NSString *frameJsonStr = nil;
+    NSString *paneJsonStr = nil;
+    for (NSData *blob in blobs) {
+        if (!frameJsonStr) {
+            frameJsonStr = extractLastJsonObjectForKey(blob, "frame-store", "{\"state\":");
+        }
+        if (!paneJsonStr) {
+            paneJsonStr = extractLastJsonObjectForKey(blob, "epitaxy.sidePaneStore.v1", "{\"state\":");
+        }
+    }
+
+    if (frameJsonStr) {
+        NSDictionary *obj = [NSJSONSerialization JSONObjectWithData:[frameJsonStr dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        NSDictionary *st = [obj isKindOfClass:[NSDictionary class]] ? obj[@"state"] : nil;
+        if ([st isKindOfClass:[NSDictionary class]]) {
+            if (st[@"collapsed"]) _ldbSidebarCollapsed = [st[@"collapsed"] boolValue];
+            if ([st[@"sidebarWidth"] doubleValue] > 100.0) _ldbSidebarWidth = [st[@"sidebarWidth"] doubleValue];
+        }
+    }
+    if (paneJsonStr) {
+        NSDictionary *obj = [NSJSONSerialization JSONObjectWithData:[paneJsonStr dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        NSDictionary *st = [obj isKindOfClass:[NSDictionary class]] ? obj[@"state"] : nil;
+        if ([st isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *layout = st[@"tileLayout"];
+            NSString *curId = st[@"currentSessionId"];
+            NSDictionary *bySess = st[@"tileLayoutBySession"];
+            if ([curId isKindOfClass:[NSString class]] && [bySess isKindOfClass:[NSDictionary class]]) {
+                NSDictionary *sessLayout = bySess[curId];
+                if ([sessLayout isKindOfClass:[NSDictionary class]] && [layout[@"root"][@"children"] count] <= 1) {
+                    layout = sessLayout;
+                }
+            }
+            NSArray *children = layout[@"root"][@"children"];
+            if ([children isKindOfClass:[NSArray class]] && children.count > 1) {
+                CGFloat totalFlex = 0.0, chatFlex = 0.0;
+                for (NSDictionary *tile in children) {
+                    if (![tile isKindOfClass:[NSDictionary class]]) continue;
+                    CGFloat fx = [tile[@"flex"] doubleValue];
+                    if (fx <= 0) fx = 1.0;
+                    totalFlex += fx;
+                    if ([tile[@"tileId"] isEqualToString:@"chat"]) chatFlex += fx;
+                }
+                if (totalFlex > 0.0 && chatFlex > 0.0 && chatFlex < totalFlex) {
+                    _ldbChatRatio = chatFlex / totalFlex;
+                } else {
+                    _ldbChatRatio = 1.0;
+                }
+            } else {
+                _ldbChatRatio = 1.0;
+            }
+        }
+    }
+}
+
+- (BOOL)scanClaudeHeaderViaAX:(pid_t)claudePid winBounds:(CGRect)winBounds {
+    if (!AXIsProcessTrusted()) {
+        if (!_axPrompted) {
+            _axPrompted = YES;
+            NSDictionary *opts = @{(__bridge id)kAXTrustedCheckOptionPrompt: @YES};
+            AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts);
+        }
+        _cachedAxValid = NO;
+        return NO;
+    }
+
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (_cachedAxValid && (now - _lastAxScanTime) < 0.22 && CGRectEqualToRect(winBounds, _lastScannedWinBounds)) {
+        return YES;
+    }
+    _lastAxScanTime = now;
+    _lastScannedWinBounds = winBounds;
+
+    AXUIElementRef axApp = AXUIElementCreateApplication(claudePid);
+    if (!axApp) return NO;
+    if (_axEnabledPid != claudePid) {
+        AXUIElementSetAttributeValue(axApp, CFSTR("AXManualAccessibility"), kCFBooleanTrue);
+        _axEnabledPid = claudePid;
+    }
+
+    CFTypeRef winRef = NULL;
+    if (AXUIElementCopyAttributeValue(axApp, kAXMainWindowAttribute, &winRef) != kAXErrorSuccess || !winRef) {
+        AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute, &winRef);
+    }
+    if (!winRef) {
+        CFTypeRef winsRef = NULL;
+        if (AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute, &winsRef) == kAXErrorSuccess && winsRef) {
+            NSArray *wins = (__bridge NSArray *)winsRef;
+            if (wins.count > 0) {
+                winRef = CFRetain((__bridge CFTypeRef)wins[0]);
+            }
+            CFRelease(winsRef);
+        }
+    }
+    CFRelease(axApp);
+    if (!winRef) {
+        _cachedAxValid = NO;
+        return NO;
+    }
+
+    CGFloat headerTop = winBounds.origin.y - 4.0;
+    CGFloat headerBottom = winBounds.origin.y + 56.0;
+
+    NSMutableArray<NSValue *> *items = [NSMutableArray array];
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:@{@"el": (__bridge id)winRef, @"depth": @0}];
+    CFRelease(winRef);
+
+    NSInteger visited = 0;
+    while (stack.count > 0 && visited < 280) {
+        NSDictionary *node = stack.lastObject;
+        [stack removeLastObject];
+        AXUIElementRef el = (__bridge AXUIElementRef)node[@"el"];
+        NSInteger depth = [node[@"depth"] integerValue];
+        visited++;
+
+        CGRect rect = CGRectZero;
+        BOOL hasRect = axGetRect(el, &rect);
+        if (hasRect && rect.size.width > 0 && rect.size.height > 0) {
+            if (rect.origin.y > headerBottom || CGRectGetMaxY(rect) < headerTop) {
+                continue; // 剪枝：完全脱离顶部栏区域（消息列表/编辑区/侧栏正文），零深层开销
+            }
+        }
+
+        NSString *role = axCopyStringAttr(el, kAXRoleAttribute);
+        BOOL isButton = [role isEqualToString:@"AXButton"]
+            || [role isEqualToString:@"AXPopUpButton"]
+            || [role isEqualToString:@"AXMenuButton"]
+            || [role isEqualToString:@"AXCheckBox"]
+            || [role isEqualToString:@"AXRadioButton"]
+            || [role isEqualToString:@"AXTabButton"];
+        BOOL isText = [role isEqualToString:@"AXStaticText"] || [role isEqualToString:@"AXHeading"];
+
+        if ((isButton || isText) && hasRect
+            && rect.size.height >= 12.0 && rect.size.height <= 44.0
+            && rect.size.width >= 14.0
+            && rect.origin.y >= headerTop && CGRectGetMaxY(rect) <= headerBottom) {
+            HeaderItem item;
+            item.rect = rect;
+            item.isSmallIcon = isButton && rect.size.width >= 18.0 && rect.size.width <= 42.0 && rect.size.height >= 18.0 && rect.size.height <= 42.0;
+            item.isText = isText;
+            item.isWideTitle = isButton && rect.size.width > 44.0;
+            [items addObject:[NSValue valueWithBytes:&item objCType:@encode(HeaderItem)]];
+        }
+
+        if (depth < 14 && !isText) {
+            CFTypeRef childrenRef = NULL;
+            if (AXUIElementCopyAttributeValue(el, kAXChildrenAttribute, &childrenRef) == kAXErrorSuccess && childrenRef) {
+                NSArray *children = (__bridge NSArray *)childrenRef;
+                for (NSInteger idx = (NSInteger)children.count - 1; idx >= 0; idx--) {
+                    [stack addObject:@{@"el": children[idx], @"depth": @(depth + 1)}];
+                }
+                CFRelease(childrenRef);
+            }
+        }
+    }
+
+    if (items.count == 0) {
+        _cachedAxValid = NO;
+        return NO;
+    }
+
+    // 筛选顶栏右侧的操作按钮簇（排除左侧红绿灯与侧栏按钮 x < winX + 185）
+    NSMutableArray<NSValue *> *smallIcons = [NSMutableArray array];
+    for (NSValue *v in items) {
+        HeaderItem it;
+        [v getValue:&it];
+        if (it.isSmallIcon && it.rect.origin.x >= winBounds.origin.x + 185.0) {
+            [smallIcons addObject:v];
+        }
+    }
+    [smallIcons sortUsingComparator:^NSComparisonResult(NSValue *a, NSValue *b) {
+        HeaderItem ia, ib;
+        [a getValue:&ia]; [b getValue:&ib];
+        if (ia.rect.origin.x < ib.rect.origin.x) return NSOrderedAscending;
+        if (ia.rect.origin.x > ib.rect.origin.x) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+
+    // 将相邻小图标按钮按水平距离 <= 16px 聚合成工具栏簇
+    NSMutableArray<NSMutableArray<NSValue *> *> *clusters = [NSMutableArray array];
+    for (NSValue *v in smallIcons) {
+        HeaderItem it;
+        [v getValue:&it];
+        NSMutableArray<NSValue *> *lastCluster = clusters.lastObject;
+        if (lastCluster) {
+            HeaderItem prev;
+            [lastCluster.lastObject getValue:&prev];
+            if (it.rect.origin.x - CGRectGetMaxX(prev.rect) <= 16.0
+                && fabs(CGRectGetMidY(it.rect) - CGRectGetMidY(prev.rect)) <= 12.0) {
+                [lastCluster addObject:v];
+                continue;
+            }
+        }
+        [clusters addObject:[NSMutableArray arrayWithObject:v]];
+    }
+
+    // 优先选取首个至少包含 3 个紧密排列图标的工具栏簇（即主会话顶栏的 [分栏][>_][+][>][文件夹][...]）
+    NSArray<NSValue *> *targetCluster = nil;
+    for (NSArray<NSValue *> *c in clusters) {
+        if (c.count >= 3) {
+            targetCluster = c;
+            break;
+        }
+    }
+    if (!targetCluster) {
+        for (NSArray<NSValue *> *c in [clusters reverseObjectEnumerator]) {
+            HeaderItem firstIt;
+            [c.firstObject getValue:&firstIt];
+            if (firstIt.rect.origin.x > winBounds.origin.x + winBounds.size.width * 0.52) {
+                targetCluster = c;
+                break;
+            }
+        }
+    }
+
+    if (!targetCluster || targetCluster.count == 0) {
+        _cachedAxValid = NO;
+        return NO;
+    }
+
+    HeaderItem firstBtn;
+    [targetCluster.firstObject getValue:&firstBtn];
+    CGFloat anchorRightX = firstBtn.rect.origin.x - 6.0;
+    CGFloat midYSum = 0.0;
+    for (NSValue *v in targetCluster) {
+        HeaderItem it;
+        [v getValue:&it];
+        midYSum += CGRectGetMidY(it.rect);
+    }
+    CGFloat toolbarMidY = (midYSum / targetCluster.count) - winBounds.origin.y;
+    if (toolbarMidY < 14.0 || toolbarMidY > 36.0) toolbarMidY = 22.0;
+
+    // 寻找对话标题右边缘（优先用内部 AXStaticText 的真实文字右边界 + 26px 下拉箭头，避免 flex-1 按钮虚胖误判）
+    CGFloat textTitleRightX = 0.0;
+    CGFloat btnTitleRightX = 0.0;
+    for (NSValue *v in items) {
+        HeaderItem it;
+        [v getValue:&it];
+        if (it.rect.origin.x < winBounds.origin.x + 150.0) continue;
+        CGFloat maxX = CGRectGetMaxX(it.rect);
+        if (maxX > firstBtn.rect.origin.x) continue;
+        if (it.isText) {
+            CGFloat cand = maxX + 26.0;
+            if (cand <= anchorRightX && cand > textTitleRightX) textTitleRightX = cand;
+        } else if (!it.isSmallIcon && (firstBtn.rect.origin.x - maxX) >= 8.0) {
+            if (maxX <= anchorRightX && maxX > btnTitleRightX) btnTitleRightX = maxX;
+        }
+    }
+    CGFloat titleRightX = textTitleRightX > 0.0
+        ? textTitleRightX
+        : (btnTitleRightX > 0.0 ? btnTitleRightX : (winBounds.origin.x + 288.0 + 180.0));
+
+    CGFloat availableGap = anchorRightX - titleRightX - 8.0;
+    if (availableGap < 40.0) availableGap = 40.0;
+
+    _cachedAxValid = YES;
+    _cachedAxAnchorRightX = anchorRightX;
+    _cachedAxAvailableGap = availableGap;
+    _cachedAxToolbarMidY = toolbarMidY;
+    return YES;
+}
+
 - (void)updateWindowPosition {
-    // 性能优化：优先检测当前前台活跃应用。若用户在其它程序（微信、浏览器等），零开销退出
     NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
     BOOL isClaudeFront = [frontApp.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"];
     if (!isClaudeFront && !_isExpanded) {
@@ -188,7 +743,6 @@
         }
     }
 
-    // 如果 Claude 未运行或已隐藏 (Cmd+H)，立即从桌面隐藏胶囊
     if (!claudeApp || claudeApp.isHidden) {
         if (_panel.isVisible) [_panel orderOut:nil];
         return;
@@ -206,7 +760,6 @@
             int layer = [info[(__bridge NSString *)kCGWindowLayer] intValue];
             if (layer != 0) continue;
 
-            // 解决问题 1：关键点——最小化到 Dock (Cmd+M) 时，isOnScreen 严格为 0，必须视为窗口不可见！
             BOOL isOnScreen = [info[(__bridge NSString *)kCGWindowIsOnscreen] boolValue];
             if (!isOnScreen) continue;
 
@@ -214,7 +767,6 @@
             CGFloat w = [bounds[@"Width"] doubleValue];
             CGFloat h = [bounds[@"Height"] doubleValue];
             CGFloat area = w * h;
-            // 严格选出 Claude 主窗口（排除侧栏/小悬浮层）
             if (area > maxArea && w >= 500 && h >= 300) {
                 maxArea = area;
                 mainClaudeBounds = CGRectMake([bounds[@"X"] doubleValue],
@@ -226,28 +778,70 @@
     }
     CFRelease(windowList);
 
-    // 窗口最小化或关闭时，隐藏胶囊
     if (!found) {
         if (!_isExpanded && _panel.isVisible) [_panel orderOut:nil];
         return;
     }
 
-    // 解决问题 2：宽度自适应。当 Claude 窗口宽度变化时通知前端重新计算模式 (full/compact/minimal/nano)
     CGFloat claudeW = mainClaudeBounds.size.width;
-    if (fabs(claudeW - _lastClaudeWidth) > 8.0) {
-        _lastClaudeWidth = claudeW;
-        NSString *widthJs = [NSString stringWithFormat:@"window.__setClaudeWidth && window.__setClaudeWidth(%.0f);", claudeW];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.webView evaluateJavaScript:widthJs completionHandler:nil];
-        });
+    CGFloat anchorRightX = mainClaudeBounds.origin.x + claudeW - 196.0;
+    CGFloat availableGap = MAX(100.0, claudeW - 196.0 - 450.0);
+    CGFloat toolbarMidY = 22.0;
+
+    if ([self scanClaudeHeaderViaAX:claudeApp.processIdentifier winBounds:mainClaudeBounds]) {
+        anchorRightX = _cachedAxAnchorRightX;
+        availableGap = _cachedAxAvailableGap;
+        toolbarMidY = _cachedAxToolbarMidY;
+    } else {
+        [self pollLevelDbFallbackLayout];
+        CGFloat sidebarW = _ldbSidebarCollapsed ? 0.0 : _ldbSidebarWidth;
+        CGFloat contentW = MAX(320.0, claudeW - sidebarW);
+        if (_ldbChatRatio < 0.99) {
+            CGFloat chatW = contentW * _ldbChatRatio;
+            CGFloat splitX = mainClaudeBounds.origin.x + sidebarW + chatW;
+            anchorRightX = splitX - 196.0;
+            availableGap = MAX(44.0, chatW - 196.0 - 210.0);
+        } else {
+            anchorRightX = mainClaudeBounds.origin.x + claudeW - 196.0;
+            availableGap = MAX(80.0, contentW - 196.0 - 240.0);
+        }
     }
 
     CGFloat primaryScreenH = NSScreen.screens[0].frame.size.height;
-    // 右侧避让 Claude 顶栏右侧的 5 个图标按钮（分栏、终端、代码、运行、头像），保持 196px 间距
-    CGFloat rightPadding = 196.0;
-    CGFloat topPadding = 4.0;
+    CGFloat screenMinX = NSScreen.screens[0].frame.origin.x;
+    for (NSScreen *scr in NSScreen.screens) {
+        CGFloat topY = primaryScreenH - NSMaxY(scr.frame);
+        CGRect qRect = CGRectMake(scr.frame.origin.x, topY, scr.frame.size.width, scr.frame.size.height);
+        if (CGRectContainsPoint(qRect, CGPointMake(CGRectGetMidX(mainClaudeBounds), CGRectGetMidY(mainClaudeBounds)))) {
+            screenMinX = scr.frame.origin.x;
+            break;
+        }
+    }
 
-    CGFloat targetX = mainClaudeBounds.origin.x + mainClaudeBounds.size.width - _currentWidth - rightPadding;
+    CGFloat targetX = anchorRightX - _currentWidth + 4.0;
+    CGFloat rightInset = 0.0;
+    if (_isExpanded) {
+        CGFloat minAllowedX = MAX(screenMinX + 8.0, mainClaudeBounds.origin.x + 8.0);
+        if (targetX < minAllowedX) {
+            rightInset = minAllowedX - targetX;
+            targetX = minAllowedX;
+        }
+    }
+
+    if (fabs(availableGap - _lastAvailableWidth) > 2.0
+        || fabs(claudeW - _lastClaudeWidth) > 4.0
+        || fabs(rightInset - _lastRightInset) > 1.0) {
+        _lastAvailableWidth = availableGap;
+        _lastClaudeWidth = claudeW;
+        _lastRightInset = rightInset;
+        NSString *layoutJs = [NSString stringWithFormat:@"window.__setClaudeLayout && window.__setClaudeLayout(%.0f, %.0f, %.0f);", availableGap, claudeW, rightInset];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.webView evaluateJavaScript:layoutJs completionHandler:nil];
+        });
+    }
+
+    // 垂直对齐到 Claude 顶栏按钮中线（默认 22px）
+    CGFloat topPadding = MAX(1.0, toolbarMidY - (_capsuleHeight / 2.0) - 3.0);
     CGFloat targetY = primaryScreenH - (mainClaudeBounds.origin.y + topPadding + _currentHeight);
 
     NSRect targetFrame = NSMakeRect(targetX, targetY, _currentWidth, _currentHeight);
@@ -259,7 +853,6 @@
         [_panel orderFront:nil];
     }
 
-    // 当展开卡片时，如果鼠标移出下拉卡片范围（或点击外部区域），自动收起卡片
     if (_isExpanded) {
         NSPoint mouseLoc = [NSEvent mouseLocation];
         if (!NSPointInRect(mouseLoc, _panel.frame)) {
@@ -279,6 +872,7 @@
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     _lastThemeDetected = -1;
+    _lastAvailableWidth = -1.0;
     [self pollStatusFile];
 }
 
@@ -289,6 +883,7 @@ int main(int argc, const char * argv[]) {
         NSApplication *app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
         OverlayController *controller = [[OverlayController alloc] init];
+        (void)controller;
         [app run];
     }
     return 0;

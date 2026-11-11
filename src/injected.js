@@ -2504,6 +2504,9 @@
       return Math.max(100, Math.min(520, winW - 257 - 180 - 180));
     }
     if (element.dataset?.placement === 'overlay') {
+      if (typeof window !== 'undefined' && Number.isFinite(window.__claudeAvailableWidth)) {
+        return Math.max(40, Math.min(520, window.__claudeAvailableWidth));
+      }
       const claudeW = typeof window !== 'undefined' && Number.isFinite(window.__claudeWindowWidth)
         ? window.__claudeWindowWidth
         : (window.innerWidth || 1200);
@@ -2614,8 +2617,11 @@
     const pMini = p ? '<span class="mini-pie"' + pPie + ' aria-hidden="true"></span>' : '<span class="mini-pie-empty" aria-hidden="true">—</span>';
     const sMini = s ? '<span class="mini-pie"' + sPie + ' aria-hidden="true"></span>' : '<span class="mini-pie-empty" aria-hidden="true">—</span>';
     const detailsOpen = popoverState !== 'closed';
+    const tightNano = host.dataset.placement === 'overlay' && currentMode === 'nano' && host.dataset.tightNano === 'true';
     let content;
-    if (!showFiveHours && currentMode === 'nano') {
+    if (tightNano) {
+      content = showFiveHours ? pMini : sMini;
+    } else if (!showFiveHours && currentMode === 'nano') {
       content = '<span class="label">' + pieLabel + '</span>' + sMini;
     } else if (currentMode === 'nano') {
       content = '<span class="label">5h</span>' + pMini;
@@ -2667,6 +2673,17 @@
       :host([data-placement="antigravity"]) .capsule-separator{height:14px!important}
       :host([data-placement="antigravity"]) .label{font-size:11px!important}
       :host([data-placement="antigravity"]) .value{font-size:11px!important}
+      :host([data-placement="overlay"][data-mode="minimal"]) .capsule,:host([data-placement="overlay"][data-mode="nano"]) .capsule{height:28px;padding:0 0 0 7px}
+      :host([data-placement="overlay"][data-mode="minimal"]) .details-trigger,:host([data-placement="overlay"][data-mode="nano"]) .details-trigger{height:26px;padding:0 5px 0 0;gap:4px}
+      :host([data-placement="overlay"][data-mode="minimal"]) .capsule-toggle,:host([data-placement="overlay"][data-mode="nano"]) .capsule-toggle{width:22px;height:26px}
+      :host([data-placement="overlay"][data-mode="minimal"]) .capsule-arrow,:host([data-placement="overlay"][data-mode="nano"]) .capsule-arrow{width:12px;height:12px}
+      :host([data-placement="overlay"][data-mode="minimal"]) .capsule-separator,:host([data-placement="overlay"][data-mode="nano"]) .capsule-separator{height:14px;margin-right:1px}
+      :host([data-placement="overlay"][data-mode="minimal"]) .mini-pie,:host([data-placement="overlay"][data-mode="nano"]) .mini-pie{width:14px;height:14px}
+      :host([data-placement="overlay"][data-mode="minimal"]) .label,:host([data-placement="overlay"][data-mode="nano"]) .label{font-size:11px}
+      :host([data-placement="overlay"][data-mode="minimal"]) .divider{height:12px}
+      :host([data-placement="overlay"][data-tight-nano="true"]) .capsule{padding:0 0 0 6px}
+      :host([data-placement="overlay"][data-tight-nano="true"]) .details-trigger{padding:0 4px 0 0}
+      :host([data-placement="overlay"][data-tight-nano="true"]) .capsule-toggle{width:19px}
     `;
     const shadow = host.shadowRoot;
     let styleElement = shadow.querySelector('style[data-quota-header-style]');
@@ -2710,14 +2727,19 @@
   function updateMode() {
     if (!host) return;
     const available = measureAvailableWidth(host);
-    const next = resolveMode(available);
+    const next = host.dataset.placement === 'overlay'
+      ? (available >= 520 ? 'full' : available >= 310 ? 'compact' : available >= 135 ? 'minimal' : 'nano')
+      : resolveMode(available);
     const isChatPlacement = host.dataset.placement === 'chat' || host.dataset.placement === 'thread';
     const spaceHidden = isChatPlacement && available < 64;
     const spaceHiddenChanged = host.dataset.spaceHidden !== String(spaceHidden);
+    const tightNano = host.dataset.placement === 'overlay' && next === 'nano' && available < 76;
+    const tightNanoChanged = host.dataset.tightNano !== String(tightNano);
     host.dataset.spaceHidden = String(spaceHidden);
+    host.dataset.tightNano = String(tightNano);
     host.dataset.mode = currentMode;
     host.dataset.availableWidth = String(Math.round(available));
-    if (next !== currentMode || spaceHiddenChanged) {
+    if (next !== currentMode || spaceHiddenChanged || tightNanoChanged) {
       currentMode = next;
       host.dataset.mode = currentMode;
       renderHost();
@@ -3415,6 +3437,7 @@
   }
 
   window.__codexUsageHeaderRemount = ensureMounted;
+  window.__codexUsageHeaderRelayout = updateMode;
   window.__codexUsageHeaderSetUsage__ = applyUsagePayload;
   window.__codexUsageHeaderSetRefreshError__ = applyRefreshError;
   window.__codexUsageHeaderSetUsageError__ = applyUsageError;

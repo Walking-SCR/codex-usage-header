@@ -3,4 +3,5 @@ node_modules/
 *.log
 /audit/
 bin/claude-overlay-helper
+bin/.claude-overlay-helper.sha256
 

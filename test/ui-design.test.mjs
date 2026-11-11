@@ -116,6 +116,14 @@ assert.match(css, /overflow-wrap:anywhere;overflow:visible;text-overflow:clip/);
 assert.match(renderer, /aria-pressed="' \+ active/);
 assert.match(launcher, /__codexUsageHeaderDesignCSS__/);
 assert.match(launcher, /const DESIGN_DIR = join\(ASSET_DIR, 'ui-quota'\)/);
+assert.match(renderer, /data-tight-nano="true"/);
+assert.match(renderer, /__codexUsageHeaderRelayout/);
+const overlayBuilder = readFileSync(join(root, 'src/claude-overlay/build-overlay.mjs'), 'utf8');
+assert.match(overlayBuilder, /window\.__setClaudeLayout/);
+assert.match(overlayBuilder, /window\.__setOverlayRightInset/);
+const overlayMain = readFileSync(join(root, 'src/claude-overlay/main.m'), 'utf8');
+assert.match(overlayMain, /scanClaudeHeaderViaAX/);
+assert.match(overlayMain, /pollLevelDbFallbackLayout/);
 
 for (const asset of [
   'icons/common/app-logo.svg', 'icons/header/refresh.svg', 'icons/quota/clock.svg',
