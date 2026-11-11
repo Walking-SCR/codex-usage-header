@@ -171,7 +171,7 @@ const html = `<!doctype html>
       if (changed) {
         if (window.__codexUsageHeaderRelayout) window.__codexUsageHeaderRelayout();
         else window.__codexUsageHeaderRemount?.();
-        requestAnimationFrame(checkAndNotify);
+        checkAndNotify();
       }
     };
 
@@ -180,7 +180,7 @@ const html = `<!doctype html>
       window.__claudeWindowWidth = width;
       if (window.__codexUsageHeaderRelayout) window.__codexUsageHeaderRelayout();
       else window.__codexUsageHeaderRemount?.();
-      requestAnimationFrame(checkAndNotify);
+      checkAndNotify();
     };
 
     window.__setTheme = function(isDark) {

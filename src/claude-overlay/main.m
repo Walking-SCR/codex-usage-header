@@ -180,6 +180,8 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
 @property (nonatomic, assign) CGFloat cachedAxAnchorRightX;
 @property (nonatomic, assign) CGFloat cachedAxAvailableGap;
 @property (nonatomic, assign) CGFloat cachedAxToolbarMidY;
+@property (nonatomic, assign) AXUIElementRef cachedToolbar;
+@property (nonatomic, assign) NSTimeInterval activeResizeUntil;
 
 // LevelDB zero-permission fallback cache
 @property (nonatomic, assign) NSTimeInterval lastLdbScanTime;
@@ -190,6 +192,14 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
 @end
 
 @implementation OverlayController
+
+- (void)dealloc {
+    if (_cachedToolbar) {
+        CFRelease(_cachedToolbar);
+        _cachedToolbar = NULL;
+    }
+    [super dealloc];
+}
 
 - (instancetype)init {
     self = [super init];
@@ -212,6 +222,8 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         _lastScannedWinBounds = CGRectZero;
         _cachedAxValid = NO;
         _cachedAxToolbarMidY = 22.0;
+        _cachedToolbar = NULL;
+        _activeResizeUntil = 0;
         _lastLdbScanTime = 0;
         _lastLdbDirMtime = 0;
         _ldbSidebarWidth = 288.0;
@@ -311,8 +323,19 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     });
 }
 
+- (void)adjustTimerSpeed:(NSTimeInterval)desiredInterval {
+    if (_trackingTimer && fabs(_trackingTimer.timeInterval - desiredInterval) < 0.005) return;
+    if (_trackingTimer) [_trackingTimer invalidate];
+    _trackingTimer = [NSTimer scheduledTimerWithTimeInterval:desiredInterval
+                                                      target:self
+                                                    selector:@selector(updateWindowPosition)
+                                                    userInfo:nil
+                                                     repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:_trackingTimer forMode:NSRunLoopCommonModes];
+}
+
 - (void)startTimers {
-    _trackingTimer = [NSTimer scheduledTimerWithTimeInterval:0.12
+    _trackingTimer = [NSTimer scheduledTimerWithTimeInterval:0.04
                                                       target:self
                                                     selector:@selector(updateWindowPosition)
                                                     userInfo:nil
@@ -360,7 +383,8 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
 
 - (void)pollLevelDbFallbackLayout {
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (now - _lastLdbScanTime < 1.5) return;
+    NSTimeInterval minInterval = (now < _activeResizeUntil) ? 0.35 : 1.5;
+    if (now - _lastLdbScanTime < minInterval) return;
     _lastLdbScanTime = now;
 
     NSString *dir1 = [@"~/Library/Application Support/Claude-3p/Local Storage/leveldb" stringByExpandingTildeInPath];
@@ -519,6 +543,54 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     }
 }
 
+- (BOOL)parseToolbarChildren:(AXUIElementRef)tb winBounds:(CGRect)winBounds {
+    CGRect tbRect = CGRectZero;
+    if (!axGetRect(tb, &tbRect) || tbRect.size.width < 50 || tbRect.size.height < 15) return NO;
+    if (tbRect.origin.y > winBounds.origin.y + 44.0 || CGRectGetMaxY(tbRect) < winBounds.origin.y - 4.0) return NO;
+
+    CFTypeRef chRef = NULL;
+    if (AXUIElementCopyAttributeValue(tb, kAXChildrenAttribute, &chRef) != kAXErrorSuccess || !chRef) return NO;
+    NSArray *groups = (__bridge NSArray *)chRef;
+    if (groups.count < 2) { CFRelease(chRef); return NO; }
+
+    // Group 0: title + dropdown
+    AXUIElementRef g0 = (__bridge AXUIElementRef)groups[0];
+    CGRect g0Rect = CGRectZero;
+    axGetRect(g0, &g0Rect);
+    CGFloat titleRightX = CGRectGetMaxX(g0Rect);
+
+    // Group Last: action buttons
+    AXUIElementRef gLast = (__bridge AXUIElementRef)groups.lastObject;
+    CGRect gLastRect = CGRectZero;
+    axGetRect(gLast, &gLastRect);
+
+    CFTypeRef btnsRef = NULL;
+    AXUIElementCopyAttributeValue(gLast, kAXChildrenAttribute, &btnsRef);
+    NSArray *btns = (__bridge NSArray *)btnsRef;
+    CGFloat firstBtnX = gLastRect.origin.x;
+    if (btns && btns.count > 0) {
+        for (id btnObj in btns) {
+            CGRect bRect = CGRectZero;
+            if (axGetRect((__bridge AXUIElementRef)btnObj, &bRect) && bRect.origin.x >= winBounds.origin.x + 185.0 && bRect.size.width >= 16.0) {
+                firstBtnX = bRect.origin.x;
+                break;
+            }
+        }
+    }
+    if (btnsRef) CFRelease(btnsRef);
+    CFRelease(chRef);
+
+    CGFloat anchorX = firstBtnX - 6.0;
+    CGFloat gap = anchorX - titleRightX - 8.0;
+    if (gap < 40.0) gap = 40.0;
+
+    _cachedAxAnchorRightX = anchorX;
+    _cachedAxAvailableGap = gap;
+    _cachedAxToolbarMidY = CGRectGetMidY(tbRect) - winBounds.origin.y;
+    _cachedAxValid = YES;
+    return YES;
+}
+
 - (BOOL)scanClaudeHeaderViaAX:(pid_t)claudePid winBounds:(CGRect)winBounds {
     if (!AXIsProcessTrusted()) {
         if (!_axPrompted) {
@@ -530,8 +602,18 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         return NO;
     }
 
+    // 1. Fast path with cachedToolbar (< 0.3ms!)
+    if (_cachedToolbar) {
+        if ([self parseToolbarChildren:_cachedToolbar winBounds:winBounds]) {
+            return YES;
+        }
+        CFRelease(_cachedToolbar);
+        _cachedToolbar = NULL;
+    }
+
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (_cachedAxValid && (now - _lastAxScanTime) < 0.22 && CGRectEqualToRect(winBounds, _lastScannedWinBounds)) {
+    NSTimeInterval minScanInterval = (now < _activeResizeUntil) ? 0.05 : 0.15;
+    if (_cachedAxValid && (now - _lastAxScanTime) < minScanInterval && CGRectEqualToRect(winBounds, _lastScannedWinBounds)) {
         return YES;
     }
     _lastAxScanTime = now;
@@ -565,14 +647,14 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     }
 
     CGFloat headerTop = winBounds.origin.y - 4.0;
-    CGFloat headerBottom = winBounds.origin.y + 56.0;
+    CGFloat headerBottom = winBounds.origin.y + 44.0;
 
-    NSMutableArray<NSValue *> *items = [NSMutableArray array];
     NSMutableArray *stack = [NSMutableArray arrayWithObject:@{@"el": (__bridge id)winRef, @"depth": @0}];
     CFRelease(winRef);
 
+    AXUIElementRef foundTb = NULL;
     NSInteger visited = 0;
-    while (stack.count > 0 && visited < 280) {
+    while (stack.count > 0 && visited < 450) {
         NSDictionary *node = stack.lastObject;
         [stack removeLastObject];
         AXUIElementRef el = (__bridge AXUIElementRef)node[@"el"];
@@ -583,32 +665,22 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         BOOL hasRect = axGetRect(el, &rect);
         if (hasRect && rect.size.width > 0 && rect.size.height > 0) {
             if (rect.origin.y > headerBottom || CGRectGetMaxY(rect) < headerTop) {
-                continue; // 剪枝：完全脱离顶部栏区域（消息列表/编辑区/侧栏正文），零深层开销
+                continue; // 剪枝：完全脱离顶部栏区域
             }
         }
 
         NSString *role = axCopyStringAttr(el, kAXRoleAttribute);
-        BOOL isButton = [role isEqualToString:@"AXButton"]
-            || [role isEqualToString:@"AXPopUpButton"]
-            || [role isEqualToString:@"AXMenuButton"]
-            || [role isEqualToString:@"AXCheckBox"]
-            || [role isEqualToString:@"AXRadioButton"]
-            || [role isEqualToString:@"AXTabButton"];
-        BOOL isText = [role isEqualToString:@"AXStaticText"] || [role isEqualToString:@"AXHeading"];
-
-        if ((isButton || isText) && hasRect
-            && rect.size.height >= 12.0 && rect.size.height <= 44.0
-            && rect.size.width >= 14.0
-            && rect.origin.y >= headerTop && CGRectGetMaxY(rect) <= headerBottom) {
-            HeaderItem item;
-            item.rect = rect;
-            item.isSmallIcon = isButton && rect.size.width >= 18.0 && rect.size.width <= 42.0 && rect.size.height >= 18.0 && rect.size.height <= 42.0;
-            item.isText = isText;
-            item.isWideTitle = isButton && rect.size.width > 44.0;
-            [items addObject:[NSValue valueWithBytes:&item objCType:@encode(HeaderItem)]];
+        if ([role isEqualToString:@"AXToolbar"]) {
+            NSString *title = axCopyStringAttr(el, kAXTitleAttribute);
+            if (![title isEqualToString:@"Files controls"]) {
+                if ([self parseToolbarChildren:el winBounds:winBounds]) {
+                    foundTb = el;
+                    break;
+                }
+            }
         }
 
-        if (depth < 14 && !isText) {
+        if (depth < 38) {
             CFTypeRef childrenRef = NULL;
             if (AXUIElementCopyAttributeValue(el, kAXChildrenAttribute, &childrenRef) == kAXErrorSuccess && childrenRef) {
                 NSArray *children = (__bridge NSArray *)childrenRef;
@@ -620,120 +692,16 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         }
     }
 
-    if (items.count == 0) {
-        _cachedAxValid = NO;
-        return NO;
+    if (foundTb) {
+        _cachedToolbar = (AXUIElementRef)CFRetain(foundTb);
+        return YES;
     }
 
-    // 筛选顶栏右侧的操作按钮簇（排除左侧红绿灯与侧栏按钮 x < winX + 185）
-    NSMutableArray<NSValue *> *smallIcons = [NSMutableArray array];
-    for (NSValue *v in items) {
-        HeaderItem it;
-        [v getValue:&it];
-        if (it.isSmallIcon && it.rect.origin.x >= winBounds.origin.x + 185.0) {
-            [smallIcons addObject:v];
-        }
-    }
-    [smallIcons sortUsingComparator:^NSComparisonResult(NSValue *a, NSValue *b) {
-        HeaderItem ia, ib;
-        [a getValue:&ia]; [b getValue:&ib];
-        if (ia.rect.origin.x < ib.rect.origin.x) return NSOrderedAscending;
-        if (ia.rect.origin.x > ib.rect.origin.x) return NSOrderedDescending;
-        return NSOrderedSame;
-    }];
-
-    // 将相邻小图标按钮按水平距离 <= 16px 聚合成工具栏簇
-    NSMutableArray<NSMutableArray<NSValue *> *> *clusters = [NSMutableArray array];
-    for (NSValue *v in smallIcons) {
-        HeaderItem it;
-        [v getValue:&it];
-        NSMutableArray<NSValue *> *lastCluster = clusters.lastObject;
-        if (lastCluster) {
-            HeaderItem prev;
-            [lastCluster.lastObject getValue:&prev];
-            if (it.rect.origin.x - CGRectGetMaxX(prev.rect) <= 16.0
-                && fabs(CGRectGetMidY(it.rect) - CGRectGetMidY(prev.rect)) <= 12.0) {
-                [lastCluster addObject:v];
-                continue;
-            }
-        }
-        [clusters addObject:[NSMutableArray arrayWithObject:v]];
-    }
-
-    // 优先选取首个至少包含 3 个紧密排列图标的工具栏簇（即主会话顶栏的 [分栏][>_][+][>][文件夹][...]）
-    NSArray<NSValue *> *targetCluster = nil;
-    for (NSArray<NSValue *> *c in clusters) {
-        if (c.count >= 3) {
-            targetCluster = c;
-            break;
-        }
-    }
-    if (!targetCluster) {
-        for (NSArray<NSValue *> *c in [clusters reverseObjectEnumerator]) {
-            HeaderItem firstIt;
-            [c.firstObject getValue:&firstIt];
-            if (firstIt.rect.origin.x > winBounds.origin.x + winBounds.size.width * 0.52) {
-                targetCluster = c;
-                break;
-            }
-        }
-    }
-
-    if (!targetCluster || targetCluster.count == 0) {
-        _cachedAxValid = NO;
-        return NO;
-    }
-
-    HeaderItem firstBtn;
-    [targetCluster.firstObject getValue:&firstBtn];
-    CGFloat anchorRightX = firstBtn.rect.origin.x - 6.0;
-    CGFloat midYSum = 0.0;
-    for (NSValue *v in targetCluster) {
-        HeaderItem it;
-        [v getValue:&it];
-        midYSum += CGRectGetMidY(it.rect);
-    }
-    CGFloat toolbarMidY = (midYSum / targetCluster.count) - winBounds.origin.y;
-    if (toolbarMidY < 14.0 || toolbarMidY > 36.0) toolbarMidY = 22.0;
-
-    // 寻找对话标题右边缘（优先用内部 AXStaticText 的真实文字右边界 + 26px 下拉箭头，避免 flex-1 按钮虚胖误判）
-    CGFloat textTitleRightX = 0.0;
-    CGFloat btnTitleRightX = 0.0;
-    for (NSValue *v in items) {
-        HeaderItem it;
-        [v getValue:&it];
-        if (it.rect.origin.x < winBounds.origin.x + 150.0) continue;
-        CGFloat maxX = CGRectGetMaxX(it.rect);
-        if (maxX > firstBtn.rect.origin.x) continue;
-        if (it.isText) {
-            CGFloat cand = maxX + 26.0;
-            if (cand <= anchorRightX && cand > textTitleRightX) textTitleRightX = cand;
-        } else if (!it.isSmallIcon && (firstBtn.rect.origin.x - maxX) >= 8.0) {
-            if (maxX <= anchorRightX && maxX > btnTitleRightX) btnTitleRightX = maxX;
-        }
-    }
-    CGFloat titleRightX = textTitleRightX > 0.0
-        ? textTitleRightX
-        : (btnTitleRightX > 0.0 ? btnTitleRightX : (winBounds.origin.x + 288.0 + 180.0));
-
-    CGFloat availableGap = anchorRightX - titleRightX - 8.0;
-    if (availableGap < 40.0) availableGap = 40.0;
-
-    _cachedAxValid = YES;
-    _cachedAxAnchorRightX = anchorRightX;
-    _cachedAxAvailableGap = availableGap;
-    _cachedAxToolbarMidY = toolbarMidY;
-    return YES;
+    _cachedAxValid = NO;
+    return NO;
 }
 
 - (void)updateWindowPosition {
-    NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
-    BOOL isClaudeFront = [frontApp.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"];
-    if (!isClaudeFront && !_isExpanded) {
-        if (_panel.isVisible) [_panel orderOut:nil];
-        return;
-    }
-
     NSArray<NSRunningApplication *> *apps = [[NSWorkspace sharedWorkspace] runningApplications];
     NSRunningApplication *claudeApp = nil;
     for (NSRunningApplication *app in apps) {
@@ -807,6 +775,14 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         }
     }
 
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    BOOL isMouseDragging = ([NSEvent pressedMouseButtons] != 0);
+    BOOL isMoving = (fabs(claudeW - _lastClaudeWidth) > 0.5) || (fabs(availableGap - _lastAvailableWidth) > 0.5);
+    if (isMouseDragging || isMoving) {
+        _activeResizeUntil = now + 0.8;
+    }
+    [self adjustTimerSpeed:(now < _activeResizeUntil ? 0.033 : 0.12)];
+
     CGFloat primaryScreenH = NSScreen.screens[0].frame.size.height;
     CGFloat screenMinX = NSScreen.screens[0].frame.origin.x;
     for (NSScreen *scr in NSScreen.screens) {
@@ -828,8 +804,8 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         }
     }
 
-    if (fabs(availableGap - _lastAvailableWidth) > 2.0
-        || fabs(claudeW - _lastClaudeWidth) > 4.0
+    if (fabs(availableGap - _lastAvailableWidth) > 1.0
+        || fabs(claudeW - _lastClaudeWidth) > 1.0
         || fabs(rightInset - _lastRightInset) > 1.0) {
         _lastAvailableWidth = availableGap;
         _lastClaudeWidth = claudeW;

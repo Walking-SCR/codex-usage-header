@@ -2728,12 +2728,12 @@
     if (!host) return;
     const available = measureAvailableWidth(host);
     const next = host.dataset.placement === 'overlay'
-      ? (available >= 520 ? 'full' : available >= 310 ? 'compact' : available >= 135 ? 'minimal' : 'nano')
+      ? (available >= 390 ? 'full' : available >= 295 ? 'compact' : available >= 140 ? 'minimal' : 'nano')
       : resolveMode(available);
     const isChatPlacement = host.dataset.placement === 'chat' || host.dataset.placement === 'thread';
     const spaceHidden = isChatPlacement && available < 64;
     const spaceHiddenChanged = host.dataset.spaceHidden !== String(spaceHidden);
-    const tightNano = host.dataset.placement === 'overlay' && next === 'nano' && available < 76;
+    const tightNano = host.dataset.placement === 'overlay' && next === 'nano' && available < 82;
     const tightNanoChanged = host.dataset.tightNano !== String(tightNano);
     host.dataset.spaceHidden = String(spaceHidden);
     host.dataset.tightNano = String(tightNano);
@@ -2858,6 +2858,11 @@
       || host?.closest('[role="toolbar"]');
     const header = host?.closest('header') || toolbar || document.querySelector('header');
     if (header) resizeObserver.observe(header);
+    const shellToolbar = host?.closest?.('[data-app-shell-header-toolbar="true"]');
+    const titleSlot = shellToolbar?.firstElementChild;
+    if (titleSlot && titleSlot !== host && !titleSlot.contains(host)) {
+      resizeObserver.observe(titleSlot);
+    }
     if (host?.previousElementSibling) resizeObserver.observe(host.previousElementSibling);
     if (host?.nextElementSibling) resizeObserver.observe(host.nextElementSibling);
   }
@@ -3410,7 +3415,11 @@
         suppressLegacyInstances();
         const point = resolveMountPoint();
         if (!host?.isConnected || (point && (host.parentElement !== point.container
-          || host.nextElementSibling !== point.reference || host.dataset.placement !== point.placement))) ensureMounted();
+          || host.nextElementSibling !== point.reference || host.dataset.placement !== point.placement))) {
+          ensureMounted();
+        } else {
+          updateMode();
+        }
       });
     });
     mountObserver.observe(document.documentElement, { childList: true, subtree: true });
