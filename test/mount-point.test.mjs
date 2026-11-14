@@ -406,6 +406,26 @@ for (const label of ['新聊天 (⌘N)', '新标签页 (⌘T)', '新建标签页
   assert.equal(skeletonPoint.container, bodyEl);
 }
 
+// 回归 14：主页包含「显示标签页」按钮与全屏覆盖层时，精准挂载到右侧 inline-flex 容器
+{
+  const tabButton = makeEl({
+    tag: 'button',
+    rect: makeRect({ top: 8, left: 1400, width: 28, height: 28 }),
+    attrs: { 'aria-label': '显示标签页' },
+  });
+  const tabWrapper = makeEl({ rect: makeRect({ top: 8, left: 1400, width: 28, height: 28 }), children: [tabButton] });
+  const actionRow = makeEl({ rect: makeRect({ top: 0, left: 1390, width: 46, height: 44 }), display: 'inline-flex', children: [tabWrapper] });
+  const rightSlot = makeEl({ rect: makeRect({ top: 0, left: 1390, width: 46, height: 44 }), attrs: { 'data-app-shell-header-slot-content': 'true' }, children: [actionRow] });
+  const overlayLayer = makeEl({ rect: makeRect({ top: 0, left: 0, width: 1440, height: 44 }), display: 'block' });
+  const leftNav = makeEl({ rect: makeRect({ top: 0, left: 0, width: 290, height: 44 }), display: 'block' });
+  makeEl({ tag: 'header', rect: makeRect({ width: 1440, height: 44 }), children: [leftNav, overlayLayer, rightSlot] });
+
+  const point = makeEnv([tabButton], { title: 'ChatGPT' }).resolveMountPoint();
+  assert.ok(point, '主页包含显示标签页按钮时必须成功解析挂载点');
+  assert.equal(point.container, actionRow, '必须挂载到右侧 inline-flex 操作行');
+  assert.equal(point.placement, 'new-chat-right');
+}
+
 assert.match(source, /const existing = document\.querySelector\(HOST_TAG\)/);
 assert.match(source, /existing\?\.isConnected/);
 assert.match(source, /point\.container\.insertBefore\(existing, point\.reference\)/);

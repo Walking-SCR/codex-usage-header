@@ -194,6 +194,7 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
 @implementation OverlayController
 
 - (void)dealloc {
+    [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
     if (_cachedToolbar) {
         CFRelease(_cachedToolbar);
         _cachedToolbar = NULL;
@@ -230,6 +231,7 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         _ldbSidebarCollapsed = NO;
         _ldbChatRatio = 1.0;
         [self setupPanelAndWebView];
+        [self setupWorkspaceObservers];
         [self startTimers];
     }
     return self;
@@ -275,7 +277,7 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
                                         styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
                                           backing:NSBackingStoreBuffered
                                             defer:NO];
-    _panel.level = NSStatusWindowLevel;
+    _panel.level = NSFloatingWindowLevel;
     _panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorStationary;
     _panel.opaque = NO;
     _panel.backgroundColor = [NSColor clearColor];
@@ -304,6 +306,65 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     NSURL *fileUrl = [NSURL fileURLWithPath:htmlPath];
     NSURL *accessUrl = [NSURL fileURLWithPath:rootDir];
     [_webView loadFileURL:fileUrl allowingReadAccessToURL:accessUrl];
+}
+
+- (void)setupWorkspaceObservers {
+    NSNotificationCenter *center = [[NSWorkspace sharedWorkspace] notificationCenter];
+    [center addObserver:self
+               selector:@selector(workspaceAppDidActivate:)
+                   name:NSWorkspaceDidActivateApplicationNotification
+                 object:nil];
+    [center addObserver:self
+               selector:@selector(workspaceAppDidDeactivate:)
+                   name:NSWorkspaceDidDeactivateApplicationNotification
+                 object:nil];
+    [center addObserver:self
+               selector:@selector(workspaceAppDidHide:)
+                   name:NSWorkspaceDidHideApplicationNotification
+                 object:nil];
+}
+
+- (void)workspaceAppDidActivate:(NSNotification *)note {
+    NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
+    if ([app.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self updateWindowPosition];
+        });
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.panel.isVisible) [self.panel orderOut:nil];
+            if (self.isExpanded) {
+                [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
+                self.isExpanded = NO;
+            }
+        });
+    }
+}
+
+- (void)workspaceAppDidDeactivate:(NSNotification *)note {
+    NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
+    if ([app.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.panel.isVisible) [self.panel orderOut:nil];
+            if (self.isExpanded) {
+                [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
+                self.isExpanded = NO;
+            }
+        });
+    }
+}
+
+- (void)workspaceAppDidHide:(NSNotification *)note {
+    NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
+    if ([app.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.panel.isVisible) [self.panel orderOut:nil];
+            if (self.isExpanded) {
+                [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
+                self.isExpanded = NO;
+            }
+        });
+    }
 }
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
@@ -702,6 +763,17 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
 }
 
 - (void)updateWindowPosition {
+    NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    BOOL isClaudeFront = [frontApp.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"];
+    if (!isClaudeFront) {
+        if (_panel.isVisible) [_panel orderOut:nil];
+        if (_isExpanded) {
+            [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
+            _isExpanded = NO;
+        }
+        return;
+    }
+
     NSArray<NSRunningApplication *> *apps = [[NSWorkspace sharedWorkspace] runningApplications];
     NSRunningApplication *claudeApp = nil;
     for (NSRunningApplication *app in apps) {

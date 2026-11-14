@@ -2644,26 +2644,39 @@
       // 不把承载注入组件的弹性行本身当作边界；其 left 会随组件宽度移动。
       if (rightControl === element || rightControl.contains(element)) continue;
       const rcRect = firstVisibleLayoutRect(rightControl);
-      if (rcRect && rcRect.left > 0 && rcRect.left < rightBound) {
+      if (rcRect && rcRect.left > 0 && rcRect.left < rightBound && rcRect.left > headerRect.left + headerRect.width * 0.4) {
         rightBound = rcRect.left;
       }
     }
 
     // 2. 查找左侧物理占用边界 (Left Bound)
-    // 优先取紧邻的左侧兄弟元素（标题/标签栏容器）的右边缘
+    // 排除全宽绝对定位层（如 position: absolute; inset: 0 等背景覆盖层）与无害占位容器，避免左边界被误设为窗口最右端
+    const isOverlayOrBackground = el => {
+      if (!el) return true;
+      const cs = getComputedStyle(el);
+      const r = visibleRect(el);
+      if (!r) return true;
+      if (cs.position === 'absolute' && r.width >= headerRect.width * 0.6) return true;
+      if (r.width >= headerRect.width * 0.85) return true;
+      if (cs.pointerEvents === 'none' && el.children.length === 0) return true;
+      return false;
+    };
+
     let leftBound = headerRect.left + 16;
-    if (element.previousElementSibling) {
+    if (element.previousElementSibling && !isOverlayOrBackground(element.previousElementSibling)) {
       const prevRect = visibleRect(element.previousElementSibling);
-      if (prevRect && prevRect.right > leftBound) {
+      if (prevRect && prevRect.right > leftBound && prevRect.right < rightBound - 30) {
         leftBound = prevRect.right;
       }
     } else if (parent && parent !== header) {
       let sibling = parent.previousElementSibling;
       while (sibling) {
-        const sr = visibleRect(sibling);
-        if (sr && sr.right > leftBound) {
-          leftBound = sr.right;
-          break;
+        if (!isOverlayOrBackground(sibling)) {
+          const sr = visibleRect(sibling);
+          if (sr && sr.right > leftBound && sr.right < rightBound - 30) {
+            leftBound = sr.right;
+            break;
+          }
         }
         sibling = sibling.previousElementSibling;
       }
@@ -2673,8 +2686,21 @@
     const navLeft = header.querySelector('div[class*="min-w-max"], nav, .titlebar-left');
     if (navLeft) {
       const nlRect = visibleRect(navLeft);
-      if (nlRect && nlRect.right > leftBound) {
+      if (nlRect && nlRect.right > leftBound && nlRect.right < rightBound - 80) {
         leftBound = nlRect.right;
+      }
+    }
+
+    // 检查标题栏内的实际文字内容（会话标题、导航文字等），精准确定左侧物理占用
+    const titleElements = [...header.querySelectorAll('h1, h2, [class*="title"], [data-app-shell-header-title], .min-w-0.flex-1')];
+    for (const te of titleElements) {
+      if (isOverlayOrBackground(te)) continue;
+      const textChildren = [...te.querySelectorAll('*')].filter(c => c.children.length === 0 && c.textContent?.trim());
+      for (const tc of textChildren) {
+        const tr = visibleRect(tc);
+        if (tr && tr.width > 0 && tr.right > leftBound && tr.right < rightBound - 60) {
+          leftBound = Math.max(leftBound, tr.right);
+        }
       }
     }
 
@@ -2980,6 +3006,7 @@
   const NEWCHAT_ACTION_RES = [
     /^切换底部面板显示$|^toggle bottom panel visibility$|^toggle bottom panel$/i,
     /^显示\/隐藏侧边面板$|^show\/hide side panel$|^toggle side panel$/i,
+    /^(?:显示|隐藏|切换)标签页$|^(?:show|hide|toggle)\s*tabs?$/i,
     /^(?:新聊天|新建聊天|开启新聊天|创建新聊天|新会话|新建会话|新标签页|新建标签页|新标签|新建标签|打开新标签页|new\s*chat|create\s*(?:new\s*)?chat|open\s*new\s*chat|start\s*new\s*chat|new\s*tab|create\s*(?:new\s*)?tab|open\s*new\s*tab|add\s*tab|new\s*conversation)(?:\s*[\(（][^\)）]+[\)）])?$/i,
     /^[+＋]$/,
   ];
@@ -3095,19 +3122,24 @@
 
   function resolveEndSlotNewChatPoint(button) {
     const header = button?.closest?.('header');
-    const slot = button?.closest?.('[data-app-shell-header-slot="end"]');
+    const slot = button?.closest?.('[data-app-shell-header-slot="end"]')
+      || button?.closest?.('[data-app-shell-header-slot-content="true"]')
+      || button?.closest?.('[data-app-shell-header-slot]')
+      || button?.closest?.('[class*="justify-self-end"]');
     const headerRect = visibleRect(header);
     const slotRect = visibleRect(slot);
-    if (!header || !slot || !headerRect || !slotRect || headerRect.width < 220 || headerRect.height > 80) return null;
+    if (!header || !headerRect || headerRect.width < 220 || headerRect.height > 80) return null;
+    if (slot && slotRect && slotRect.width === 0) return null;
 
-    // 新版 App Shell 将 [+] 放在固定的 end slot；组件必须进入其内层 action row。
+    // 新版 App Shell 将 [+] 或右上角原生操作按钮放在固定的 end slot/操作行；组件必须进入其内层 inline-flex 操作行。
     // 若作为 header 的同级 flex 项，header 与 end slot 各自的 auto margin 会平分空白，
-    // 把胶囊推回顶栏中间（而不是截图要求的右侧红框区域）。
+    // 把胶囊推回顶栏中间（而不是要求的右侧区域）。
     let reference = button;
-    while (reference?.parentElement && reference.parentElement !== slot) {
+    const stopAt = slot || header;
+    while (reference?.parentElement && reference.parentElement !== stopAt) {
       const parent = reference.parentElement;
       if (getComputedStyle(parent).display === 'inline-flex') {
-        return { header, toolbar: slot, container: parent, reference, placement: 'new-chat-right' };
+        return { header, toolbar: slot || parent, container: parent, reference, placement: 'new-chat-right' };
       }
       reference = parent;
     }
@@ -3271,7 +3303,7 @@
       const point = validateActionAnchor(button, false);
       if (point) return point;
     }
-    // Tier 5：新版主页/工作台顶栏右侧按钮兜底（聊天/工作 Tab 右侧的新建[+]按钮）。
+    // Tier 5：新版主页/工作台顶栏右侧按钮兜底（聊天/工作 Tab 右侧的按钮，如 [+] 或显示标签页）。
     const candidateButtons = rightwardButtons.filter(btn => {
       if (isWindowCaptionControl(btn)) return false;
       const h = btn.closest?.('header') || btn.closest?.('[data-app-shell-header-toolbar="true"]');
@@ -3280,6 +3312,8 @@
       return Boolean(h && hr && r && r.left >= (hr.left + Math.max(80, hr.width * 0.25)));
     });
     if (candidateButtons.length > 0) {
+      const endSlotPoint = resolveEndSlotNewChatPoint(candidateButtons[0]);
+      if (endSlotPoint) return endSlotPoint;
       const point = validateActionAnchor(candidateButtons[0], true);
       if (point) return point;
     }
