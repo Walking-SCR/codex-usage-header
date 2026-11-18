@@ -9,8 +9,8 @@
  * 4. 保留 JSON-RPC error.code / error.data / rpcMethod，便于精确诊断；
  * 5. stderr 仅在后台保留有限尾部，不传入页面。
  */
-import { spawn, execFileSync } from 'node:child_process';
-import { locateCodexBinary } from './desktop-runtime.mjs';
+import { spawn, execFile } from 'node:child_process';
+import { locateCodexBinary, locateCodexBinaryAsync } from './desktop-runtime.mjs';
 export { locateCodexBinary } from './desktop-runtime.mjs';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10000;
@@ -105,19 +105,27 @@ export class AppServerClient {
   async start() {
     this.disposeChild();
 
-    const binary = this.configuredBinaryPath || locateCodexBinary();
+    const binary = this.configuredBinaryPath || await locateCodexBinaryAsync();
     if (!binary) throw new Error('codex_app_server_not_found');
 
     this.binaryPath = binary;
-    try {
-      const isCmdOrBat = process.platform === 'win32' && /\.(cmd|bat)$/i.test(binary);
-      this.binaryVersion = execFileSync(binary, ['--version'], {
-        encoding: 'utf8',
-        timeout: 2000,
-        windowsHide: true,
-        ...(isCmdOrBat ? { shell: true } : {}),
-      }).trim().slice(0, 100);
-    } catch { this.binaryVersion = null; }
+    if (this.versionBinaryPath !== binary) {
+      this.versionBinaryPath = binary;
+      this.binaryVersion = null;
+      const isCmdOrBatVer = process.platform === 'win32' && /\.(cmd|bat)$/i.test(binary);
+      try {
+        execFile(binary, ['--version'], {
+          encoding: 'utf8',
+          timeout: 2000,
+          windowsHide: true,
+          ...(isCmdOrBatVer ? { shell: true } : {}),
+        }, (err, stdout) => {
+          if (!err && this.binaryPath === binary && stdout) {
+            this.binaryVersion = String(stdout).trim().slice(0, 100) || null;
+          }
+        });
+      } catch { /* 异步采集版本信息，绝不阻塞主连接启动 */ }
+    }
     this.buffer = '';
     this.stderrTail = '';
     this.initialized = false;

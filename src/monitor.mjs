@@ -271,9 +271,6 @@ async function run(cdpPort) {
   };
   try {
     mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
-    try {
-      await launchAndInject(cdpPort, { launchIfNeeded: false });
-    } catch { /* if target is not currently available on startup, continue watching */ }
     const extendedCoordinator = new ExtendedUsageCoordinator({ settings });
     extendedCoordinator.init();
     const expiredResetTracker = new ExpiredResetTracker();
@@ -282,6 +279,7 @@ async function run(cdpPort) {
     let extendedRevision = 0;
     const deliveredExtendedRevision = new Map();
     const deliveredCodexRevision = new Map();
+    const verifiedMountedAt = new Map();
     let lastExtendedSignature = '';
     let cachedExtendedSnapshot = null;
     let lastExtendedSnapshotAt = 0;
@@ -293,16 +291,30 @@ async function run(cdpPort) {
     let inFlight = null;
     let inFlightContext = null;
     let latestCodexUsage = null;
+    try {
+      if (existsSync(LIVE_STATUS_PATH)) {
+        const prev = JSON.parse(readFileSync(LIVE_STATUS_PATH, 'utf8'));
+        if (prev?.codex?.value) latestCodexUsage = prev.codex;
+      }
+    } catch { /* ignore cached status read error */ }
     let nextHelperCheckAt = 0;
     let codexCdpConnected = false;
     let autoRelaunchInFlight = null;
     let lastAutoRelaunchAt = 0;
+    let consecutiveEmptyCodexChecks = 0;
+    let codexWatchTimer = null;
+    let stoppingMonitor = false;
     const autoAttachAttemptedPids = new Set();
     const completedUsageResults = [];
     const checkCodexAutoAttach = () => {
-      if (process.platform !== 'darwin' || codexCdpConnected || autoRelaunchInFlight) return;
+      if (process.platform !== 'darwin' || codexCdpConnected || autoRelaunchInFlight || stoppingMonitor) return;
       if (Date.now() - lastAutoRelaunchAt < 10000) return;
       findUninstrumentedCodexProcessesAsync(cdpPort).then(procs => {
+        if (procs.length === 0) {
+          consecutiveEmptyCodexChecks = Math.min(100, consecutiveEmptyCodexChecks + 1);
+          return;
+        }
+        consecutiveEmptyCodexChecks = 0;
         const readyProcs = procs.filter(p => !autoAttachAttemptedPids.has(p.pid));
         if (readyProcs.length > 0 && !autoRelaunchInFlight && !codexCdpConnected && Date.now() - lastAutoRelaunchAt >= 10000) {
           for (const p of readyProcs) autoAttachAttemptedPids.add(p.pid);
@@ -317,10 +329,18 @@ async function run(cdpPort) {
         }
       }).catch(() => {});
     };
-    const codexWatchTimer = process.platform === 'darwin'
-      ? setInterval(checkCodexAutoAttach, 350)
-      : null;
-    codexWatchTimer?.unref?.();
+    const scheduleCodexWatch = () => {
+      if (process.platform !== 'darwin' || stoppingMonitor) return;
+      const delay = codexCdpConnected
+        ? 5000
+        : (consecutiveEmptyCodexChecks < 10 ? 750 : 4000);
+      codexWatchTimer = setTimeout(() => {
+        checkCodexAutoAttach();
+        scheduleCodexWatch();
+      }, delay);
+      codexWatchTimer?.unref?.();
+    };
+    scheduleCodexWatch();
     const seenCommands = new Set();
     const enqueueNativeMessage = (target, payload) => {
       const item = parseNativeCommand(payload, target);
@@ -416,12 +436,38 @@ async function run(cdpPort) {
         unsubscribe();
         bindingSubscriptions.delete(key);
         visibleByTarget.delete(key);
+        verifiedMountedAt.delete(key);
         deliveredExtendedRevision.delete(key);
         deliveredCodexRevision.delete(key);
       }
       await Promise.all(targets.map(target => bindTarget(target).catch(() => {})));
+      const nativeCommands = pendingNativeCommands.splice(0);
+      let lifecycleResync = false;
+      for (const item of nativeCommands.filter(command => command.kind === 'lifecycle')) {
+        const key = item.target.id || item.target.webSocketDebuggerUrl;
+        visibleByTarget.set(key, item.visible);
+        if (item.resync) lifecycleResync = true;
+      }
+      const nowInspectMs = Date.now();
       let inspections = await Promise.all(targets.map(async target => {
-        try { return { target, state: await inspectTarget(target) }; } catch { return null; }
+        const key = target.id || target.webSocketDebuggerUrl;
+        const lastVerified = verifiedMountedAt.get(key) || 0;
+        if (bindingSubscriptions.has(key) && lastVerified > 0 && (nowInspectMs - lastVerified) < 20000 && !lifecycleResync) {
+          return {
+            target,
+            state: { mounted: true, hidden: visibleByTarget.get(key) === false, commands: [] },
+            fromCache: true,
+          };
+        }
+        try {
+          const state = await inspectTarget(target);
+          if (state?.mounted) verifiedMountedAt.set(key, nowInspectMs);
+          else verifiedMountedAt.delete(key);
+          return { target, state, fromCache: false };
+        } catch {
+          verifiedMountedAt.delete(key);
+          return null;
+        }
       }));
       let valid = inspections.filter(Boolean);
       const unmountedPorts = [...new Set(
@@ -437,20 +483,19 @@ async function run(cdpPort) {
           }
           targets = selectUsageTargets(await fetchAllCdpTargets(watchedPorts));
           inspections = await Promise.all(targets.map(async target => {
-            try { return { target, state: await inspectTarget(target) }; } catch { return null; }
+            const key = target.id || target.webSocketDebuggerUrl;
+            try {
+              const state = await inspectTarget(target);
+              if (state?.mounted) verifiedMountedAt.set(key, Date.now());
+              return { target, state, fromCache: false };
+            } catch { return null; }
           }));
           valid = inspections.filter(Boolean);
         } catch { /* 目标可能正处于路由切换过程中 */ }
       }
       const commands = valid.flatMap(item => (item.state.commands || (item.state.command ? [item.state.command] : [])).map(cmd => ({ ...cmd, target: item.target })));
-      const nativeCommands = pendingNativeCommands.splice(0);
-      let lifecycleResync = false;
-      for (const item of nativeCommands.filter(command => command.kind === 'lifecycle')) {
-        const key = item.target.id || item.target.webSocketDebuggerUrl;
-        visibleByTarget.set(key, item.visible);
-        if (item.resync) lifecycleResync = true;
-      }
       for (const item of valid) {
+        if (item.fromCache) continue;
         const key = item.target.id || item.target.webSocketDebuggerUrl;
         visibleByTarget.set(key, !item.state.hidden);
       }
@@ -669,11 +714,17 @@ async function run(cdpPort) {
         }).map(promise => promise.catch(() => {})));
       }
 
+      const currentFailover = readFailoverStatus();
+      const failoverChanged = cachedExtendedSnapshot && (
+        currentFailover?.mode !== cachedExtendedSnapshot.failover?.mode
+        || currentFailover?.lifecycle_state !== cachedExtendedSnapshot.failover?.lifecycle_state
+      );
       if (!cachedExtendedSnapshot
         || snapshotBuiltForRevision !== extendedRevision
-        || Date.now() - lastExtendedSnapshotAt >= 1500) {
+        || failoverChanged
+        || Date.now() - lastExtendedSnapshotAt >= 15000) {
         const nextSnapshot = extendedCoordinator.getSnapshot();
-        nextSnapshot.failover = readFailoverStatus();
+        nextSnapshot.failover = currentFailover;
         nextSnapshot.settings = {
           enableGoogleAiPro: Boolean(settings.enableGoogleAiPro),
           enableTokenUsage: Boolean(settings.enableTokenUsage),
@@ -726,7 +777,8 @@ async function run(cdpPort) {
       await waitForMonitor(anyVisible ? ACTIVE_TARGET_POLL_MS : IDLE_TARGET_POLL_MS);
     }
   } finally {
-    if (codexWatchTimer) clearInterval(codexWatchTimer);
+    stoppingMonitor = true;
+    if (codexWatchTimer) clearTimeout(codexWatchTimer);
     notifyMonitor();
     for (const unsubscribe of bindingSubscriptions.values()) unsubscribe();
     bindingSubscriptions.clear();

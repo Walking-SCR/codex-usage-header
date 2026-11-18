@@ -232,7 +232,9 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         _ldbChatRatio = 1.0;
         [self setupPanelAndWebView];
         [self setupWorkspaceObservers];
-        [self startTimers];
+        if ([self isClaudeOrSelfFrontmost]) {
+            [self resumeTimers];
+        }
     }
     return self;
 }
@@ -308,6 +310,23 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     [_webView loadFileURL:fileUrl allowingReadAccessToURL:accessUrl];
 }
 
+- (BOOL)isClaudeOrSelfFrontmost {
+    NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    if (!frontApp) return NO;
+    if ([frontApp.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"]) return YES;
+    if (frontApp.processIdentifier == getpid() && _panel.isVisible) return YES;
+    return NO;
+}
+
+- (void)hideOverlayAndPause {
+    if (_panel.isVisible) [_panel orderOut:nil];
+    if (_isExpanded) {
+        [_webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
+        _isExpanded = NO;
+    }
+    [self pauseTimers];
+}
+
 - (void)setupWorkspaceObservers {
     NSNotificationCenter *center = [[NSWorkspace sharedWorkspace] notificationCenter];
     [center addObserver:self
@@ -322,21 +341,26 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
                selector:@selector(workspaceAppDidHide:)
                    name:NSWorkspaceDidHideApplicationNotification
                  object:nil];
+    [center addObserver:self
+               selector:@selector(workspaceAppDidUnhide:)
+                   name:NSWorkspaceDidUnhideApplicationNotification
+                 object:nil];
+    [center addObserver:self
+               selector:@selector(workspaceAppDidTerminate:)
+                   name:NSWorkspaceDidTerminateApplicationNotification
+                 object:nil];
 }
 
 - (void)workspaceAppDidActivate:(NSNotification *)note {
     NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
     if ([app.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            [self resumeTimers];
             [self updateWindowPosition];
         });
-    } else {
+    } else if (app.processIdentifier != getpid()) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.panel.isVisible) [self.panel orderOut:nil];
-            if (self.isExpanded) {
-                [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
-                self.isExpanded = NO;
-            }
+            [self hideOverlayAndPause];
         });
     }
 }
@@ -345,10 +369,8 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
     if ([app.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.panel.isVisible) [self.panel orderOut:nil];
-            if (self.isExpanded) {
-                [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
-                self.isExpanded = NO;
+            if (![self isClaudeOrSelfFrontmost]) {
+                [self hideOverlayAndPause];
             }
         });
     }
@@ -358,11 +380,34 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
     if ([app.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.panel.isVisible) [self.panel orderOut:nil];
-            if (self.isExpanded) {
-                [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
-                self.isExpanded = NO;
+            [self hideOverlayAndPause];
+        });
+    }
+}
+
+- (void)workspaceAppDidUnhide:(NSNotification *)note {
+    NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
+    if ([app.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if ([self isClaudeOrSelfFrontmost]) {
+                [self resumeTimers];
+                [self updateWindowPosition];
             }
+        });
+    }
+}
+
+- (void)workspaceAppDidTerminate:(NSNotification *)note {
+    NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
+    if ([app.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (_cachedToolbar) {
+                CFRelease(_cachedToolbar);
+                _cachedToolbar = NULL;
+            }
+            _cachedAxValid = NO;
+            _axEnabledPid = 0;
+            [self hideOverlayAndPause];
         });
     }
 }
@@ -375,17 +420,28 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     CGFloat h = [dict[@"height"] doubleValue] ?: _currentHeight;
     CGFloat capH = [dict[@"capsuleHeight"] doubleValue];
 
-    dispatch_async(dispatch_get_main_queue(), ^{
+    void (^applyUpdate)(void) = ^{
+        BOOL changed = (expanded != self.isExpanded)
+            || (fabs(w - self.currentWidth) >= 0.5)
+            || (fabs(h - self.currentHeight) >= 0.5)
+            || (capH > 10.0 && fabs(capH - self.capsuleHeight) >= 0.5);
         self.isExpanded = expanded;
         self.currentWidth = w;
         self.currentHeight = h;
         if (capH > 10.0) self.capsuleHeight = capH;
-        [self updateWindowPosition];
-    });
+        if (changed && [self isClaudeOrSelfFrontmost]) {
+            [self updateWindowPosition];
+        }
+    };
+    if ([NSThread isMainThread]) {
+        applyUpdate();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), applyUpdate);
+    }
 }
 
 - (void)adjustTimerSpeed:(NSTimeInterval)desiredInterval {
-    if (_trackingTimer && fabs(_trackingTimer.timeInterval - desiredInterval) < 0.005) return;
+    if (_trackingTimer && _trackingTimer.isValid && fabs(_trackingTimer.timeInterval - desiredInterval) < 0.005) return;
     if (_trackingTimer) [_trackingTimer invalidate];
     _trackingTimer = [NSTimer scheduledTimerWithTimeInterval:desiredInterval
                                                       target:self
@@ -395,20 +451,39 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     [[NSRunLoop mainRunLoop] addTimer:_trackingTimer forMode:NSRunLoopCommonModes];
 }
 
-- (void)startTimers {
-    _trackingTimer = [NSTimer scheduledTimerWithTimeInterval:0.04
-                                                      target:self
-                                                    selector:@selector(updateWindowPosition)
-                                                    userInfo:nil
-                                                     repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:_trackingTimer forMode:NSRunLoopCommonModes];
+- (void)pauseTimers {
+    if (_trackingTimer) {
+        [_trackingTimer invalidate];
+        _trackingTimer = nil;
+    }
+    if (_statusTimer) {
+        [_statusTimer invalidate];
+        _statusTimer = nil;
+    }
+}
 
-    _statusTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
-                                                    target:self
-                                                  selector:@selector(pollStatusFile)
-                                                  userInfo:nil
-                                                   repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:_statusTimer forMode:NSRunLoopCommonModes];
+- (void)resumeTimers {
+    if (!_trackingTimer || !_trackingTimer.isValid) {
+        _trackingTimer = [NSTimer scheduledTimerWithTimeInterval:0.04
+                                                          target:self
+                                                        selector:@selector(updateWindowPosition)
+                                                        userInfo:nil
+                                                         repeats:YES];
+        [[NSRunLoop mainRunLoop] addTimer:_trackingTimer forMode:NSRunLoopCommonModes];
+    }
+    if (!_statusTimer || !_statusTimer.isValid) {
+        _statusTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                        target:self
+                                                      selector:@selector(pollStatusFile)
+                                                      userInfo:nil
+                                                       repeats:YES];
+        [[NSRunLoop mainRunLoop] addTimer:_statusTimer forMode:NSRunLoopCommonModes];
+        [self pollStatusFile];
+    }
+}
+
+- (void)startTimers {
+    [self resumeTimers];
 }
 
 - (void)pollStatusFile {
@@ -416,9 +491,7 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     if (_lastThemeDetected != (isDark ? 1 : 0)) {
         _lastThemeDetected = (isDark ? 1 : 0);
         NSString *themeJs = [NSString stringWithFormat:@"window.__setTheme && window.__setTheme(%@);", isDark ? @"true" : @"false"];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.webView evaluateJavaScript:themeJs completionHandler:nil];
-        });
+        [self.webView evaluateJavaScript:themeJs completionHandler:nil];
     }
 
     NSString *statusPath = [@"~/Library/Application Support/Codex Quota Header/live-status.json" stringByExpandingTildeInPath];
@@ -430,15 +503,13 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     if (!data) return;
     _lastStatusMtime = st.st_mtime;
 
-    NSString *content = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    NSString *content = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease];
     if (content && ![content isEqualToString:_lastStatusJson]) {
-        _lastStatusJson = content;
+        self.lastStatusJson = content;
         NSData *escapedData = [NSJSONSerialization dataWithJSONObject:@{@"json": content} options:0 error:nil];
-        NSString *wrapper = [[NSString alloc] initWithData:escapedData encoding:NSUTF8StringEncoding];
+        NSString *wrapper = [[[NSString alloc] initWithData:escapedData encoding:NSUTF8StringEncoding] autorelease];
         NSString *js = [NSString stringWithFormat:@"(() => { try { const payload = JSON.parse(%@.json); window.__updateFromStatusFile(payload); } catch(e) {} })()", wrapper];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.webView evaluateJavaScript:js completionHandler:nil];
-        });
+        [self.webView evaluateJavaScript:js completionHandler:nil];
     }
 }
 
@@ -763,14 +834,8 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
 }
 
 - (void)updateWindowPosition {
-    NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
-    BOOL isClaudeFront = [frontApp.bundleIdentifier isEqualToString:@"com.anthropic.claudefordesktop"];
-    if (!isClaudeFront) {
-        if (_panel.isVisible) [_panel orderOut:nil];
-        if (_isExpanded) {
-            [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
-            _isExpanded = NO;
-        }
+    if (![self isClaudeOrSelfFrontmost]) {
+        [self hideOverlayAndPause];
         return;
     }
 
@@ -784,11 +849,11 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     }
 
     if (!claudeApp || claudeApp.isHidden) {
-        if (_panel.isVisible) [_panel orderOut:nil];
+        [self hideOverlayAndPause];
         return;
     }
 
-    CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+    CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
     if (!windowList) return;
 
     CGRect mainClaudeBounds = CGRectZero;
@@ -799,9 +864,6 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         if ([info[(__bridge NSString *)kCGWindowOwnerPID] intValue] == claudeApp.processIdentifier) {
             int layer = [info[(__bridge NSString *)kCGWindowLayer] intValue];
             if (layer != 0) continue;
-
-            BOOL isOnScreen = [info[(__bridge NSString *)kCGWindowIsOnscreen] boolValue];
-            if (!isOnScreen) continue;
 
             NSDictionary *bounds = info[(__bridge NSString *)kCGWindowBounds];
             CGFloat w = [bounds[@"Width"] doubleValue];
@@ -853,7 +915,7 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     if (isMouseDragging || isMoving) {
         _activeResizeUntil = now + 0.8;
     }
-    [self adjustTimerSpeed:(now < _activeResizeUntil ? 0.033 : 0.12)];
+    [self adjustTimerSpeed:(now < _activeResizeUntil ? 0.016 : 0.15)];
 
     CGFloat primaryScreenH = NSScreen.screens[0].frame.size.height;
     CGFloat screenMinX = NSScreen.screens[0].frame.origin.x;
@@ -883,9 +945,7 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         _lastClaudeWidth = claudeW;
         _lastRightInset = rightInset;
         NSString *layoutJs = [NSString stringWithFormat:@"window.__setClaudeLayout && window.__setClaudeLayout(%.0f, %.0f, %.0f);", availableGap, claudeW, rightInset];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.webView evaluateJavaScript:layoutJs completionHandler:nil];
-        });
+        [self.webView evaluateJavaScript:layoutJs completionHandler:nil];
     }
 
     // 垂直对齐到 Claude 顶栏按钮中线（默认 22px）
@@ -906,9 +966,7 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
         if (!NSPointInRect(mouseLoc, _panel.frame)) {
             self.mouseOutsideTicks++;
             if (self.mouseOutsideTicks >= 3) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
-                });
+                [self.webView evaluateJavaScript:@"window.__codexUsageHeaderDebug__?.hidePopover?.();" completionHandler:nil];
             }
         } else {
             self.mouseOutsideTicks = 0;
@@ -922,6 +980,9 @@ static NSString *extractLastJsonObjectForKey(NSData *haystack, const char *keyNe
     _lastThemeDetected = -1;
     _lastAvailableWidth = -1.0;
     [self pollStatusFile];
+    if ([self isClaudeOrSelfFrontmost]) {
+        [self updateWindowPosition];
+    }
 }
 
 @end

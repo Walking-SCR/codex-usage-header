@@ -846,4 +846,11 @@
   background: #202D3D !important;
   border-color: #35475D !important;
 }
+.quota-dashboard .usage-section,
+.quota-dashboard .reset-voucher-section,
+.quota-dashboard .quota-extension-rows,
+.quota-dashboard .token-models-col {
+  contain: layout style;
+}
+
 

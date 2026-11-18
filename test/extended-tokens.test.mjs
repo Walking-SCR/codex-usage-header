@@ -348,6 +348,28 @@ try {
   const parsedTs = parseAntigravityStepTimestamp(sampleStepMeta);
   assert.ok(Number.isFinite(parsedTs) && parsedTs > 1e12, '必须正确解码 step.metadata 的 Timestamp 秒数');
 
+  // 测试冷热分层扫描与异步原子保存 (saveAsync)
+  const coldFile = join(testDir, 'cold-session.jsonl');
+  const hotFile = join(testDir, 'hot-session.jsonl');
+  writeFileSync(coldFile, '');
+  writeFileSync(hotFile, '');
+  const tierStorage = join(testDir, 'tier-rollup.json');
+  const tierEngine = new TokenRollupEngine({ baseDir: testDir, sessionsDir, storagePath: tierStorage });
+  tierEngine.enabled = true;
+  tierEngine.data.files[coldFile] = { inode: 101, offset: 0, mtime: Date.now() - 5 * 86400 * 1000 };
+  tierEngine.data.files[hotFile] = { inode: 102, offset: 0, mtime: Date.now() - 60 * 1000 };
+  const tick1Files = tierEngine.collectSessionFiles(true);
+  assert.ok(tick1Files.includes(hotFile), '近期活跃文件必须在常规增量扫描中保留');
+  assert.ok(!tick1Files.includes(coldFile), '超过 48h 未改动的冷文件在非全扫轮次应跳过 stat');
+  let sweptFiles = [];
+  for (let i = 0; i < 9; i += 1) {
+    sweptFiles = tierEngine.collectSessionFiles(true);
+  }
+  assert.ok(sweptFiles.includes(coldFile), '第 10 轮周期兜底扫描必须包含冷文件');
+  tierEngine.dirty = true;
+  await tierEngine.saveAsync(true);
+  assert.equal(statSync(tierStorage).mode & 0o777, 0o600, 'saveAsync 必须保持 0600 权限');
+
   console.log("✓ Token rollup engine tests passed!");
 } finally {
   rmSync(testDir, { recursive: true, force: true });

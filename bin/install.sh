@@ -54,6 +54,7 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v clang >/dev/null 2>&1; then
     clang -O2 -framework Cocoa -framework WebKit -framework ApplicationServices "$ROOT_DIR/src/claude-overlay/main.m" -o "$HELPER_BIN.tmp" 2>/dev/null || true
     if [[ -f "$HELPER_BIN.tmp" ]]; then
       chmod 0755 "$HELPER_BIN.tmp"
+      /usr/bin/codesign --force --sign - --identifier "com.codex-usage-header.claude-overlay-helper" "$HELPER_BIN.tmp" >/dev/null 2>&1 || true
       mv -f "$HELPER_BIN.tmp" "$HELPER_BIN"
       printf '%s' "$MAIN_M_HASH" > "$ROOT_DIR/bin/.claude-overlay-helper.sha256"
     fi

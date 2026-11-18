@@ -8,7 +8,7 @@
  * 连接后都可操控渲染目标。这是 CDP 机制本身的特性，详见 SECURITY.md。
  */
 import { spawn, execFile, execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, realpathSync } from 'node:fs';
+import { readFileSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { promisify } from 'node:util';
@@ -286,7 +286,7 @@ export async function autoRelaunchCodexWithCdp(port = DEFAULT_PORT, processes = 
   return { ok: true, relaunched: true, executable };
 }
 
-const cdpHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 1, keepAliveMsecs: 10000 });
+const cdpHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 8, keepAliveMsecs: 10000 });
 
 export function fetchCdpTargets(port = DEFAULT_PORT) {
   return new Promise((resolve, reject) => {
@@ -691,12 +691,20 @@ async function removePagePreload(wsUrl) {
 }
 
 export async function injectScriptIntoTarget(wsUrl, scriptCode) {
-  await evaluateInjectionWithRetry(wsUrl, scriptCode);
-  await registerPagePreload(wsUrl, scriptCode);
+  const directProbe = await evaluateInjectionWithRetry(wsUrl, scriptCode);
+  const preloadPromise = registerPagePreload(wsUrl, scriptCode);
+  if (directProbe && typeof directProbe === 'object' && directProbe.mounted) {
+    preloadPromise.catch(() => {});
+    return { ...directProbe, status: 'mounted' };
+  }
+  await preloadPromise;
   const deadline = Date.now() + 6000;
-  let probe;
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 100));
+  let probe = (directProbe && typeof directProbe === 'object' && 'installed' in directProbe)
+    ? directProbe
+    : await probeMountState(wsUrl).catch(() => null);
+  if (probe?.mounted) return { ...probe, status: 'mounted' };
+  while (Date.now() < deadline && (!probe || probe.installed)) {
+    await new Promise(resolve => setTimeout(resolve, 60));
     probe = await probeMountState(wsUrl);
     if (probe?.mounted) return { ...probe, status: 'mounted' };
     if (!probe?.installed) break;
@@ -845,18 +853,51 @@ export function statusExitCode(status) {
   return status.waitingCount > 0 ? 0 : 2;
 }
 
+let cachedInjectableBundle = null;
+
+function getBundleCacheSignature() {
+  try {
+    const jsStat = statSync(INJECTED_SCRIPT_PATH);
+    const cssStat = statSync(join(DESIGN_DIR, 'design.css'));
+    return `${jsStat.mtimeMs}:${jsStat.size}:${cssStat.mtimeMs}:${cssStat.size}`;
+  } catch {
+    return null;
+  }
+}
+
 // 计算注入脚本的内容哈希并填入占位符：任何代码改动都会改变哈希，
 // 渲染器内的版本守卫据此判断是否需要 teardown + 重装（无需手动升版本）。
 export function buildInjectableScript() {
+  const sig = getBundleCacheSignature();
+  if (sig && cachedInjectableBundle?.sig === sig) {
+    return { scriptCode: cachedInjectableBundle.scriptCode, contentHash: cachedInjectableBundle.contentHash };
+  }
   const scriptSource = readFileSync(INJECTED_SCRIPT_PATH, 'utf8');
+  const designCssBuffer = readFileSync(join(DESIGN_DIR, 'design.css'));
   const hash = createHash('sha256').update(scriptSource);
   hash.update(getAccountHealth.toString());
-  hash.update(readFileSync(join(DESIGN_DIR, 'design.css')));
-  for (const path of Object.values(DESIGN_ICONS)) hash.update(readFileSync(join(DESIGN_DIR, path)));
+  hash.update(designCssBuffer);
+  const designIcons = {};
+  for (const [key, iconPath] of Object.entries(DESIGN_ICONS)) {
+    const buf = readFileSync(join(DESIGN_DIR, iconPath));
+    hash.update(buf);
+    designIcons[key] = `data:image/svg+xml;base64,${buf.toString('base64')}`;
+  }
   const contentHash = hash.digest('hex');
   const scriptCode = scriptSource.includes('__INJECTED_CONTENT_HASH__')
     ? scriptSource.replace('__INJECTED_CONTENT_HASH__', contentHash)
     : scriptSource;
+  const icons = {
+    refresh: readIconDataUrl('refresh'),
+    database: readIconDataUrl('database'),
+    clock: readIconDataUrl('clock'),
+    resetCredit: readImageDataUrl('reset-credit', 'png', 'image/png'),
+  };
+  const designCss = designCssBuffer.toString('utf8');
+  const staticBootstrap = `window.__codexUsageHeaderAccountHealth__ = ${getAccountHealth.toString()}; window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderDesignIcons__ = ${JSON.stringify(designIcons)}; window.__codexUsageHeaderDesignCSS__ = ${JSON.stringify(designCss)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))};`;
+  if (sig) {
+    cachedInjectableBundle = { sig, scriptCode, contentHash, staticBootstrap };
+  }
   return { scriptCode, contentHash };
 }
 
@@ -882,13 +923,34 @@ export function ensureClaudeOverlayHelper() {
   } catch { return false; }
 }
 
-export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = true, client = 'codex' } = {}) {
+let cachedLiveStatus = { mtimeMs: -1, size: -1, value: null };
+
+function readCachedLiveSnapshot() {
+  try {
+    const liveStatusFile = join(getDataDir(), 'live-status.json');
+    if (!existsSync(liveStatusFile)) return null;
+    const st = statSync(liveStatusFile);
+    if (cachedLiveStatus.mtimeMs === st.mtimeMs && cachedLiveStatus.size === st.size) {
+      return cachedLiveStatus.value;
+    }
+    const parsed = JSON.parse(readFileSync(liveStatusFile, 'utf8'));
+    cachedLiveStatus = { mtimeMs: st.mtimeMs, size: st.size, value: parsed };
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = true, client = 'codex', fastFailOnRefused = false } = {}) {
   const { scriptCode, contentHash } = buildInjectableScript();
   let targets;
 
   try {
     targets = await fetchCdpTargets(port);
-  } catch {
+  } catch (fetchErr) {
+    if (fastFailOnRefused && !launchIfNeeded && fetchErr?.code === 'ECONNREFUSED') {
+      throw new Error('cdp_unavailable');
+    }
     const procInfo = getDesktopAppProcessInfo(port, client);
     if (procInfo.running) {
       if (procInfo.hasCdpFlag) {
@@ -923,35 +985,31 @@ export async function launchAndInject(port = DEFAULT_PORT, { launchIfNeeded = tr
   const renderers = selectUsageTargets(targets);
   if (renderers.length === 0) throw new Error('no_renderer_targets');
 
-  const icons = {
-    refresh: readIconDataUrl('refresh'),
-    database: readIconDataUrl('database'),
-    clock: readIconDataUrl('clock'),
-    resetCredit: readImageDataUrl('reset-credit', 'png', 'image/png'),
-  };
-  const designIcons = Object.fromEntries(Object.entries(DESIGN_ICONS).map(([key, path]) => {
-    const data = readFileSync(join(DESIGN_DIR, path));
-    return [key, `data:image/svg+xml;base64,${data.toString('base64')}`];
-  }));
-  const designCss = readFileSync(join(DESIGN_DIR, 'design.css'), 'utf8');
-  let initialSnapshot = null;
-  try {
-    const liveStatusFile = join(getDataDir(), 'live-status.json');
-    if (existsSync(liveStatusFile)) {
-      initialSnapshot = JSON.parse(readFileSync(liveStatusFile, 'utf8'));
-    }
-  } catch { /* ignore */ }
-  const bootstrap = `window.__codexUsageHeaderAccountHealth__ = ${getAccountHealth.toString()}; window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderDesignIcons__ = ${JSON.stringify(designIcons)}; window.__codexUsageHeaderDesignCSS__ = ${JSON.stringify(designCss)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))}; window.__codexUsageHeaderInitialSnapshot__ = ${JSON.stringify(initialSnapshot)};`;
+  const initialSnapshot = readCachedLiveSnapshot();
+  const staticBootstrap = cachedInjectableBundle?.staticBootstrap ?? (() => {
+    const icons = {
+      refresh: readIconDataUrl('refresh'),
+      database: readIconDataUrl('database'),
+      clock: readIconDataUrl('clock'),
+      resetCredit: readImageDataUrl('reset-credit', 'png', 'image/png'),
+    };
+    const designIcons = Object.fromEntries(Object.entries(DESIGN_ICONS).map(([key, path]) => {
+      const data = readFileSync(join(DESIGN_DIR, path));
+      return [key, `data:image/svg+xml;base64,${data.toString('base64')}`];
+    }));
+    const designCss = readFileSync(join(DESIGN_DIR, 'design.css'), 'utf8');
+    return `window.__codexUsageHeaderAccountHealth__ = ${getAccountHealth.toString()}; window.__codexUsageHeaderIcons__ = ${JSON.stringify(icons)}; window.__codexUsageHeaderDesignIcons__ = ${JSON.stringify(designIcons)}; window.__codexUsageHeaderDesignCSS__ = ${JSON.stringify(designCss)}; window.__codexUsageHeaderSource__ = ${JSON.stringify(join(__dirname, '..'))};`;
+  })();
+  const fullScript = `${staticBootstrap} window.__codexUsageHeaderInitialSnapshot__ = ${JSON.stringify(initialSnapshot)};\n${scriptCode}`;
 
-  const results = [];
-  for (const target of renderers) {
+  const results = await Promise.all(renderers.map(async target => {
     try {
-      const verification = await injectScriptIntoTarget(target.webSocketDebuggerUrl, `${bootstrap}\n${scriptCode}`);
-      results.push({ target: target.title || target.url, ...verification });
+      const verification = await injectScriptIntoTarget(target.webSocketDebuggerUrl, fullScript);
+      return { target: target.title || target.url, ...verification };
     } catch (error) {
-      results.push({ target: target.title || target.url, status: 'failed', error: error.message });
+      return { target: target.title || target.url, status: 'failed', error: error.message };
     }
-  }
+  }));
   const mountedCount = results.filter(item => item.status === 'mounted').length;
   const waitingCount = results.filter(item => item.status === 'waiting').length;
   const failedCount = results.filter(item => item.status === 'failed').length;
@@ -1110,20 +1168,22 @@ async function main() {
     const clientEntries = options.client === 'all'
       ? [['codex', CLIENT_PORT_MAP.codex], ['claude', CLIENT_PORT_MAP.claude], ['antigravity', agPort]]
       : [['codex', 9229], ['claude', 9230], ['antigravity', agPort]];
-    const allResults = [];
-    for (const [clientName, clientPort] of clientEntries) {
+    const settled = await Promise.all(clientEntries.map(async ([clientName, clientPort]) => {
       try {
         const res = await launchAndInject(clientPort, {
           launchIfNeeded: options.mode !== 'inject-only' && options.client === 'all',
           client: clientName,
+          fastFailOnRefused: options.mode === 'inject-only',
         });
-        allResults.push(res);
+        return { ok: true, res };
       } catch (err) {
         if (options.client === 'all' && options.mode !== 'inject-only') {
           console.error(`[Codex Quota Header] ${clientName} (${clientPort}) skipped: ${err.message}`);
         }
+        return { ok: false, err };
       }
-    }
+    }));
+    const allResults = settled.filter(item => item.ok).map(item => item.res);
     if (allResults.length === 0) {
       throw new Error('cdp_unavailable');
     }

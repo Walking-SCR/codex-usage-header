@@ -108,6 +108,7 @@ const html = `<!doctype html>
   </script>
   <script>
     let isCurrentlyExpanded = false;
+    let lastNotifiedSignature = '';
 
     function checkAndNotify() {
       const popover = document.querySelector('.codex-usage-popover-v24');
@@ -117,35 +118,31 @@ const html = `<!doctype html>
       const rect = capsule?.getBoundingClientRect();
       const capsuleW = rect ? Math.ceil(rect.width) : 368;
       const capsuleH = rect ? Math.ceil(rect.height) : 34;
-      if (expanded) {
-        isCurrentlyExpanded = true;
-        try {
-          window.webkit?.messageHandlers?.overlay?.postMessage({
-            expanded: true,
-            width: 606,
-            height: 670,
-            capsuleWidth: capsuleW,
-            capsuleHeight: capsuleH
-          });
-        } catch (e) {}
-      } else {
-        isCurrentlyExpanded = false;
-        const finalW = Math.max(46, Math.min(410, capsuleW + 8));
-        const finalH = Math.max(36, Math.min(44, capsuleH + 8));
-        try {
-          window.webkit?.messageHandlers?.overlay?.postMessage({
-            expanded: false,
-            width: finalW,
-            height: finalH,
-            capsuleWidth: capsuleW,
-            capsuleHeight: capsuleH
-          });
-        } catch (e) {}
-      }
+      const outW = expanded ? 606 : Math.max(46, Math.min(410, capsuleW + 8));
+      const outH = expanded ? 670 : Math.max(36, Math.min(44, capsuleH + 8));
+      const sig = (expanded ? '1' : '0') + ':' + outW + ':' + outH + ':' + capsuleW + ':' + capsuleH;
+      isCurrentlyExpanded = expanded;
+      if (sig === lastNotifiedSignature) return;
+      lastNotifiedSignature = sig;
+      try {
+        window.webkit?.messageHandlers?.overlay?.postMessage({
+          expanded,
+          width: outW,
+          height: outH,
+          capsuleWidth: capsuleW,
+          capsuleHeight: capsuleH
+        });
+      } catch (e) {}
     }
 
-    const observer = new MutationObserver(() => {
-      checkAndNotify();
+    const observer = new MutationObserver((records) => {
+      for (let i = 0; i < records.length; i += 1) {
+        const target = records[i].target;
+        if (target?.classList?.contains('codex-usage-popover-v24') || target?.id === 'overlay-root') {
+          checkAndNotify();
+          return;
+        }
+      }
     });
 
     observer.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['class'] });

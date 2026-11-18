@@ -16,6 +16,7 @@ import {
   openSync,
   readSync,
   closeSync,
+  promises as fsPromises,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, win32 } from 'node:path';
@@ -1001,6 +1002,10 @@ export class TokenRollupEngine {
     this.snapshotCache = null;
     this.snapshotRevision = 0;
     this.enabled = false;
+    this.dirScanCache = new Map();
+    this.incrementalSweepCounter = 0;
+    this.lastPruneAt = 0;
+    this.lastPruneDate = '';
   }
 
   init() {
@@ -1058,7 +1063,7 @@ export class TokenRollupEngine {
     try {
       mkdirSync(this.baseDir, { recursive: true });
       const tmpPath = `${this.storagePath}.tmp.${process.pid}`;
-      const json = JSON.stringify(this.data, null, 2);
+      const json = JSON.stringify(this.data);
       writeFileSync(tmpPath, json, { mode: 0o600 });
       renameSync(tmpPath, this.storagePath);
       if (process.platform !== 'win32') {
@@ -1067,6 +1072,25 @@ export class TokenRollupEngine {
       this.dirty = false;
       this.lastSavedAt = now;
     } catch { /* 忽略磁盘写入错误 */ }
+  }
+
+  async saveAsync(force = false) {
+    if (!this.dirty && !force) return;
+    const now = Date.now();
+    if (!force && now - this.lastSavedAt < ROLLING_SAVE_INTERVAL_MS) return;
+
+    try {
+      await fsPromises.mkdir(this.baseDir, { recursive: true });
+      const tmpPath = `${this.storagePath}.tmp.${process.pid}`;
+      const json = JSON.stringify(this.data);
+      await fsPromises.writeFile(tmpPath, json, { mode: 0o600 });
+      await fsPromises.rename(tmpPath, this.storagePath);
+      if (process.platform !== 'win32') {
+        try { await fsPromises.chmod(this.storagePath, 0o600); } catch { /* ignore */ }
+      }
+      this.dirty = false;
+      this.lastSavedAt = now;
+    } catch { /* 忽略异步磁盘写入错误 */ }
   }
 
   getEarliestDate() {
@@ -1224,7 +1248,9 @@ export class TokenRollupEngine {
         'SELECT g.idx AS idx, g.data AS data, s.metadata AS metadata FROM gen_metadata g LEFT JOIN steps s ON s.idx = g.idx WHERE g.idx > ? AND g.size > 20 ORDER BY g.idx ASC'
       );
       const rows = typeof stmt.iterate === 'function' ? stmt.iterate(record.lastIdx) : stmt.all(record.lastIdx);
+      let rowCounter = 0;
       for (const row of rows) {
+        if (!this.enabled) break;
         const entries = parseAntigravityGenMetadataBlob(row.data);
         if (entries.length > 0) {
           const tsMs = parseAntigravityStepTimestamp(row.metadata);
@@ -1239,6 +1265,9 @@ export class TokenRollupEngine {
         }
         if (typeof row.idx === 'number' && row.idx > record.lastIdx) {
           record.lastIdx = row.idx;
+        }
+        if (++rowCounter % 200 === 0) {
+          await new Promise(resolve => setImmediate(resolve));
         }
       }
       record.mtime = stat.mtimeMs;
@@ -1332,13 +1361,55 @@ export class TokenRollupEngine {
     }
   }
 
+  collectRecentFilesInDir(dirPath, suffix, recentCutoffMs, nowMs) {
+    let dirStat;
+    try {
+      dirStat = statSync(dirPath);
+    } catch {
+      this.dirScanCache.delete(dirPath);
+      return { subdirs: [], files: [] };
+    }
+    const cached = this.dirScanCache.get(dirPath);
+    if (cached && cached.mtimeMs === dirStat.mtimeMs && (nowMs - cached.scannedAt) < 300000) {
+      return cached;
+    }
+    const subdirs = [];
+    const files = [];
+    try {
+      const entries = readdirSync(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const full = join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          subdirs.push(full);
+        } else if (entry.isFile() && entry.name.endsWith(suffix)) {
+          try {
+            const st = statSync(full);
+            if (st.mtimeMs >= recentCutoffMs) files.push(full);
+          } catch {}
+        }
+      }
+    } catch { /* 忽略权限错误 */ }
+    const nextCache = { mtimeMs: dirStat.mtimeMs, scannedAt: nowMs, subdirs, files };
+    if (this.dirScanCache.size > 512) this.dirScanCache.clear();
+    this.dirScanCache.set(dirPath, nextCache);
+    return nextCache;
+  }
+
   collectSessionFiles(recentOnly = false) {
     const results = new Set();
-    const recentCutoffMs = Date.now() - 7 * 86400000;
+    const nowMs = Date.now();
+    const recentCutoffMs = nowMs - 7 * 86400000;
+    const hotTrackedCutoffMs = nowMs - 48 * 3600000;
+    if (recentOnly) this.incrementalSweepCounter += 1;
+    const includeColdTracked = !recentOnly || (this.incrementalSweepCounter % 10 === 0);
 
-    // 1. 所有已追踪的活跃会话文件必须优先纳入检查（避免长会话跨天时被漏掉）
+    // 1. 已追踪活跃会话文件优先纳入检查（长会话跨天不断流）；
+    // recentOnly 模式下仅每轮检查近 48h 活跃过或尚未记录 mtime 的热文件，每 10 轮做一次全量兜底巡检，
+    // 消除数百个历史冷文件每 30 秒重复 statSync/existsSync 的系统调用风暴。
     if (this.data.files) {
-      for (const filePath of Object.keys(this.data.files)) {
+      for (const [filePath, rec] of Object.entries(this.data.files)) {
+        const isHot = !rec || typeof rec.mtime !== 'number' || rec.mtime >= hotTrackedCutoffMs;
+        if (!isHot && !includeColdTracked) continue;
         if (existsSync(filePath)) {
           results.add(filePath);
         }
@@ -1350,7 +1421,7 @@ export class TokenRollupEngine {
       if (recentOnly) {
         const targetDays = new Set();
         for (let i = 0; i < 7; i++) {
-          const dateStr = shiftDateKey(toDateKey(Date.now(), this.timezone), -i);
+          const dateStr = shiftDateKey(toDateKey(nowMs, this.timezone), -i);
           targetDays.add(dateStr.replace(/-/g, '/'));
         }
 
@@ -1399,45 +1470,41 @@ export class TokenRollupEngine {
       const queue = [this.claudeProjectsDir];
       while (queue.length > 0) {
         const current = queue.shift();
-        try {
-          const entries = readdirSync(current, { withFileTypes: true });
-          for (const entry of entries) {
-            const full = join(current, entry.name);
-            if (entry.isDirectory()) {
-              queue.push(full);
-            } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-              if (!recentOnly) {
+        if (recentOnly) {
+          const scanned = this.collectRecentFilesInDir(current, '.jsonl', recentCutoffMs, nowMs);
+          for (const sub of scanned.subdirs) queue.push(sub);
+          for (const f of scanned.files) results.add(f);
+        } else {
+          try {
+            const entries = readdirSync(current, { withFileTypes: true });
+            for (const entry of entries) {
+              const full = join(current, entry.name);
+              if (entry.isDirectory()) {
+                queue.push(full);
+              } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
                 results.add(full);
-              } else {
-                try {
-                  const st = statSync(full);
-                  if (st.mtimeMs >= recentCutoffMs) results.add(full);
-                } catch {}
               }
             }
-          }
-        } catch { /* 忽略权限错误 */ }
+          } catch { /* 忽略权限错误 */ }
+        }
       }
     }
 
     // 4. Antigravity / Antigravity IDE 会话数据库 (~/.gemini/antigravity/conversations/*.db)
     if (this.antigravityDir && existsSync(this.antigravityDir)) {
-      try {
-        const entries = readdirSync(this.antigravityDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isFile() && entry.name.endsWith('.db')) {
-            const full = join(this.antigravityDir, entry.name);
-            if (!recentOnly) {
-              results.add(full);
-            } else {
-              try {
-                const st = statSync(full);
-                if (st.mtimeMs >= recentCutoffMs) results.add(full);
-              } catch {}
+      if (recentOnly) {
+        const scanned = this.collectRecentFilesInDir(this.antigravityDir, '.db', recentCutoffMs, nowMs);
+        for (const f of scanned.files) results.add(f);
+      } else {
+        try {
+          const entries = readdirSync(this.antigravityDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isFile() && entry.name.endsWith('.db')) {
+              results.add(join(this.antigravityDir, entry.name));
             }
           }
-        }
-      } catch { /* 忽略权限错误 */ }
+        } catch { /* 忽略权限错误 */ }
+      }
     }
 
     return [...results];
@@ -1486,13 +1553,19 @@ export class TokenRollupEngine {
     this.scanPromise = (async () => {
       const startRevision = this.snapshotRevision;
       try {
-      const files = this.collectSessionFiles(true);
-      for (const file of files) {
-        await this.scanFileIncremental(file);
-      }
-      this.pruneOldDays();
-      this.save(false);
-      this.status = 'ready';
+        const files = this.collectSessionFiles(true);
+        for (const file of files) {
+          await this.scanFileIncremental(file);
+        }
+        const now = Date.now();
+        const todayKey = toDateKey(now, this.timezone);
+        if (this.lastPruneDate !== todayKey || (now - this.lastPruneAt) >= 1800000) {
+          this.pruneOldDays();
+          this.lastPruneDate = todayKey;
+          this.lastPruneAt = now;
+        }
+        await this.saveAsync(false);
+        this.status = 'ready';
       } catch {
         this.status = 'ready';
       }
